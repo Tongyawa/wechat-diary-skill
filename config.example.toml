@@ -10,14 +10,14 @@ self_wxids = ["filehelper"]               # filehelper = 文件传输助手; add
 raw = "WeFlow-raw-exports"
 processed = "WeFlow-processed-exports"
 insights = "WeFlow-insights"
-weflow_exe = "C:/Path/To/WeFlow.exe"
 
 [automation]
 # Which GUI-automation backend to use.
-#   "uia"      — pywinauto + Windows UI Automation (preferred, zoom/DPI-invariant)
-#   "cdp"      — Playwright via Electron CDP (--remote-debugging-port)
-#   "template" — multi-scale image template matching + OCR (last-resort fallback)
-driver = "uia"
+#   "cdp"      - Chromium DevTools Protocol (--remote-debugging-port), current first path
+#   "uia"      - pywinauto + Windows UI Automation, kept as fallback path
+#   "template" - multi-scale image template matching + OCR, last-resort fallback
+driver = "cdp"
+weflow_exe = "C:/Path/To/WeFlow.exe"
 launch_timeout_sec = 90
 poll_export_interval_sec = 60             # task-center polling cadence (WeFlow exports take minutes)
 
@@ -37,6 +37,9 @@ retry = 3
 [preprocessing]
 skip_emoji_dir = true                     # ignore media/emojis/ entirely (no OCR)
 voice_fail_log_only = true                # do not abort on "转文字失败"; just warn
+time_compress_interval_sec = 120          # merge adjacent text messages from the same sender
+image_ocr_enabled = true
+image_ocr_min_confidence = 0.55
 
 [preprocessing.group_context_window]
 # For group chats: keep only messages near the user's own messages (isSend == 1).
@@ -50,3 +53,6 @@ time_window_minutes = 30                  # extra time-based bound; whichever is
 cli = "claude"
 model = "claude-opus-4.6"
 extra_args = []                           # e.g. ["--permission-mode", "acceptEdits"]
+
+[skills]
+daily = ["wechat-diary"]
