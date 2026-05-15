@@ -420,7 +420,6 @@ function clickElement(element) {
   for (const type of ["pointerdown", "mousedown", "pointerup", "mouseup", "click"]) {
     element.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window, clientX, clientY }));
   }
-  element.click();
 }
 function labelTextFor(field) {
   const id = field.getAttribute("id");

@@ -81,6 +81,12 @@ class CdpDriverTests(unittest.TestCase):
         self.assertIn("parentElement", script)
         self.assertIn("querySelector", script)
 
+    def test_click_script_activates_target_once(self) -> None:
+        script = _click_script("点击选择输出目录")
+
+        self.assertIn('"click"', script)
+        self.assertNotIn("element.click();", script)
+
 
 if __name__ == "__main__":
     unittest.main()
