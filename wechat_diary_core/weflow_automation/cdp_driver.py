@@ -10,6 +10,7 @@ import os
 import socket
 import struct
 import time
+import urllib.error
 import urllib.request
 
 from .driver import Driver, DriverError, DriverUnavailable, ElementNotFound
@@ -184,12 +185,28 @@ class CdpDriver(Driver):
             time.sleep(0.5)
         raise ElementNotFound(f"Timed out waiting for {name!r}: {last_result}")
 
+    def wait_for_enabled(self, name: str, timeout: float = 60) -> None:
+        deadline = time.monotonic() + timeout
+        last_result: Any = None
+        while time.monotonic() < deadline:
+            last_result = self._evaluate(_enabled_script(name))
+            if isinstance(last_result, dict) and last_result.get("ok"):
+                return
+            time.sleep(0.5)
+        raise ElementNotFound(f"Timed out waiting for enabled UI element {name!r}: {last_result}")
+
     def screenshot(self) -> bytes:
         result = self.connection.send("Page.captureScreenshot", {"format": "png", "fromSurface": True})
         data = result.get("data")
         if not isinstance(data, str):
             raise CdpProtocolError("Page.captureScreenshot returned no data.")
         return base64.b64decode(data)
+
+    def visible_elements(self, limit: int = 200) -> list[dict[str, Any]]:
+        result = self._evaluate(_visible_elements_script(limit))
+        if not isinstance(result, list):
+            return []
+        return [item for item in result if isinstance(item, dict)]
 
     def close(self) -> None:
         self.connection.close()
@@ -205,8 +222,11 @@ class CdpDriver(Driver):
 
 
 def fetch_cdp_targets(endpoint: str) -> list[dict[str, Any]]:
-    with urllib.request.urlopen(f"{endpoint.rstrip('/')}/json/list", timeout=5) as response:
-        return list(json.loads(response.read().decode("utf-8")))
+    try:
+        with urllib.request.urlopen(f"{endpoint.rstrip('/')}/json/list", timeout=5) as response:
+            return list(json.loads(response.read().decode("utf-8")))
+    except (OSError, TimeoutError, urllib.error.URLError) as exc:
+        raise DriverUnavailable(f"Could not read CDP target list from {endpoint}: {exc}") from exc
 
 
 def select_page_target(targets: list[dict[str, Any]]) -> CdpTarget | None:
@@ -237,8 +257,9 @@ def _click_script(name: str) -> str:
   const found = findByName(target);
   if (!found) return {{ ok: false, reason: "not found", target }};
   const clickable = clickableAncestor(found);
+  if (!enabled(clickable)) return {{ ok: false, reason: "disabled", text: textOf(clickable), tag: clickable.tagName }};
   clickable.scrollIntoView({{ block: "center", inline: "center" }});
-  clickable.click();
+  clickElement(clickable);
   return {{ ok: true, text: textOf(clickable), tag: clickable.tagName }};
 }})()
 """
@@ -278,6 +299,42 @@ def _wait_script(name: str) -> str:
 """
 
 
+def _enabled_script(name: str) -> str:
+    return f"""
+{_dom_helpers()}
+(() => {{
+  const target = {json.dumps(name, ensure_ascii=False)};
+  const found = findByName(target);
+  if (!found) return {{ ok: false, reason: "not found", target }};
+  const clickable = clickableAncestor(found);
+  return enabled(clickable)
+    ? {{ ok: true, text: textOf(clickable), tag: clickable.tagName }}
+    : {{ ok: false, reason: "disabled", text: textOf(clickable), tag: clickable.tagName }};
+}})()
+"""
+
+
+def _visible_elements_script(limit: int) -> str:
+    return f"""
+{_dom_helpers()}
+(() => {{
+  const selector = "button,a,input,textarea,[contenteditable='true'],[role],[tabindex]";
+  return Array.from(document.querySelectorAll(selector))
+    .filter(visible)
+    .slice(0, {int(limit)})
+    .map((element) => {{
+      const target = clickableAncestor(element);
+      return {{
+        tag: element.tagName,
+        role: element.getAttribute("role") || "",
+        text: textOf(element).trim().replace(/\\s+/g, " ").slice(0, 120),
+        enabled: enabled(target)
+      }};
+    }});
+}})()
+"""
+
+
 def _dom_helpers() -> str:
     return r"""
 function norm(value) {
@@ -306,11 +363,44 @@ function isMatch(element, target) {
   const right = norm(target);
   return left === right || left.includes(right);
 }
+function elementRank(element, target) {
+  const left = norm(textOf(element));
+  const right = norm(target);
+  const exactPenalty = left === right ? 0 : 1;
+  const interactivePenalty = element.matches?.("button,a,input,textarea,[contenteditable='true'],[role='button'],[role='link'],[tabindex]") ? 0 : 1;
+  return [exactPenalty, interactivePenalty, left.length];
+}
 function findByName(target) {
   const selector = "button,a,input,textarea,[contenteditable='true'],[role],[tabindex],label,div,span";
-  return Array.from(document.querySelectorAll(selector)).find((element) => visible(element) && isMatch(element, target));
+  return Array.from(document.querySelectorAll(selector))
+    .filter((element) => visible(element) && isMatch(element, target))
+    .sort((left, right) => {
+      const a = elementRank(left, target);
+      const b = elementRank(right, target);
+      return a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
+    })[0] || null;
+}
+function disabled(element) {
+  let current = element;
+  while (current && current !== document.body) {
+    if (current.disabled === true) return true;
+    if (current.getAttribute?.("disabled") !== null) return true;
+    if (current.getAttribute?.("aria-disabled") === "true") return true;
+    current = current.parentElement;
+  }
+  const className = element.className || "";
+  if (/\b(disabled|is-disabled|van-button--disabled)\b/.test(className)) return true;
+  if (window.getComputedStyle(element).pointerEvents === "none") return true;
+  return false;
+}
+function enabled(element) {
+  return visible(element) && !disabled(element);
 }
 function clickableAncestor(element) {
+  if (element.matches?.("input[readonly]")) {
+    const siblingButton = element.parentElement?.querySelector?.("button");
+    if (siblingButton && visible(siblingButton)) return siblingButton;
+  }
   let current = element;
   while (current && current !== document.body) {
     if (current.matches?.("button,a,input,textarea,[contenteditable='true'],[role='button'],[role='link'],[tabindex]")) {
@@ -322,6 +412,15 @@ function clickableAncestor(element) {
     current = current.parentElement;
   }
   return element;
+}
+function clickElement(element) {
+  const rect = element.getBoundingClientRect();
+  const clientX = rect.left + rect.width / 2;
+  const clientY = rect.top + rect.height / 2;
+  for (const type of ["pointerdown", "mousedown", "pointerup", "mouseup", "click"]) {
+    element.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window, clientX, clientY }));
+  }
+  element.click();
 }
 function labelTextFor(field) {
   const id = field.getAttribute("id");

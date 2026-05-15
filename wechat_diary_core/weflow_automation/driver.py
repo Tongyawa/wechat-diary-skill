@@ -25,10 +25,12 @@ class Driver(Protocol):
 
     def wait_for(self, name: str, timeout: float = 60) -> None: ...
 
+    def wait_for_enabled(self, name: str, timeout: float = 60) -> None: ...
+
     def screenshot(self) -> bytes: ...
 
 
-CommandKind = Literal["click", "set_text", "wait_for", "confirm_native_dialog"]
+CommandKind = Literal["click", "set_text", "wait_for", "wait_for_enabled", "confirm_native_dialog"]
 
 
 @dataclass(frozen=True)
@@ -49,6 +51,9 @@ def run_driver_command(driver: Driver, command: DriverCommand) -> None:
         return
     if command.kind == "wait_for":
         driver.wait_for(command.name, timeout=command.timeout or 60)
+        return
+    if command.kind == "wait_for_enabled":
+        driver.wait_for_enabled(command.name, timeout=command.timeout or 60)
         return
     if command.kind == "confirm_native_dialog":
         confirm_native_dialog(

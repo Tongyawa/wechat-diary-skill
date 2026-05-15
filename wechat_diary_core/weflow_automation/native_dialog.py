@@ -24,6 +24,10 @@ class NativeDialogFocusError(NativeDialogError):
     """Raised when fallback Enter would target the wrong foreground window."""
 
 
+class NativeDialogCloseTimeout(NativeDialogError):
+    """Raised when a native dialog accepted input but did not close."""
+
+
 class NativeWindowController(Protocol):
     def find_visible_window(self, title_contains: str) -> int | None: ...
 
@@ -54,6 +58,7 @@ def confirm_native_dialog(
     timeout: float = 30,
     interval: float = 0.25,
     foreground_timeout: float = 1.0,
+    close_timeout: float = 3.0,
     controller: NativeWindowController | None = None,
 ) -> NativeDialogResult:
     active_controller = controller or Win32WindowController()
@@ -68,12 +73,17 @@ def confirm_native_dialog(
         button_hwnd = active_controller.find_child_button(hwnd, confirm_name)
         if button_hwnd is not None:
             active_controller.click_button(button_hwnd)
-            return NativeDialogResult(hwnd=hwnd, method="button", button_hwnd=button_hwnd)
+            if _wait_for_window_closed(active_controller, title, timeout=close_timeout):
+                return NativeDialogResult(hwnd=hwnd, method="button", button_hwnd=button_hwnd)
+            _confirm_with_enter(active_controller, hwnd, title, foreground_timeout)
+            if _wait_for_window_closed(active_controller, title, timeout=close_timeout):
+                return NativeDialogResult(hwnd=hwnd, method="enter", button_hwnd=button_hwnd)
+            raise NativeDialogCloseTimeout(f"Native dialog {title!r} did not close after button click and Enter fallback.")
 
-        active_controller.focus_window(hwnd)
-        if _wait_for_foreground_title(active_controller, title, timeout=foreground_timeout):
-            active_controller.send_enter()
-            return NativeDialogResult(hwnd=hwnd, method="enter")
+        if _confirm_with_enter(active_controller, hwnd, title, foreground_timeout):
+            if _wait_for_window_closed(active_controller, title, timeout=close_timeout):
+                return NativeDialogResult(hwnd=hwnd, method="enter")
+            raise NativeDialogCloseTimeout(f"Native dialog {title!r} did not close after Enter.")
 
         foreground = active_controller.foreground_title()
         raise NativeDialogFocusError(
@@ -83,10 +93,32 @@ def confirm_native_dialog(
     raise NativeDialogTimeout(f"Timed out waiting for native dialog title containing {title!r}.")
 
 
+def _confirm_with_enter(
+    controller: NativeWindowController,
+    hwnd: int,
+    title: str,
+    foreground_timeout: float,
+) -> bool:
+    controller.focus_window(hwnd)
+    if _wait_for_foreground_title(controller, title, timeout=foreground_timeout):
+        controller.send_enter()
+        return True
+    return False
+
+
 def _wait_for_foreground_title(controller: NativeWindowController, title: str, timeout: float) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if title in controller.foreground_title():
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def _wait_for_window_closed(controller: NativeWindowController, title: str, timeout: float) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if controller.find_visible_window(title) is None:
             return True
         time.sleep(0.05)
     return False

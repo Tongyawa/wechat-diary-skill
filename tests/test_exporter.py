@@ -23,6 +23,9 @@ class FakeDriver:
     def wait_for(self, name: str, timeout: float = 60) -> None:
         self.calls.append(("wait_for", name, str(int(timeout))))
 
+    def wait_for_enabled(self, name: str, timeout: float = 60) -> None:
+        self.calls.append(("wait_for_enabled", name, str(int(timeout))))
+
     def screenshot(self) -> bytes:
         return b""
 
@@ -54,8 +57,18 @@ class ExporterTests(unittest.TestCase):
 
         self.assertEqual(result.kind, "all_chats")
         self.assertEqual(
-            [call[1] for call in driver.calls],
-            ["导出", "自动化导出", "自动化导出", "立即执行", "立即执行", "任务中心", "任务中心", "已完成", "首页"],
+            [(call[0], call[1]) for call in driver.calls],
+            [
+                ("click", "导出"),
+                ("wait_for", "自动化导出"),
+                ("click", "自动化导出"),
+                ("wait_for_enabled", "立即执行"),
+                ("click", "立即执行"),
+                ("wait_for", "任务中心"),
+                ("click", "任务中心"),
+                ("wait_for", "已完成"),
+                ("click", "首页"),
+            ],
         )
 
     def test_export_moments_for_keeps_target_list_outside_core_logic(self) -> None:
@@ -67,16 +80,20 @@ class ExporterTests(unittest.TestCase):
             result = export_moments_for(["wxid_a", "wxid_b"], "2026-05-13", config=cfg, driver=driver)  # type: ignore[arg-type]
 
         self.assertEqual(result.kind, "moments")
-        self.assertIn(("set_text", "联系人", "wxid_a"), driver.calls)
-        self.assertIn(("set_text", "联系人", "wxid_b"), driver.calls)
+        self.assertIn(("set_text", "查找联系人", "wxid_a"), driver.calls)
+        self.assertIn(("set_text", "查找联系人", "wxid_b"), driver.calls)
         self.assertEqual(
-            [(command.kind, command.name) for command in result.commands[-8:]],
+            [(command.kind, command.name) for command in result.commands[-12:]],
             [
+                ("click", "选择 wxid_b"),
+                ("wait_for_enabled", "导出朋友圈"),
+                ("click", "导出朋友圈"),
+                ("wait_for", "导出格式"),
                 ("click", "JSON"),
                 ("click", "点击选择输出目录"),
                 ("confirm_native_dialog", "选择导出目录"),
                 ("wait_for", "昨天"),
-                ("wait_for", "开始导出"),
+                ("wait_for_enabled", "开始导出"),
                 ("click", "开始导出"),
                 ("wait_for", "已完成"),
                 ("click", "首页"),
