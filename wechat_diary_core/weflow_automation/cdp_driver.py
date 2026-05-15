@@ -170,6 +170,15 @@ class CdpDriver(Driver):
             time.sleep(0.5)
         raise ElementNotFound(f"Could not click UI element named {name!r}: {last_result}")
 
+    def click_if_present(self, name: str, timeout: float = 2) -> bool:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            result = self._evaluate(_click_script(name))
+            if isinstance(result, dict) and result.get("ok"):
+                return True
+            time.sleep(0.25)
+        return False
+
     def set_text(self, field_name: str, text: str) -> None:
         result = self._evaluate(_set_text_script(field_name, text))
         if not isinstance(result, dict) or not result.get("ok"):

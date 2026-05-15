@@ -55,12 +55,14 @@ class CdpDriverTests(unittest.TestCase):
                 {"ok": True},
                 {"ok": True},
                 {"ok": True},
+                {"ok": True},
                 [{"tag": "BUTTON", "text": "开始导出", "enabled": True}],
             ]
         )
         driver = CdpDriver(connection)  # type: ignore[arg-type]
 
         driver.click_by_name("导出")
+        self.assertTrue(driver.click_if_present("关闭任务中心", timeout=0.1))
         driver.set_text("查找", "abc")
         driver.wait_for("已完成", timeout=0.1)
         driver.wait_for_enabled("开始导出", timeout=0.1)
@@ -70,7 +72,7 @@ class CdpDriverTests(unittest.TestCase):
 
         methods = [method for method, _ in connection.calls]
         self.assertIn("Runtime.enable", methods)
-        self.assertEqual(methods.count("Runtime.evaluate"), 5)
+        self.assertEqual(methods.count("Runtime.evaluate"), 6)
         self.assertIn("Page.captureScreenshot", methods)
         self.assertEqual(methods[-1], "close")
 

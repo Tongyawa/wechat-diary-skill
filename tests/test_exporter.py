@@ -17,6 +17,10 @@ class FakeDriver:
     def click_by_name(self, name: str, retries: int = 3) -> None:
         self.calls.append(("click", name, None))
 
+    def click_if_present(self, name: str, timeout: float = 2) -> bool:
+        self.calls.append(("click_if_present", name, str(int(timeout))))
+        return True
+
     def set_text(self, field_name: str, text: str) -> None:
         self.calls.append(("set_text", field_name, text))
 
@@ -59,14 +63,18 @@ class ExporterTests(unittest.TestCase):
         self.assertEqual(
             [(call[0], call[1]) for call in driver.calls],
             [
+                ("click_if_present", "关闭任务中心"),
+                ("click_if_present", "关闭自动化导出"),
                 ("click", "导出"),
                 ("wait_for", "自动化导出"),
                 ("click", "自动化导出"),
                 ("wait_for_enabled", "立即执行"),
                 ("click", "立即执行"),
-                ("wait_for", "任务中心"),
+                ("click_if_present", "关闭自动化导出"),
+                ("wait_for_enabled", "任务中心"),
                 ("click", "任务中心"),
                 ("wait_for", "已完成"),
+                ("click_if_present", "关闭任务中心"),
                 ("click", "首页"),
             ],
         )
@@ -80,10 +88,14 @@ class ExporterTests(unittest.TestCase):
             result = export_moments_for(["wxid_a", "wxid_b"], "2026-05-13", config=cfg, driver=driver)  # type: ignore[arg-type]
 
         self.assertEqual(result.kind, "moments")
+        self.assertEqual((result.commands[0].kind, result.commands[0].name), ("click_if_present", "关闭任务中心"))
+        self.assertEqual((result.commands[1].kind, result.commands[1].name), ("click_if_present", "关闭时间范围设置"))
+        self.assertEqual((result.commands[2].kind, result.commands[2].name), ("click_if_present", "完成"))
+        self.assertEqual((result.commands[3].kind, result.commands[3].name), ("click_if_present", "取消"))
         self.assertIn(("set_text", "查找联系人", "wxid_a"), driver.calls)
         self.assertIn(("set_text", "查找联系人", "wxid_b"), driver.calls)
         self.assertEqual(
-            [(command.kind, command.name) for command in result.commands[-12:]],
+            [(command.kind, command.name) for command in result.commands[-18:]],
             [
                 ("click", "选择 wxid_b"),
                 ("wait_for_enabled", "导出朋友圈"),
@@ -92,10 +104,16 @@ class ExporterTests(unittest.TestCase):
                 ("click", "JSON"),
                 ("click", "点击选择输出目录"),
                 ("confirm_native_dialog", "选择导出目录"),
-                ("wait_for", "昨天"),
+                ("click_if_present", "关闭时间范围设置"),
+                ("click_if_present", "全部时间"),
+                ("click_if_present", "昨天"),
+                ("click_if_present", "昨天"),
+                ("click_if_present", "关闭时间范围设置"),
                 ("wait_for_enabled", "开始导出"),
                 ("click", "开始导出"),
-                ("wait_for", "已完成"),
+                ("wait_for", "完成"),
+                ("click_if_present", "完成"),
+                ("click_if_present", "关闭任务中心"),
                 ("click", "首页"),
             ],
         )

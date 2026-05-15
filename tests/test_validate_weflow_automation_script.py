@@ -10,6 +10,10 @@ class ValidateWeFlowAutomationScriptTests(unittest.TestCase):
 
         self.assertIn("multiple folder picker windows", script)
         self.assertIn("moments-picker", script)
+        self.assertIn("all-chats-export", script)
+        self.assertIn("moments-export", script)
+        self.assertIn("No new or touched top-level output entry", script)
+        self.assertIn("New or touched top-level output entries: {len(changed)}", script)
 
 
 if __name__ == "__main__":

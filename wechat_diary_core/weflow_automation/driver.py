@@ -21,6 +21,8 @@ class ElementNotFound(DriverError):
 class Driver(Protocol):
     def click_by_name(self, name: str, retries: int = 3) -> None: ...
 
+    def click_if_present(self, name: str, timeout: float = 2) -> bool: ...
+
     def set_text(self, field_name: str, text: str) -> None: ...
 
     def wait_for(self, name: str, timeout: float = 60) -> None: ...
@@ -30,7 +32,7 @@ class Driver(Protocol):
     def screenshot(self) -> bytes: ...
 
 
-CommandKind = Literal["click", "set_text", "wait_for", "wait_for_enabled", "confirm_native_dialog"]
+CommandKind = Literal["click", "click_if_present", "set_text", "wait_for", "wait_for_enabled", "confirm_native_dialog"]
 
 
 @dataclass(frozen=True)
@@ -45,6 +47,9 @@ class DriverCommand:
 def run_driver_command(driver: Driver, command: DriverCommand) -> None:
     if command.kind == "click":
         driver.click_by_name(command.name, retries=command.retries)
+        return
+    if command.kind == "click_if_present":
+        driver.click_if_present(command.name, timeout=command.timeout or 2)
         return
     if command.kind == "set_text":
         driver.set_text(command.name, command.value or "")

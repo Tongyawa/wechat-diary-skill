@@ -80,20 +80,28 @@ def _run_export(commands: Iterable[DriverCommand], config: Config, driver: Drive
 
 def _all_chats_commands(config: Config) -> list[DriverCommand]:
     return [
+        DriverCommand("click_if_present", "关闭任务中心", timeout=2),
+        DriverCommand("click_if_present", "关闭自动化导出", timeout=2),
         DriverCommand("click", "导出"),
         DriverCommand("wait_for", "自动化导出", timeout=30),
         DriverCommand("click", "自动化导出"),
         DriverCommand("wait_for_enabled", "立即执行", timeout=30),
         DriverCommand("click", "立即执行"),
-        DriverCommand("wait_for", "任务中心", timeout=30),
+        DriverCommand("click_if_present", "关闭自动化导出", timeout=5),
+        DriverCommand("wait_for_enabled", "任务中心", timeout=30),
         DriverCommand("click", "任务中心"),
         DriverCommand("wait_for", "已完成", timeout=max(300, config.automation.poll_export_interval_sec * 10)),
+        DriverCommand("click_if_present", "关闭任务中心", timeout=5),
         DriverCommand("click", "首页"),
     ]
 
 
 def _moments_commands(usernames: list[str], config: Config) -> list[DriverCommand]:
     commands = [
+        DriverCommand("click_if_present", "关闭任务中心", timeout=2),
+        DriverCommand("click_if_present", "关闭时间范围设置", timeout=2),
+        DriverCommand("click_if_present", "完成", timeout=2),
+        DriverCommand("click_if_present", "取消", timeout=2),
         DriverCommand("click", "朋友圈"),
         DriverCommand("wait_for", "查找联系人", timeout=30),
     ]
@@ -113,10 +121,16 @@ def _moments_commands(usernames: list[str], config: Config) -> list[DriverComman
             DriverCommand("click", "JSON"),
             DriverCommand("click", "点击选择输出目录"),
             DriverCommand("confirm_native_dialog", "选择导出目录", value="选择文件夹", timeout=30),
-            DriverCommand("wait_for", "昨天", timeout=30),
+            DriverCommand("click_if_present", "关闭时间范围设置", timeout=2),
+            DriverCommand("click_if_present", "全部时间", timeout=2),
+            DriverCommand("click_if_present", "昨天", timeout=2),
+            DriverCommand("click_if_present", "昨天", timeout=2),
+            DriverCommand("click_if_present", "关闭时间范围设置", timeout=2),
             DriverCommand("wait_for_enabled", "开始导出", timeout=30),
             DriverCommand("click", "开始导出"),
-            DriverCommand("wait_for", "已完成", timeout=max(300, config.automation.poll_export_interval_sec * 10)),
+            DriverCommand("wait_for", "完成", timeout=max(300, config.automation.poll_export_interval_sec * 10)),
+            DriverCommand("click_if_present", "完成", timeout=5),
+            DriverCommand("click_if_present", "关闭任务中心", timeout=5),
             DriverCommand("click", "首页"),
         ]
     )
