@@ -1,0 +1,38 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# ---- Editors / OS ----
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# ---- Local config (contains personal wxids) ----
+config.toml
+
+# ---- Local engineering notes (kept on disk, not pushed) ----
+CLAUDE.md
+
+# ---- Claude Code per-machine settings (machine-specific allow lists) ----
+.claude/settings.local.json
+
+# ---- Raw / intermediate / output data ----
+WeFlow-raw-exports/
+WeFlow-processed-exports/
+WeFlow-insights/
+
+# ---- Skills published in this repo are allowlisted; everything else stays local ----
+.claude/skills/*
+!.claude/skills/wechat-diary/
+
+# ---- Legacy / archival workspace ----
+其他/
+
+# ---- Plan files / scratch ----
+*.local.md

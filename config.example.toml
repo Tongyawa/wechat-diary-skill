@@ -1,0 +1,52 @@
+# Wechat-Diary configuration example.
+# Copy to `config.toml` (which is git-ignored) and fill in your own values.
+
+[user]
+# Conversations treated as "self-collected" inbox; messages here can carry
+# `D：` prefix items to be promoted into DoneList, etc.
+self_wxids = ["filehelper"]               # filehelper = 文件传输助手; add your own wxid here too
+
+[paths]
+raw = "WeFlow-raw-exports"
+processed = "WeFlow-processed-exports"
+insights = "WeFlow-insights"
+weflow_exe = "C:/Path/To/WeFlow.exe"
+
+[automation]
+# Which GUI-automation backend to use.
+#   "uia"      — pywinauto + Windows UI Automation (preferred, zoom/DPI-invariant)
+#   "cdp"      — Playwright via Electron CDP (--remote-debugging-port)
+#   "template" — multi-scale image template matching + OCR (last-resort fallback)
+driver = "uia"
+launch_timeout_sec = 90
+poll_export_interval_sec = 60             # task-center polling cadence (WeFlow exports take minutes)
+
+# Window normalization applied every session entry, regardless of driver.
+window_geometry = { width = 1280, height = 900 }
+
+# Flags appended to the WeFlow exe launch (driver-dependent; harmless if unsupported).
+electron_accessibility_flag = "--force-renderer-accessibility"
+electron_cdp_port = 9222                  # only used when driver = "cdp"
+
+[automation.template_fallback]
+# Only consulted when driver = "template".
+zoom_reset_shortcut = "ctrl+0"            # pressed once on entry; we never change zoom mid-session
+multi_scale = [0.85, 0.9, 0.95, 1.0, 1.05]
+retry = 3
+
+[preprocessing]
+skip_emoji_dir = true                     # ignore media/emojis/ entirely (no OCR)
+voice_fail_log_only = true                # do not abort on "转文字失败"; just warn
+
+[preprocessing.group_context_window]
+# For group chats: keep only messages near the user's own messages (isSend == 1).
+# Window = K-before + K-after messages, plus a time bound. Overlapping windows merge.
+messages_before = 3
+messages_after = 5
+time_window_minutes = 30                  # extra time-based bound; whichever is wider wins
+
+[agent]
+# Used by scripts/run_morning.ps1 when invoking the Claude Code CLI.
+cli = "claude"
+model = "claude-opus-4.6"
+extra_args = []                           # e.g. ["--permission-mode", "acceptEdits"]
