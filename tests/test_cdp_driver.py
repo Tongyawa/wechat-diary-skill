@@ -8,6 +8,7 @@ from wechat_diary_core.weflow_automation.cdp_driver import (
     POST_CLICK_DELAY_SEC,
     POST_TEXT_DELAY_SEC,
     _click_script,
+    _close_modal_script,
     select_page_target,
 )
 
@@ -125,6 +126,13 @@ class CdpDriverTests(unittest.TestCase):
 
         self.assertIn("input[type='checkbox'],input[type='radio']", script)
         self.assertIn("activeSearchRoots", script)
+
+    def test_close_modal_script_only_searches_active_modals(self) -> None:
+        script = _close_modal_script()
+
+        self.assertIn("root !== document", script)
+        self.assertIn('"关闭"', script)
+        self.assertIn("no active modal close control", script)
 
     def test_click_delay_is_nonzero_for_gui_stability(self) -> None:
         self.assertGreaterEqual(POST_CLICK_DELAY_SEC, 0.3)

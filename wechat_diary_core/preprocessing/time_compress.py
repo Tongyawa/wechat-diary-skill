@@ -54,6 +54,10 @@ def _merge_into(left: Message, right: Message) -> None:
     right_ids = right.get("compressed_local_ids") or [right.get("localId")]
     left["compressed_local_ids"] = [item for item in local_ids + list(right_ids) if item is not None]
 
+    platform_ids = list(left.get("compressed_platform_message_ids") or [left.get("platformMessageId")])
+    right_platform_ids = right.get("compressed_platform_message_ids") or [right.get("platformMessageId")]
+    left["compressed_platform_message_ids"] = [item for item in platform_ids + list(right_platform_ids) if item is not None]
+
 
 def _content(message: Message) -> str:
     return str(message.get("content") or "").strip()

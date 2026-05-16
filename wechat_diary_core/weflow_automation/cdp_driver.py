@@ -281,6 +281,10 @@ class CdpDriver(Driver):
     def close_current_modal(self, timeout: float = 5) -> bool:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
+            result = self._evaluate(_close_modal_script())
+            if isinstance(result, dict) and result.get("ok"):
+                time.sleep(POST_CLICK_DELAY_SEC)
+                return True
             for name in MODAL_CLOSE_NAMES:
                 if self.click_if_present(name, timeout=0.25):
                     return True
@@ -458,6 +462,35 @@ def _checkbox_state_script(name: str) -> str:
     }}
   }}
   return {{ ok: false, reason: "checkbox not found", target }};
+}})()
+"""
+
+
+def _close_modal_script() -> str:
+    return f"""
+{_dom_helpers()}
+(() => {{
+  const roots = activeSearchRoots().filter((root) => root !== document);
+  const closeNames = ["关闭任务中心", "关闭自动化导出", "关闭时间范围设置", "完成", "取消 取消", "取消", "关闭"];
+  for (const root of roots) {{
+    for (const name of closeNames) {{
+      const candidates = Array.from(root.querySelectorAll("button,a,[role='button'],[tabindex],span,div"))
+        .filter((element) => visible(element) && isMatch(element, name))
+        .sort((left, right) => {{
+          const a = elementRank(left, name);
+          const b = elementRank(right, name);
+          return a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
+        }});
+      if (candidates.length) {{
+        const clickable = clickableAncestor(candidates[0]);
+        if (enabled(clickable)) {{
+          clickElement(clickable);
+          return {{ ok: true, name, text: textOf(clickable), tag: clickable.tagName }};
+        }}
+      }}
+    }}
+  }}
+  return {{ ok: false, reason: "no active modal close control" }};
 }})()
 """
 

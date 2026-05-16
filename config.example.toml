@@ -40,13 +40,17 @@ voice_fail_log_only = true                # do not abort on "转文字失败"; j
 time_compress_interval_sec = 120          # merge adjacent text messages from the same sender
 image_ocr_enabled = true
 image_ocr_min_confidence = 0.55
+# Install OCR dependency with: python -m pip install -r requirements.txt
 
 [preprocessing.group_context_window]
-# For group chats: keep only messages near the user's own messages (isSend == 1).
+# For group chats: keep messages near anchors. Anchors are the user's own
+# messages, messages quoting the user, messages quoted by the user, and optional
+# literal alias/nickname hits from `anchor_keywords`.
 # Window = K-before + K-after messages, plus a time bound. Overlapping windows merge.
 messages_before = 3
 messages_after = 5
-time_window_minutes = 30                  # extra time-based bound; whichever is wider wins
+time_window_minutes = 15                  # extra time-based bound; whichever is wider wins
+anchor_keywords = []                      # e.g. your nickname variants; keep public example empty
 
 [agent]
 # Used by scripts/run_morning.ps1 when invoking the Claude Code CLI.

@@ -16,12 +16,14 @@ description: 拉取昨日 WeChat 消息（经 WeFlow 自动化），清洗后归
    - 空会话文件夹丢弃。
    - `media/emojis/` 目录整体跳过（不做 OCR，消息里仅留 `[表情]` 占位）。
    - 私聊：保留全量消息流。
-   - 群聊：走上下文窗口过滤 —— 保留所有 `isSend == 1` 的消息，加上窗口前 K 条 / 后 K 条 / 时间窗内的相邻消息，重叠区间合并。算法详见 `CLAUDE.md` §6.2。
+   - 群聊：走上下文窗口过滤 —— 以自己发言、自己引用别人、别人引用自己、以及可选 `anchor_keywords` 字面量命中的消息为锚点；默认保留前 3 条 / 后 5 条 / 前后 15 分钟内的相邻消息，重叠区间合并。算法详见 `CLAUDE.md` §6.2。
+   - WeFlow 群聊置顶协议消息本身丢弃；被置顶的真实消息保留，并在发送者后加 `【置顶消息】`。
+   - 群聊拍一拍默认丢弃；若是我拍别人，或别人拍我，则保留为 `拍一拍：...`。
    - 邻近时间的连续消息：仅保留首条的时间戳，省体积。
    - `media/images/*` 走本地 OCR，识别文本以 `[OCR] ...` 后缀内联到对应消息里。
    - 「转文字失败」标记仅写警告日志，不阻塞流程。
-3. **归档** —— 调 `wechat_diary_core.archiving.archive(processed_date_dir)`，按会话写出 `WeFlow-processed-exports/<session_dir>/<yyyy-mm-dd>.json`（`session_dir` 去掉原始文件夹后缀的日期）。
-4. **二次加工** —— 读 `WeFlow-processed-exports/**/<yesterday>.json`。在 `WeFlow-insights/` 下产出四份 Markdown：
+3. **归档** —— 调 `wechat_diary_core.archiving.archive(processed_date_dir)`，按会话写出 `WeFlow-processed-exports/<session_dir>/<yyyy-mm-dd>.md` 极简聊天流（`session_dir` 去掉原始文件夹后缀的日期）。
+4. **二次加工** —— 读 `WeFlow-processed-exports/**/<yesterday>.md`。在 `WeFlow-insights/` 下产出四份 Markdown：
    - `Diary/<yyyy>/<yyyy-mm-dd>.md` —— 第一人称当日日记。
    - `DoneList/<yyyy>/<yyyy-mm-dd>.md` —— 分类捕捉的 DoneList；优先把 `config.toml [user].self_wxids` 指定的「自己 / 文件传输助手」会话里以 `D：` 开头的条目升级为正式条目。
    - `Inspirations/<yyyy>/<yyyy-mm-dd>.md` —— 散落在各会话里的项目灵感与待办。
@@ -35,7 +37,7 @@ description: 拉取昨日 WeChat 消息（经 WeFlow 自动化），清洗后归
 
 1. 跳过自动导出步骤，直接把 `WeFlow-raw-exports/<folder>` 视为输入。
 2. 跑同一套预处理流水线（私聊 / 群聊的分支根据 `session.type` 字段自动判定）。
-3. 归档到 `WeFlow-processed-exports/<folder>/<date>.json`，规则与默认流程一致。
+3. 归档到 `WeFlow-processed-exports/<folder>/<date>.md`，规则与默认流程一致。
 4. 输出单一总结：`WeFlow-insights/Summaries/<folder>__<run-timestamp>.md`。
 
 > **Phase B TODO**：在此处补总结 prompt；强调按主题 / 决定 / 后续动作组织，而不是按时间线流水账。
@@ -45,11 +47,11 @@ description: 拉取昨日 WeChat 消息（经 WeFlow 自动化），清洗后归
 | 来源 | 路径 |
 |---|---|
 | 原始导出 | `WeFlow-raw-exports/<yyyymmdd> 每日导出聊天记录示例/...`（或生产中的实际命名） |
-| 归档 | `WeFlow-processed-exports/<session>/<yyyy-mm-dd>.json` |
+| 归档 | `WeFlow-processed-exports/<session>/<yyyy-mm-dd>.md` |
 | 日产出 | `WeFlow-insights/{Diary,DoneList,Inspirations,ExtraNotes}/<yyyy>/<yyyy-mm-dd>.md` |
 | 一次性总结 | `WeFlow-insights/Summaries/<folder>__<timestamp>.md` |
 
 ## 不做的事
 
-- 本 skill 不分析任何单个联系人的情绪状态或关系动态。涉及这类内容的逻辑都不在本开源 skill 范围内。
+- 本 skill 不做单个联系人的私人画像或深度分析。涉及这类内容的逻辑都不在本开源 skill 范围内。
 - 本 skill 不做跨天聚合。月报 / 年报 skill 以后另写，会读这些按日产出的 Markdown 文件。

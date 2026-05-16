@@ -27,6 +27,10 @@ raw = "raw"
         self.assertEqual(cfg.automation.driver, "uia")
         self.assertTrue(str(cfg.paths.raw).endswith("raw"))
         self.assertEqual(cfg.paths.processed.name, "WeFlow-processed-exports")
+        self.assertEqual(cfg.preprocessing.group_context_window.messages_before, 3)
+        self.assertEqual(cfg.preprocessing.group_context_window.messages_after, 5)
+        self.assertEqual(cfg.preprocessing.group_context_window.time_window_minutes, 15)
+        self.assertEqual(cfg.preprocessing.group_context_window.anchor_keywords, [])
         self.assertEqual(cfg.skills.daily, ["wechat-diary"])
 
 

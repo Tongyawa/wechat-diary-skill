@@ -3,7 +3,10 @@ from __future__ import annotations
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Protocol
+import contextlib
+import io
 import logging
+import os
 
 from ..config import PreprocessingConfig
 
@@ -42,6 +45,38 @@ class RapidOcrEngine:
         return lines
 
 
+class PaddleOcrEngine:
+    def __init__(self) -> None:
+        os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
+        try:
+            from paddleocr import PaddleOCR
+        except ImportError as exc:
+            raise RuntimeError("PaddleOCR is not installed") from exc
+
+        try:
+            self._engine = _quiet_call(lambda: PaddleOCR(use_angle_cls=True, lang="ch"))
+            self._mode = "ocr"
+            return
+        except Exception:
+            try:
+                self._engine = _quiet_call(lambda: PaddleOCR(lang="ch"))
+                self._mode = "predict"
+                return
+            except Exception as second_error:
+                raise RuntimeError("PaddleOCR is not usable") from second_error
+
+    def read_text(self, image_path: Path, min_confidence: float) -> list[str]:
+        try:
+            if self._mode == "ocr" and hasattr(self._engine, "ocr"):
+                result = _quiet_call(lambda: self._engine.ocr(str(image_path), cls=True))
+            else:
+                result = _quiet_call(lambda: self._engine.predict(str(image_path)))
+        except Exception as exc:
+            LOGGER.warning("PaddleOCR failed for %s: %s", image_path, exc)
+            return []
+        return _parse_paddle_result(result, min_confidence)
+
+
 def annotate_image_messages(
     messages: Sequence[Message],
     base_dir: Path,
@@ -59,8 +94,11 @@ def annotate_image_messages(
         try:
             engine = RapidOcrEngine()
         except RuntimeError:
-            LOGGER.warning("RapidOCR is unavailable; image OCR was skipped.")
-            return list(messages)
+            try:
+                engine = PaddleOcrEngine()
+            except RuntimeError:
+                LOGGER.warning("No local OCR engine is available; image OCR was skipped.")
+                return list(messages)
 
     for message in image_messages:
         ocr_lines: list[str] = []
@@ -102,3 +140,50 @@ def _parse_ocr_entry(entry: Any) -> tuple[str, float]:
     if isinstance(entry, (list, tuple)) and len(entry) >= 3:
         return str(entry[1] or ""), float(entry[2] or 0)
     return "", 0.0
+
+
+def _parse_paddle_result(result: Any, min_confidence: float) -> list[str]:
+    lines: list[str] = []
+
+    def walk(value: Any) -> None:
+        if isinstance(value, dict):
+            texts = value.get("rec_texts") or value.get("texts")
+            scores = value.get("rec_scores") or value.get("scores") or []
+            if isinstance(texts, list):
+                for index, text in enumerate(texts):
+                    score = float(scores[index]) if index < len(scores) else 1.0
+                    if text and score >= min_confidence:
+                        lines.append(str(text))
+                return
+            text = value.get("text")
+            score = float(value.get("confidence") or value.get("score") or 1.0)
+            if text and score >= min_confidence:
+                lines.append(str(text))
+            return
+
+        if isinstance(value, (list, tuple)):
+            parsed = _parse_ocr_entry(value)
+            if parsed[0]:
+                text, score = parsed
+                if score >= min_confidence:
+                    lines.append(text)
+                return
+            for item in value:
+                walk(item)
+            return
+
+        if hasattr(value, "json"):
+            try:
+                walk(value.json)
+            except Exception:
+                return
+
+    walk(result)
+    return lines
+
+
+def _quiet_call(callback: Any) -> Any:
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+        return callback()

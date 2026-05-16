@@ -39,7 +39,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "group_context_window": {
             "messages_before": 3,
             "messages_after": 5,
-            "time_window_minutes": 30,
+            "time_window_minutes": 15,
+            "anchor_keywords": [],
         },
     },
     "agent": {
@@ -97,6 +98,7 @@ class GroupContextWindowConfig:
     messages_before: int
     messages_after: int
     time_window_minutes: int
+    anchor_keywords: list[str]
 
 
 @dataclass(frozen=True)
@@ -199,6 +201,7 @@ def _build_config(raw: dict[str, Any], base_dir: Path) -> Config:
                 messages_before=int(group_window["messages_before"]),
                 messages_after=int(group_window["messages_after"]),
                 time_window_minutes=int(group_window["time_window_minutes"]),
+                anchor_keywords=list(group_window.get("anchor_keywords") or []),
             ),
         ),
         agent=AgentConfig(

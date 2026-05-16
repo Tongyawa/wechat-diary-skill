@@ -5,10 +5,9 @@ from collections.abc import Iterable
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-import copy
-import json
 import re
 
+from .chat_flow import render_chat_flow
 from .config import Config, load_config
 from .preprocessing import ProcessedChatExport, run as preprocess_run
 
@@ -29,19 +28,9 @@ def archive(
     for export in exports:
         session_dir = strip_date_suffix(export.source_folder)
         for day, messages in _group_messages_by_day(export.data.get("messages") or []).items():
-            day_export = copy.deepcopy(export.data)
-            day_export["messages"] = messages
-            day_export.setdefault("session", {})["messageCount"] = len(messages)
-            day_export["processed"] = {
-                "source": str(export.source_path),
-                "messageCount": len(messages),
-            }
-
-            out_path = root / session_dir / f"{day}.json"
+            out_path = root / session_dir / f"{day}.md"
             out_path.parent.mkdir(parents=True, exist_ok=True)
-            with out_path.open("w", encoding="utf-8") as fh:
-                json.dump(day_export, fh, ensure_ascii=False, indent=2)
-                fh.write("\n")
+            out_path.write_text(render_chat_flow(messages), encoding="utf-8")
             written.append(out_path)
 
     return written
