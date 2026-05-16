@@ -3,9 +3,10 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from wechat_diary_core.config import load_config
-from wechat_diary_core.weflow_automation.launcher import build_launch_args, cdp_endpoint_url
+from wechat_diary_core.weflow_automation.launcher import build_launch_args, cdp_endpoint_url, stop_weflow_processes
 
 
 class LauncherTests(unittest.TestCase):
@@ -45,6 +46,17 @@ electron_accessibility_flag = "--force-renderer-accessibility"
             cfg = load_config(config_path)
 
         self.assertEqual(build_launch_args(cfg.automation), [str(exe), "--force-renderer-accessibility"])
+
+    def test_stop_weflow_processes_uses_taskkill_when_running(self) -> None:
+        with (
+            patch("wechat_diary_core.weflow_automation.launcher.is_weflow_process_running", side_effect=[True, False]),
+            patch("wechat_diary_core.weflow_automation.launcher.subprocess.run") as run,
+        ):
+            self.assertTrue(stop_weflow_processes(timeout=0.1, interval=0.01))
+
+        run.assert_called_once()
+        self.assertIn("taskkill", run.call_args.args[0])
+        self.assertIn("WeFlow.exe", run.call_args.args[0])
 
 
 if __name__ == "__main__":

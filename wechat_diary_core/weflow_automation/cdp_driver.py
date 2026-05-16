@@ -28,6 +28,17 @@ class CdpProtocolError(DriverError):
     """Raised when the CDP endpoint returns an error response."""
 
 
+POST_CLICK_DELAY_SEC = 0.35
+POST_TEXT_DELAY_SEC = 0.5
+MODAL_CLOSE_NAMES = (
+    "关闭时间范围设置",
+    "完成",
+    "取消 取消",
+    "关闭自动化导出",
+    "关闭任务中心",
+)
+
+
 class CdpWebSocket:
     def __init__(self, websocket_url: str, timeout: float = 10) -> None:
         self.websocket_url = websocket_url
@@ -166,6 +177,7 @@ class CdpDriver(Driver):
         for _ in range(max(1, retries)):
             last_result = self._evaluate(_click_script(name))
             if isinstance(last_result, dict) and last_result.get("ok"):
+                time.sleep(POST_CLICK_DELAY_SEC)
                 return
             time.sleep(0.5)
         raise ElementNotFound(f"Could not click UI element named {name!r}: {last_result}")
@@ -175,6 +187,7 @@ class CdpDriver(Driver):
         while time.monotonic() < deadline:
             result = self._evaluate(_click_script(name))
             if isinstance(result, dict) and result.get("ok"):
+                time.sleep(POST_CLICK_DELAY_SEC)
                 return True
             time.sleep(0.25)
         return False
@@ -183,6 +196,7 @@ class CdpDriver(Driver):
         result = self._evaluate(_set_text_script(field_name, text))
         if not isinstance(result, dict) or not result.get("ok"):
             raise ElementNotFound(f"Could not set text field {field_name!r}: {result}")
+        time.sleep(POST_TEXT_DELAY_SEC)
 
     def wait_for(self, name: str, timeout: float = 60) -> None:
         deadline = time.monotonic() + timeout
@@ -194,6 +208,16 @@ class CdpDriver(Driver):
             time.sleep(0.5)
         raise ElementNotFound(f"Timed out waiting for {name!r}: {last_result}")
 
+    def wait_for_absent(self, name: str, timeout: float = 60) -> None:
+        deadline = time.monotonic() + timeout
+        last_result: Any = None
+        while time.monotonic() < deadline:
+            last_result = self._evaluate(_wait_script(name))
+            if isinstance(last_result, dict) and not last_result.get("ok"):
+                return
+            time.sleep(0.5)
+        raise ElementNotFound(f"Timed out waiting for {name!r} to disappear: {last_result}")
+
     def wait_for_enabled(self, name: str, timeout: float = 60) -> None:
         deadline = time.monotonic() + timeout
         last_result: Any = None
@@ -203,6 +227,65 @@ class CdpDriver(Driver):
                 return
             time.sleep(0.5)
         raise ElementNotFound(f"Timed out waiting for enabled UI element {name!r}: {last_result}")
+
+    def wait_for_text_sequence(self, first: str, second: str, timeout: float = 60) -> None:
+        deadline = time.monotonic() + timeout
+        last_result: Any = None
+        while time.monotonic() < deadline:
+            last_result = self._evaluate(_text_sequence_script(first, second))
+            if isinstance(last_result, dict) and last_result.get("ok"):
+                return
+            time.sleep(0.5)
+        raise ElementNotFound(f"Timed out waiting for text sequence {first!r} -> {second!r}: {last_result}")
+
+    def ensure_selected(self, name: str, timeout: float = 60) -> None:
+        selected_name = f"取消选择 {name}"
+        selected = self._evaluate(_wait_script(selected_name))
+        if isinstance(selected, dict) and selected.get("ok"):
+            return
+        self.click_by_name(f"选择 {name}", retries=3)
+        self.wait_for(selected_name, timeout=timeout)
+
+    def ensure_checked(self, name: str, timeout: float = 60) -> None:
+        state = self._evaluate(_checkbox_state_script(name))
+        if isinstance(state, dict) and state.get("ok") and state.get("checked"):
+            return
+        self.click_by_name(name)
+        deadline = time.monotonic() + timeout
+        last_result: Any = state
+        while time.monotonic() < deadline:
+            last_result = self._evaluate(_checkbox_state_script(name))
+            if isinstance(last_result, dict) and last_result.get("ok") and last_result.get("checked"):
+                return
+            time.sleep(0.25)
+        raise ElementNotFound(f"Timed out waiting for checkbox {name!r} to become checked: {last_result}")
+
+    def ensure_action_available(self, action_name: str, trigger_name: str, timeout: float = 60) -> None:
+        available = self._evaluate(_enabled_script(action_name))
+        if isinstance(available, dict) and available.get("ok"):
+            return
+        if not trigger_name:
+            raise ElementNotFound(f"Action {action_name!r} was unavailable and no trigger was provided.")
+        self.click_by_name(trigger_name)
+        self.wait_for_enabled(action_name, timeout=timeout)
+
+    def close_any_modal(self, timeout: float = 5) -> int:
+        deadline = time.monotonic() + timeout
+        closed = 0
+        while time.monotonic() < deadline:
+            if not self.close_current_modal(timeout=0.5):
+                break
+            closed += 1
+        return closed
+
+    def close_current_modal(self, timeout: float = 5) -> bool:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            for name in MODAL_CLOSE_NAMES:
+                if self.click_if_present(name, timeout=0.25):
+                    return True
+            time.sleep(0.25)
+        return False
 
     def screenshot(self) -> bytes:
         result = self.connection.send("Page.captureScreenshot", {"format": "png", "fromSurface": True})
@@ -344,6 +427,41 @@ def _visible_elements_script(limit: int) -> str:
 """
 
 
+def _text_sequence_script(first: str, second: str) -> str:
+    return f"""
+{_dom_helpers()}
+(() => {{
+  const first = {json.dumps(first, ensure_ascii=False)};
+  const second = {json.dumps(second, ensure_ascii=False)};
+  const text = norm(document.body?.innerText || document.body?.textContent || "");
+  const firstText = norm(first);
+  const secondText = norm(second);
+  const firstIndex = text.indexOf(firstText);
+  const secondIndex = firstIndex >= 0 ? text.indexOf(secondText, firstIndex + firstText.length) : -1;
+  return secondIndex >= 0
+    ? {{ ok: true, first: firstText, second: secondText }}
+    : {{ ok: false, first: firstText, second: secondText }};
+}})()
+"""
+
+
+def _checkbox_state_script(name: str) -> str:
+    return f"""
+{_dom_helpers()}
+(() => {{
+  const target = {json.dumps(name, ensure_ascii=False)};
+  for (const root of activeSearchRoots()) {{
+    const labels = Array.from(root.querySelectorAll("label")).filter((label) => visible(label) && isMatch(label, target));
+    for (const label of labels) {{
+      const input = label.querySelector("input[type='checkbox'],input[type='radio']");
+      if (input) return {{ ok: true, checked: input.checked === true, text: textOf(label) }};
+    }}
+  }}
+  return {{ ok: false, reason: "checkbox not found", target }};
+}})()
+"""
+
+
 def _dom_helpers() -> str:
     return r"""
 function norm(value) {
@@ -370,24 +488,36 @@ function textOf(element) {
 function isMatch(element, target) {
   const left = norm(textOf(element));
   const right = norm(target);
+  if (!right.startsWith("取消") && left.startsWith(`取消${right}`)) return false;
   return left === right || left.includes(right);
 }
 function elementRank(element, target) {
   const left = norm(textOf(element));
   const right = norm(target);
   const exactPenalty = left === right ? 0 : 1;
-  const interactivePenalty = element.matches?.("button,a,input,textarea,[contenteditable='true'],[role='button'],[role='link'],[tabindex]") ? 0 : 1;
+  const interactivePenalty = element.matches?.("button,a,input,textarea,label,[contenteditable='true'],[role='button'],[role='link'],[tabindex]") ? 0 : 1;
   return [exactPenalty, interactivePenalty, left.length];
 }
 function findByName(target) {
   const selector = "button,a,input,textarea,[contenteditable='true'],[role],[tabindex],label,div,span";
-  return Array.from(document.querySelectorAll(selector))
-    .filter((element) => visible(element) && isMatch(element, target))
-    .sort((left, right) => {
-      const a = elementRank(left, target);
-      const b = elementRank(right, target);
-      return a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
-    })[0] || null;
+  const roots = activeSearchRoots();
+  for (const root of roots) {
+    const found = Array.from(root.querySelectorAll(selector))
+      .filter((element) => visible(element) && isMatch(element, target))
+      .sort((left, right) => {
+        const a = elementRank(left, target);
+        const b = elementRank(right, target);
+        return a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
+      })[0] || null;
+    if (found) return found;
+  }
+  return null;
+}
+function activeSearchRoots() {
+  const modalSelector = ".modal-overlay,.export-dialog,[role='dialog'],.modal";
+  const modals = Array.from(document.querySelectorAll(modalSelector)).filter(visible);
+  if (modals.length) return modals.reverse();
+  return [document];
 }
 function disabled(element) {
   let current = element;
@@ -412,7 +542,7 @@ function clickableAncestor(element) {
   }
   let current = element;
   while (current && current !== document.body) {
-    if (current.matches?.("button,a,input,textarea,[contenteditable='true'],[role='button'],[role='link'],[tabindex]")) {
+    if (current.matches?.("button,a,input,textarea,label,[contenteditable='true'],[role='button'],[role='link'],[tabindex]")) {
       return current;
     }
     if (typeof current.onclick === "function" || window.getComputedStyle(current).cursor === "pointer") {
@@ -423,6 +553,10 @@ function clickableAncestor(element) {
   return element;
 }
 function clickElement(element) {
+  if (element.matches?.("label,input[type='checkbox'],input[type='radio']")) {
+    element.click();
+    return;
+  }
   const rect = element.getBoundingClientRect();
   const clientX = rect.left + rect.width / 2;
   const clientY = rect.top + rect.height / 2;

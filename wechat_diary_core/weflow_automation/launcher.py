@@ -67,6 +67,30 @@ def ensure_weflow_running(config: Config | None = None) -> WeFlowSession:
     )
 
 
+def restart_weflow(config: Config | None = None) -> WeFlowSession:
+    cfg = config or load_config()
+    stop_weflow_processes(timeout=cfg.automation.launch_timeout_sec)
+    return ensure_weflow_running(cfg)
+
+
+def stop_weflow_processes(timeout: float = 30, interval: float = 0.5) -> bool:
+    if is_weflow_process_running():
+        subprocess.run(
+            ["taskkill", "/IM", WEFLOW_PROCESS_NAME, "/F", "/T"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not is_weflow_process_running():
+            return True
+        time.sleep(interval)
+    return not is_weflow_process_running()
+
+
 def launch_weflow(automation: AutomationConfig) -> subprocess.Popen[Any]:
     if not automation.weflow_exe.exists():
         raise WeFlowExecutableNotFound(str(automation.weflow_exe))

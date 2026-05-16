@@ -12,8 +12,12 @@ class ValidateWeFlowAutomationScriptTests(unittest.TestCase):
         self.assertIn("moments-picker", script)
         self.assertIn("all-chats-export", script)
         self.assertIn("moments-export", script)
+        self.assertIn("--restart-weflow", script)
+        self.assertIn("_wait_for_ready_page", script)
         self.assertIn("No new or touched top-level output entry", script)
         self.assertIn("New or touched top-level output entries: {len(changed)}", script)
+        self.assertIn("Media checkboxes checked", script)
+        self.assertIn("Downloaded media file count", script)
 
 
 if __name__ == "__main__":

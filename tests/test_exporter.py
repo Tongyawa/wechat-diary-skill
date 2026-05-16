@@ -27,8 +27,31 @@ class FakeDriver:
     def wait_for(self, name: str, timeout: float = 60) -> None:
         self.calls.append(("wait_for", name, str(int(timeout))))
 
+    def wait_for_absent(self, name: str, timeout: float = 60) -> None:
+        self.calls.append(("wait_for_absent", name, str(int(timeout))))
+
     def wait_for_enabled(self, name: str, timeout: float = 60) -> None:
         self.calls.append(("wait_for_enabled", name, str(int(timeout))))
+
+    def wait_for_text_sequence(self, first: str, second: str, timeout: float = 60) -> None:
+        self.calls.append(("wait_for_text_sequence", f"{first}->{second}", str(int(timeout))))
+
+    def ensure_selected(self, name: str, timeout: float = 60) -> None:
+        self.calls.append(("ensure_selected", name, str(int(timeout))))
+
+    def ensure_checked(self, name: str, timeout: float = 60) -> None:
+        self.calls.append(("ensure_checked", name, str(int(timeout))))
+
+    def ensure_action_available(self, action_name: str, trigger_name: str, timeout: float = 60) -> None:
+        self.calls.append(("ensure_action_available", action_name, trigger_name))
+
+    def close_any_modal(self, timeout: float = 5) -> int:
+        self.calls.append(("close_any_modal", "", str(int(timeout))))
+        return 0
+
+    def close_current_modal(self, timeout: float = 5) -> bool:
+        self.calls.append(("close_current_modal", "", str(int(timeout))))
+        return False
 
     def screenshot(self) -> bytes:
         return b""
@@ -63,18 +86,17 @@ class ExporterTests(unittest.TestCase):
         self.assertEqual(
             [(call[0], call[1]) for call in driver.calls],
             [
-                ("click_if_present", "关闭任务中心"),
-                ("click_if_present", "关闭自动化导出"),
+                ("close_any_modal", ""),
                 ("click", "导出"),
                 ("wait_for", "自动化导出"),
                 ("click", "自动化导出"),
                 ("wait_for_enabled", "立即执行"),
                 ("click", "立即执行"),
-                ("click_if_present", "关闭自动化导出"),
+                ("close_current_modal", ""),
                 ("wait_for_enabled", "任务中心"),
                 ("click", "任务中心"),
                 ("wait_for", "已完成"),
-                ("click_if_present", "关闭任务中心"),
+                ("close_current_modal", ""),
                 ("click", "首页"),
             ],
         )
@@ -88,32 +110,50 @@ class ExporterTests(unittest.TestCase):
             result = export_moments_for(["wxid_a", "wxid_b"], "2026-05-13", config=cfg, driver=driver)  # type: ignore[arg-type]
 
         self.assertEqual(result.kind, "moments")
-        self.assertEqual((result.commands[0].kind, result.commands[0].name), ("click_if_present", "关闭任务中心"))
-        self.assertEqual((result.commands[1].kind, result.commands[1].name), ("click_if_present", "关闭时间范围设置"))
-        self.assertEqual((result.commands[2].kind, result.commands[2].name), ("click_if_present", "完成"))
-        self.assertEqual((result.commands[3].kind, result.commands[3].name), ("click_if_present", "取消"))
+        self.assertEqual((result.commands[0].kind, result.commands[0].name), ("close_any_modal", ""))
+        self.assertEqual((result.commands[1].kind, result.commands[1].name), ("wait_for_absent", "导出格式"))
+        self.assertEqual((result.commands[2].kind, result.commands[2].name), ("wait_for", "朋友圈"))
+        self.assertEqual((result.commands[3].kind, result.commands[3].name), ("click", "朋友圈"))
+        self.assertEqual((result.commands[4].kind, result.commands[4].name), ("wait_for", "查找联系人"))
+        self.assertEqual((result.commands[5].kind, result.commands[5].name), ("click", "查找联系人"))
         self.assertIn(("set_text", "查找联系人", "wxid_a"), driver.calls)
         self.assertIn(("set_text", "查找联系人", "wxid_b"), driver.calls)
+        self.assertIn(("wait_for_text_sequence", "wxid_a->条", "30"), driver.calls)
+        self.assertIn(("wait_for_text_sequence", "wxid_b->条", "30"), driver.calls)
+        self.assertIn(("ensure_selected", "wxid_a", "30"), driver.calls)
+        self.assertIn(("ensure_selected", "wxid_b", "30"), driver.calls)
+        self.assertIn(("ensure_action_available", "下载所选", "全选"), driver.calls)
         self.assertEqual(
-            [(command.kind, command.name) for command in result.commands[-18:]],
+            [(command.kind, command.name) for command in result.commands[-29:]],
             [
-                ("click", "选择 wxid_b"),
-                ("wait_for_enabled", "导出朋友圈"),
-                ("click", "导出朋友圈"),
+                ("set_text", "查找联系人"),
+                ("wait_for_text_sequence", "wxid_b"),
+                ("ensure_selected", "wxid_b"),
+                ("ensure_action_available", "下载所选"),
+                ("click", "下载所选"),
                 ("wait_for", "导出格式"),
+                ("wait_for_text_sequence", "联系人"),
+                ("wait_for_text_sequence", "联系人"),
                 ("click", "JSON"),
                 ("click", "点击选择输出目录"),
                 ("confirm_native_dialog", "选择导出目录"),
-                ("click_if_present", "关闭时间范围设置"),
-                ("click_if_present", "全部时间"),
-                ("click_if_present", "昨天"),
-                ("click_if_present", "昨天"),
-                ("click_if_present", "关闭时间范围设置"),
+                ("click", "全部时间"),
+                ("wait_for", "时间范围设置"),
+                ("click", "昨天"),
+                ("wait_for_enabled", "确认"),
+                ("click", "确认"),
+                ("wait_for_absent", "时间范围设置"),
+                ("wait_for", "昨天"),
+                ("ensure_checked", "图片"),
+                ("ensure_checked", "实况图"),
+                ("ensure_checked", "视频"),
+                ("wait_for_text_sequence", "联系人"),
+                ("wait_for_text_sequence", "联系人"),
                 ("wait_for_enabled", "开始导出"),
                 ("click", "开始导出"),
                 ("wait_for", "完成"),
-                ("click_if_present", "完成"),
-                ("click_if_present", "关闭任务中心"),
+                ("click", "完成"),
+                ("close_current_modal", ""),
                 ("click", "首页"),
             ],
         )

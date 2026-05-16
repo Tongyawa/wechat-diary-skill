@@ -3,7 +3,13 @@ from __future__ import annotations
 import base64
 import unittest
 
-from wechat_diary_core.weflow_automation.cdp_driver import CdpDriver, _click_script, select_page_target
+from wechat_diary_core.weflow_automation.cdp_driver import (
+    CdpDriver,
+    POST_CLICK_DELAY_SEC,
+    POST_TEXT_DELAY_SEC,
+    _click_script,
+    select_page_target,
+)
 
 
 class FakeConnection:
@@ -49,13 +55,18 @@ class CdpDriverTests(unittest.TestCase):
         self.assertEqual(target.id, "home")
 
     def test_click_wait_set_text_enabled_snapshot_and_screenshot_use_cdp(self) -> None:
+        click_result = {"ok": True}
         connection = FakeConnection(
             values=[
+                click_result,
+                click_result,
+                {"ok": True},
+                {"ok": True},
+                {"ok": False},
                 {"ok": True},
                 {"ok": True},
                 {"ok": True},
-                {"ok": True},
-                {"ok": True},
+                {"ok": True, "checked": True},
                 [{"tag": "BUTTON", "text": "开始导出", "enabled": True}],
             ]
         )
@@ -65,14 +76,18 @@ class CdpDriverTests(unittest.TestCase):
         self.assertTrue(driver.click_if_present("关闭任务中心", timeout=0.1))
         driver.set_text("查找", "abc")
         driver.wait_for("已完成", timeout=0.1)
+        driver.wait_for_absent("导出格式", timeout=0.1)
         driver.wait_for_enabled("开始导出", timeout=0.1)
+        driver.wait_for_text_sequence("联系人", "abc", timeout=0.1)
+        driver.ensure_selected("abc", timeout=0.1)
+        driver.ensure_checked("图片", timeout=0.1)
         self.assertEqual(driver.visible_elements(), [{"tag": "BUTTON", "text": "开始导出", "enabled": True}])
         self.assertEqual(driver.screenshot(), b"png")
         driver.close()
 
         methods = [method for method, _ in connection.calls]
         self.assertIn("Runtime.enable", methods)
-        self.assertEqual(methods.count("Runtime.evaluate"), 6)
+        self.assertEqual(methods.count("Runtime.evaluate"), 10)
         self.assertIn("Page.captureScreenshot", methods)
         self.assertEqual(methods[-1], "close")
 
@@ -83,11 +98,37 @@ class CdpDriverTests(unittest.TestCase):
         self.assertIn("parentElement", script)
         self.assertIn("querySelector", script)
 
+    def test_click_script_prefers_active_modal_scope(self) -> None:
+        script = _click_script("图片")
+
+        self.assertIn("activeSearchRoots", script)
+        self.assertIn(".modal-overlay,.export-dialog,[role='dialog'],.modal", script)
+        self.assertIn("label,[contenteditable='true']", script)
+
     def test_click_script_activates_target_once(self) -> None:
         script = _click_script("点击选择输出目录")
 
-        self.assertIn('"click"', script)
-        self.assertNotIn("element.click();", script)
+        self.assertIn("clickElement(clickable)", script)
+        self.assertNotIn("clickable.click();", script)
+
+    def test_click_script_uses_native_click_for_checkbox_labels(self) -> None:
+        script = _click_script("图片")
+
+        self.assertIn("label,input[type='checkbox'],input[type='radio']", script)
+        self.assertIn("button,a,input,textarea,label", script)
+        self.assertIn("element.click();", script)
+
+    def test_checkbox_state_script_finds_label_checkbox(self) -> None:
+        from wechat_diary_core.weflow_automation.cdp_driver import _checkbox_state_script
+
+        script = _checkbox_state_script("图片")
+
+        self.assertIn("input[type='checkbox'],input[type='radio']", script)
+        self.assertIn("activeSearchRoots", script)
+
+    def test_click_delay_is_nonzero_for_gui_stability(self) -> None:
+        self.assertGreaterEqual(POST_CLICK_DELAY_SEC, 0.3)
+        self.assertGreaterEqual(POST_TEXT_DELAY_SEC, 0.5)
 
 
 if __name__ == "__main__":
