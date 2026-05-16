@@ -138,6 +138,68 @@ class CdpDriverTests(unittest.TestCase):
         self.assertGreaterEqual(POST_CLICK_DELAY_SEC, 0.3)
         self.assertGreaterEqual(POST_TEXT_DELAY_SEC, 0.5)
 
+    def test_snapshot_task_rows_normalizes_payload(self) -> None:
+        connection = FakeConnection(
+            values=[
+                [
+                    {"title": "自动化导出 2026-05-15", "status": "已完成", "signature": "自动化导出 2026-05-15 已完成"},
+                    {"title": "", "status": "", "signature": ""},
+                    "not a dict",
+                ]
+            ]
+        )
+        driver = CdpDriver(connection)  # type: ignore[arg-type]
+
+        rows = driver.snapshot_task_rows()
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].title, "自动化导出 2026-05-15")
+        self.assertEqual(rows[0].status, "已完成")
+
+    def test_wait_for_new_task_completion_skips_baseline_and_returns_new_done(self) -> None:
+        connection = FakeConnection(
+            values=[
+                # poll 1: baseline-only rows + a fresh 进行中 row
+                [
+                    {"title": "自动化导出 旧", "status": "已完成", "signature": "自动化导出 旧 已完成"},
+                    {"title": "自动化导出 新", "status": "进行中", "signature": "自动化导出 新 进行中"},
+                ],
+                # poll 2: 新 row flips to 已完成
+                [
+                    {"title": "自动化导出 旧", "status": "已完成", "signature": "自动化导出 旧 已完成"},
+                    {"title": "自动化导出 新", "status": "已完成", "signature": "自动化导出 新 已完成"},
+                ],
+            ]
+        )
+        driver = CdpDriver(connection)  # type: ignore[arg-type]
+        baseline = {"自动化导出 旧 已完成"}
+
+        result = driver.wait_for_new_task_completion(
+            baseline=baseline,
+            title_contains="自动化导出",
+            status="已完成",
+            timeout=5,
+            poll_interval=0.01,
+        )
+
+        self.assertEqual(result.title, "自动化导出 新")
+        self.assertEqual(result.status, "已完成")
+
+    def test_wait_for_new_task_completion_raises_on_timeout(self) -> None:
+        from wechat_diary_core.weflow_automation.driver import ElementNotFound
+
+        connection = FakeConnection(values=[[] for _ in range(200)])
+        driver = CdpDriver(connection)  # type: ignore[arg-type]
+
+        with self.assertRaises(ElementNotFound):
+            driver.wait_for_new_task_completion(
+                baseline=set(),
+                title_contains="自动化导出",
+                status="已完成",
+                timeout=0.05,
+                poll_interval=0.01,
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

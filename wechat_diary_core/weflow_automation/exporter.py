@@ -6,8 +6,9 @@ from pathlib import Path
 from typing import Iterable
 
 from ..config import Config, load_config
+from ..workspace import CleanupMode, RotationResult, rotate_export_workspace
 from .cdp_driver import CdpDriver
-from .driver import Driver, DriverCommand, DriverUnavailable, run_driver_command
+from .driver import Driver, DriverCommand, DriverUnavailable, ExporterContext, run_driver_command
 from .launcher import ensure_weflow_running
 
 
@@ -17,6 +18,7 @@ class ExportRun:
     date: date
     output_dir: Path
     commands: list[DriverCommand]
+    rotation: RotationResult | None = None
 
 
 def export_all_chats(
@@ -24,14 +26,26 @@ def export_all_chats(
     config: Config | None = None,
     driver: Driver | None = None,
     output_dir: str | Path | None = None,
+    cleanup: CleanupMode = "delete",
 ) -> ExportRun:
-    """Export every chat for the given date via WeFlow's automation pipeline."""
+    """Export every chat for the given date via WeFlow's automation pipeline.
+
+    ``cleanup`` controls how the raw + processed roots get wiped first so today's
+    WeFlow output never mixes with yesterday's:
+
+    - ``"delete"`` (default, daily cron): rmtree both roots. Yesterday's data
+      should already be in ``WeFlow-archived-exports/`` by now.
+    - ``"archive"``: move both roots into ``paths.rotation_root`` first (used
+      when you want to preserve the prior state for inspection).
+    - ``"skip"``: do nothing (tests / partial reruns).
+    """
     cfg = config or load_config()
     day = _coerce_date(date)
     destination = Path(output_dir) if output_dir is not None else cfg.paths.raw
+    rotation = rotate_export_workspace(cfg, label="all_chats", mode=cleanup)
     commands = _all_chats_commands(cfg)
     _run_export(commands, cfg, driver)
-    return ExportRun(kind="all_chats", date=day, output_dir=destination, commands=commands)
+    return ExportRun(kind="all_chats", date=day, output_dir=destination, commands=commands, rotation=rotation)
 
 
 def export_moments_for(
@@ -41,13 +55,17 @@ def export_moments_for(
     driver: Driver | None = None,
     output_dir: str | Path | None = None,
 ) -> ExportRun:
-    """Export the given contacts' Moments for the date via WeFlow."""
+    """Export the given contacts' Moments for the date via WeFlow.
+
+    Moments is downstream of ``export_all_chats`` in the daily flow and writes
+    into the same raw root, so it must not rotate the workspace itself.
+    """
     cfg = config or load_config()
     day = _coerce_date(date)
     destination = Path(output_dir) if output_dir is not None else cfg.paths.raw
     commands = _moments_commands(usernames, cfg)
     _run_export(commands, cfg, driver)
-    return ExportRun(kind="moments", date=day, output_dir=destination, commands=commands)
+    return ExportRun(kind="moments", date=day, output_dir=destination, commands=commands, rotation=None)
 
 
 def create_driver(config: Config | None = None) -> Driver:
@@ -71,9 +89,10 @@ def create_driver(config: Config | None = None) -> Driver:
 def _run_export(commands: Iterable[DriverCommand], config: Config, driver: Driver | None = None) -> None:
     own_driver = driver is None
     active_driver = driver or create_driver(config)
+    context = ExporterContext()
     try:
         for command in commands:
-            run_driver_command(active_driver, command)
+            run_driver_command(active_driver, command, context=context)
     finally:
         close = getattr(active_driver, "close", None)
         if own_driver and callable(close):
@@ -81,8 +100,16 @@ def _run_export(commands: Iterable[DriverCommand], config: Config, driver: Drive
 
 
 def _all_chats_commands(config: Config) -> list[DriverCommand]:
+    completion_timeout = max(1800.0, config.automation.poll_export_interval_sec * 30)
+    poll_interval = max(1.0, config.automation.poll_export_interval_sec)
     return [
         DriverCommand("close_any_modal", timeout=5),
+        # Capture the task-center baseline before triggering 立即执行 so we can tell
+        # today's run apart from yesterday's still-visible 已完成 row.
+        DriverCommand("wait_for_enabled", "任务中心", timeout=30),
+        DriverCommand("click", "任务中心"),
+        DriverCommand("capture_task_baseline", "all_chats"),
+        DriverCommand("close_current_modal", timeout=5),
         DriverCommand("click", "导出"),
         DriverCommand("wait_for", "自动化导出", timeout=30),
         DriverCommand("click", "自动化导出"),
@@ -91,7 +118,13 @@ def _all_chats_commands(config: Config) -> list[DriverCommand]:
         DriverCommand("close_current_modal", timeout=5),
         DriverCommand("wait_for_enabled", "任务中心", timeout=30),
         DriverCommand("click", "任务中心"),
-        DriverCommand("wait_for", "已完成", timeout=max(300, config.automation.poll_export_interval_sec * 10)),
+        DriverCommand(
+            "wait_for_new_task_completion",
+            "all_chats",
+            value="自动化导出",
+            timeout=completion_timeout,
+            poll_interval=poll_interval,
+        ),
         DriverCommand("close_current_modal", timeout=5),
         DriverCommand("click", "首页"),
     ]

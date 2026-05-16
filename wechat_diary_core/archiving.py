@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 import re
+import shutil
 
 from .chat_flow import render_chat_flow
 from .config import Config, load_config
@@ -19,12 +20,23 @@ def archive(
     processed_exports: Iterable[ProcessedChatExport] | str | Path,
     config: Config | None = None,
     output_root: str | Path | None = None,
+    clear_first: bool = True,
 ) -> list[Path]:
+    """Render preprocessed exports into ``WeFlow-processed-exports/<session>/<yyyy-mm-dd>.md``.
+
+    ``clear_first=True`` (default) rmtree's the output root before writing so stale
+    sessions from a previous run don't bleed into today's directory. The daily cron
+    already wipes via ``export_all_chats(cleanup="delete")``, so this is mostly a
+    safety net for manual re-renders.
+    """
     cfg = config or load_config()
     exports = preprocess_run(processed_exports, config=cfg) if isinstance(processed_exports, (str, Path)) else list(processed_exports)
     root = Path(output_root) if output_root is not None else cfg.paths.processed
-    written: list[Path] = []
+    if clear_first and root.exists():
+        shutil.rmtree(root, ignore_errors=True)
+    root.mkdir(parents=True, exist_ok=True)
 
+    written: list[Path] = []
     for export in exports:
         session_dir = strip_date_suffix(export.source_folder)
         for day, messages in _group_messages_by_day(export.data.get("messages") or []).items():

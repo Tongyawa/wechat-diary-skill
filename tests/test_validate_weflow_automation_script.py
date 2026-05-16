@@ -18,6 +18,8 @@ class ValidateWeFlowAutomationScriptTests(unittest.TestCase):
         self.assertIn("New or touched top-level output entries: {len(changed)}", script)
         self.assertIn("Media checkboxes checked", script)
         self.assertIn("Downloaded media file count", script)
+        self.assertIn("voice-transcribe", script)
+        self.assertIn("batch_transcribe_voices_for", script)
 
 
 if __name__ == "__main__":

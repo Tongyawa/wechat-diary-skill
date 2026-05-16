@@ -11,7 +11,8 @@ description: 拉取昨日 WeChat 消息（经 WeFlow 自动化），清洗后归
 
 无参数调用时跑下面这套流程，给早晨脚本链使用。
 
-1. **导出** —— 调 `wechat_diary_core.weflow_automation.exporter.export_all_chats(date=yesterday)`。底层 driver 由 `config.toml [automation].driver` 决定（uia / cdp / template 三选一），驱动 WeFlow 走「导出 → 自动化导出 → 立即执行 → 任务中心 → 已完成 → 首页」流程。本 SKILL 不关心是哪一层 driver，全部走 `driver.click_by_name(...) / driver.set_text(...) / driver.wait_for(...)` 抽象接口。`yesterday` 按本地时区计算。**详细的步骤、判完成判据与异常分支以项目根 `CLAUDE.md` §4.0 为准**（修复或扩展导出流程前先读规范，不要根据 `exporter.py` 现有实现反推契约）。
+0. **批量转文字（可选预处理）** —— 若 `config.toml [user].voice_transcribe_usernames` 非空，先调 `wechat_diary_core.weflow_automation.voice_transcribe.batch_transcribe_voices_for(usernames=...)`。WeFlow 内置的「批量语音处理 → 批量转文字 → 开始转写」流程会把指定联系人的「Silk 解码失败」语音消息转成文字，避免下一步导出出来后 processed md 被失败提示横刷。判完成走任务中心差分（新增「语音批量转写(<username>)」行 → 已完成）。空列表时跳过整步，不打开 WeFlow GUI 多余流程。
+1. **导出** —— 调 `wechat_diary_core.weflow_automation.exporter.export_all_chats(date=yesterday)`。底层 driver 由 `config.toml [automation].driver` 决定（uia / cdp / template 三选一），驱动 WeFlow 走「打开任务中心 → 抓 baseline → 关弹窗 → 导出 → 自动化导出 → 立即执行 → 任务中心 → 等差分判完成 → 首页」流程。本 SKILL 不关心是哪一层 driver，全部走 `driver.click_by_name(...) / driver.set_text(...) / driver.wait_for(...)` 抽象接口。`yesterday` 按本地时区计算；默认 `cleanup="delete"` 在跑前清空 raw/processed（前一天的产出应已被二次加工归档到 `WeFlow-archived-exports/`）。**详细步骤、判完成判据与异常分支以项目根 `CLAUDE.md` §5.0 为准**（修复或扩展导出流程前先读规范，不要根据 `exporter.py` 现有实现反推契约）。
 2. **清洗** —— 调 `wechat_diary_core.preprocessing.run(raw_date_dir)`。
    - 空会话文件夹丢弃。
    - `media/emojis/` 目录整体跳过（不做 OCR，消息里仅留 `[表情]` 占位）。

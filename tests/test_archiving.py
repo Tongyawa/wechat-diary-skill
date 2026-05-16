@@ -153,5 +153,114 @@ class ArchivingTests(unittest.TestCase):
         self.assertIn('拍一拍："肖逸涵" 拍了拍 "Me"', text)
 
 
+    def test_archive_clears_processed_root_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out_root = Path(tmp) / "processed"
+            stale = out_root / "私聊_old" / "2025-12-31.md"
+            stale.parent.mkdir(parents=True)
+            stale.write_text("stale", encoding="utf-8")
+            export = ProcessedChatExport(
+                source_path=Path(tmp) / "Chat_20260516" / "Chat_20260516.json",
+                source_folder="Chat_20260516",
+                data={
+                    "session": {"type": "私聊", "messageCount": 1},
+                    "messages": [{"formattedTime": "2026-05-16 10:00:00", "content": "hi"}],
+                },
+            )
+
+            archive([export], output_root=out_root)
+
+            self.assertFalse(stale.exists())
+            self.assertTrue((out_root / "Chat" / "2026-05-16.md").exists())
+
+    def test_archive_keeps_existing_files_when_clear_first_false(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out_root = Path(tmp) / "processed"
+            existing = out_root / "私聊_keep" / "2025-12-31.md"
+            existing.parent.mkdir(parents=True)
+            existing.write_text("keep", encoding="utf-8")
+            export = ProcessedChatExport(
+                source_path=Path(tmp) / "Chat_20260516" / "Chat_20260516.json",
+                source_folder="Chat_20260516",
+                data={
+                    "session": {"type": "私聊", "messageCount": 1},
+                    "messages": [{"formattedTime": "2026-05-16 10:00:00", "content": "hi"}],
+                },
+            )
+
+            archive([export], output_root=out_root, clear_first=False)
+
+            self.assertTrue(existing.exists())
+            self.assertTrue((out_root / "Chat" / "2026-05-16.md").exists())
+
+    def test_quote_context_image_truncates_to_ten_chars(self) -> None:
+        from wechat_diary_core.chat_flow import render_chat_flow
+
+        long_ocr = "北京香壶ABCDEFGHIJ"
+        messages = [
+            {
+                "createTime": 1778840000,
+                "formattedTime": "2026-05-15 18:00:00",
+                "type": "图片消息",
+                "content": "media/images/x.jpg\n[OCR] " + long_ocr,
+                "image_ocr": [long_ocr],
+                "image_ocr_inline": long_ocr,
+                "isSend": 0,
+                "senderDisplayName": "Huuu.",
+                "platformMessageId": "img-1",
+            },
+            {
+                "createTime": 1778840060,
+                "formattedTime": "2026-05-15 18:01:00",
+                "type": "引用消息",
+                "content": "回复瓜子脸",
+                "isSend": 0,
+                "senderDisplayName": "Bystander",
+                "replyContext": {
+                    "senderDisplayName": "Huuu.",
+                    "type": "图片消息",
+                    "content": "media/images/x.jpg\n[OCR] " + long_ocr,
+                    "image_ocr": [long_ocr],
+                    "image_ocr_inline": long_ocr,
+                },
+            },
+        ]
+
+        text = render_chat_flow(messages)
+
+        self.assertIn("Huuu.：[图片：北京香壶ABCDEFGHIJ]", text)
+        self.assertIn("Bystander：回复瓜子脸[引用 Huuu.：[图片：北京香壶ABCDEF…]]", text)
+        self.assertNotIn("media/images/", text)
+
+    def test_voice_fail_messages_collapse_to_voice_marker(self) -> None:
+        from wechat_diary_core.chat_flow import render_chat_flow
+
+        messages = [
+            {
+                "createTime": 1778840000,
+                "formattedTime": "2026-05-15 18:00:00",
+                "type": "语音消息",
+                "content": "[语音消息 - 转文字失败: Silk 解码失败]",
+                "transcribe_failed": True,
+                "isSend": 0,
+                "senderDisplayName": "Voicer",
+            },
+            {
+                "createTime": 1778840060,
+                "formattedTime": "2026-05-15 18:01:00",
+                "type": "语音消息",
+                "content": "晚安呢",
+                "isSend": 0,
+                "senderDisplayName": "Voicer",
+            },
+        ]
+
+        text = render_chat_flow(messages)
+
+        self.assertIn("Voicer：[语音]", text)
+        self.assertIn("Voicer：晚安呢", text)
+        self.assertNotIn("转文字失败", text)
+
+
 if __name__ == "__main__":
     unittest.main()

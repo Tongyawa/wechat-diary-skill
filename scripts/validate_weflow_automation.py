@@ -18,6 +18,7 @@ from wechat_diary_core.weflow_automation.driver import DriverUnavailable, Elemen
 from wechat_diary_core.weflow_automation.exporter import export_all_chats, export_moments_for
 from wechat_diary_core.weflow_automation.launcher import ensure_weflow_running, restart_weflow
 from wechat_diary_core.weflow_automation.native_dialog import Win32WindowController, confirm_native_dialog
+from wechat_diary_core.weflow_automation.voice_transcribe import batch_transcribe_voices_for
 
 
 def main() -> int:
@@ -39,6 +40,12 @@ def main() -> int:
     moments_export = subparsers.add_parser("moments-export", help="Run the Moments export flow and report output changes.")
     moments_export.add_argument("--contact", required=True, help="Display text to type into the Moments contact filter.")
 
+    transcribe = subparsers.add_parser(
+        "voice-transcribe",
+        help="Run WeFlow's built-in batch voice transcribe for a single contact and report.",
+    )
+    transcribe.add_argument("--contact", required=True, help="Display name or wxid to transcribe voices for.")
+
     args = parser.parse_args()
     cfg = load_config(args.config)
     if args.restart_weflow:
@@ -47,9 +54,11 @@ def main() -> int:
             _wait_for_ready_page(session.cdp_endpoint)
 
     if args.command == "all-chats-export":
-        return _export_acceptance(cfg, "all chats", lambda: export_all_chats(config=cfg))
+        return _export_acceptance(cfg, "all chats", lambda: export_all_chats(config=cfg, cleanup="archive"))
     if args.command == "moments-export":
         return _moments_export_acceptance(cfg, args.contact)
+    if args.command == "voice-transcribe":
+        return _voice_transcribe_acceptance(cfg, args.contact)
 
     session = ensure_weflow_running(cfg)
     if not session.cdp_endpoint:
@@ -184,6 +193,15 @@ def _export_acceptance(cfg: Config, label: str, run_export: Callable[[], object]
 
     print("No new or touched top-level output entry was detected; inspect WeFlow and the output directory manually.")
     return 2
+
+
+def _voice_transcribe_acceptance(cfg: Config, contact: str) -> int:
+    runs = batch_transcribe_voices_for([contact], config=cfg)
+    print(f"Batch transcribe completed for {len(runs)} contact(s).")
+    for run in runs:
+        print(f"- {run.username}: {len(run.commands)} driver commands executed")
+    print("Manual checkpoint: verify the task center shows a completed '语音批量转写({contact})' row.")
+    return 0
 
 
 def _moments_export_acceptance(cfg: Config, contact: str) -> int:

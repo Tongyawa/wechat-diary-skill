@@ -83,6 +83,8 @@ def resolve_reply_context(messages: list[Message]) -> list[Message]:
                 "content": target.get("content"),
                 "type": target.get("type"),
                 "platformMessageId": target.get("platformMessageId"),
+                "image_ocr": target.get("image_ocr"),
+                "image_ocr_inline": target.get("image_ocr_inline"),
             }
         resolved.append(current)
     return resolved

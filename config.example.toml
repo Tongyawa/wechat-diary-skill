@@ -6,10 +6,19 @@
 # `D：` prefix items to be promoted into DoneList, etc.
 self_wxids = ["filehelper"]               # filehelper = 文件传输助手; add your own wxid here too
 
+# Contacts whose voice messages get WeFlow's built-in batch transcribe pass
+# before the daily all-chats export. Empty list = skip. Each entry is a wxid
+# or display name string that WeFlow's chat search can resolve.
+voice_transcribe_usernames = []
+
 [paths]
 raw = "WeFlow-raw-exports"
 processed = "WeFlow-processed-exports"
 insights = "WeFlow-insights"
+# Where pre-export rotations land. Each automated `export_all_chats` run moves
+# the current raw + processed contents here into a timestamped subfolder so
+# nothing is silently overwritten.
+rotation_root = "其他/test/test_archive"
 
 [automation]
 # Which GUI-automation backend to use.
@@ -40,6 +49,10 @@ voice_fail_log_only = true                # do not abort on "转文字失败"; j
 time_compress_interval_sec = 120          # merge adjacent text messages from the same sender
 image_ocr_enabled = true
 image_ocr_min_confidence = 0.55
+# Max characters of OCR text inlined into the processed markdown body. Long
+# screenshots (e.g. full UI captures) otherwise dominate the chat flow.
+# 0 disables truncation. The raw OCR lines are still preserved on the message.
+image_ocr_max_inline_chars = 80
 # Install OCR dependency with: python -m pip install -r requirements.txt
 
 [preprocessing.group_context_window]

@@ -8,8 +8,10 @@ import re
 Message = dict[str, Any]
 TIME_GAP_SECONDS = 5 * 60
 TIME_MARK_SECONDS = 20 * 60
+QUOTE_IMAGE_MAX_CHARS = 10
 TRAILING_NOTE_RE = re.compile(r"(?:（[^（）]*）|\([^()]*\))+$")
 NAME_SPLIT_RE = re.compile(r"[-－—–]")
+VOICE_FAIL_PATTERN_RE = re.compile(r"^\[?语音消息\s*-\s*转文字失败.*\]?$")
 
 
 def render_chat_flow(messages: list[Message]) -> str:
@@ -69,20 +71,33 @@ def _base_message_content(message: Message) -> str:
     if message_type == "动画表情" or raw_content.strip() in {"[表情包]", "[表情]"}:
         return "[表情]"
 
-    if "图片" in message_type or message.get("image_ocr"):
-        ocr_lines = [str(line).strip() for line in message.get("image_ocr") or [] if str(line).strip()]
-        if not ocr_lines:
-            ocr_text = _extract_ocr_text(raw_content)
-            if ocr_text:
-                ocr_lines = [ocr_text]
-        if ocr_lines:
-            return f"[图片：{chr(10).join(ocr_lines)}]"
-        return "[图片]"
+    if "图片" in message_type or message.get("image_ocr") or message.get("image_ocr_inline"):
+        inline = _image_ocr_inline_for(message)
+        return f"[图片：{inline}]" if inline else "[图片]"
+
+    if message_type == "语音消息" and (message.get("transcribe_failed") or _is_voice_fail_only(raw_content)):
+        return "[语音]"
 
     text = _compact_message_text(raw_content, join_lines=bool(message.get("compressed_local_ids")))
     if _has_quote_context(message):
         text = _strip_embedded_quote_text(text)
     return text
+
+
+def _image_ocr_inline_for(message: Message) -> str:
+    """Return the OCR text to render inside ``[图片：...]`` — pre-truncated by preprocessing."""
+    inline = str(message.get("image_ocr_inline") or "").strip()
+    if inline:
+        return inline
+    ocr_lines = [str(line).strip() for line in message.get("image_ocr") or [] if str(line).strip()]
+    if ocr_lines:
+        return "\n".join(ocr_lines)
+    fallback = _extract_ocr_text(str(message.get("content") or ""))
+    return fallback
+
+
+def _is_voice_fail_only(raw_content: str) -> bool:
+    return bool(VOICE_FAIL_PATTERN_RE.match(raw_content.strip()))
 
 
 def _quote_content(message: Message) -> str:
@@ -91,7 +106,7 @@ def _quote_content(message: Message) -> str:
         sender = "我" if int(target.get("isSend") or 0) == 1 else simplify_display_name(
             str(target.get("senderDisplayName") or target.get("senderUsername") or "未知")
         )
-        text = _compact_message_text(str(target.get("content") or target.get("quotedContent") or ""), join_lines=True)
+        text = _quote_text_for_target(target)
     else:
         if not any(message.get(field) for field in ("replyToMessageId", "quotedContent", "quotedSenderDisplayName", "quotedSender")):
             return ""
@@ -101,6 +116,33 @@ def _quote_content(message: Message) -> str:
     if not text:
         text = "[消息]"
     return f"[引用 {sender}：{text}]"
+
+
+def _quote_text_for_target(target: Message) -> str:
+    """Render a reply target's content with image / voice noise stripped."""
+    if _target_is_image(target):
+        ocr = _image_ocr_inline_for(target).replace("\n", "")
+        if not ocr:
+            return "[图片]"
+        if len(ocr) > QUOTE_IMAGE_MAX_CHARS:
+            return f"[图片：{ocr[:QUOTE_IMAGE_MAX_CHARS]}…]"
+        return f"[图片：{ocr}]"
+
+    raw = str(target.get("content") or target.get("quotedContent") or "")
+    if str(target.get("type") or "") == "语音消息" and (
+        target.get("transcribe_failed") or _is_voice_fail_only(raw)
+    ):
+        return "[语音]"
+    return _compact_message_text(raw, join_lines=True)
+
+
+def _target_is_image(target: Message) -> bool:
+    if target.get("image_ocr") or target.get("image_ocr_inline"):
+        return True
+    if "图片" in str(target.get("type") or ""):
+        return True
+    content = str(target.get("content") or "")
+    return "media/images/" in content.replace("\\", "/") or "[OCR]" in content
 
 
 def _has_quote_context(message: Message) -> bool:

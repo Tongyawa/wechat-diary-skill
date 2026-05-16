@@ -23,6 +23,28 @@ class PreprocessingTests(unittest.TestCase):
 
         self.assertEqual(_parse_paddle_result(result, 0.5), ["hello"])
 
+    def test_long_ocr_inline_is_truncated_while_raw_lines_kept(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            image = root / "media" / "images" / "a.jpg"
+            image.parent.mkdir(parents=True)
+            image.write_bytes(b"fake")
+            cfg = load_config(root / "missing.toml").preprocessing
+
+            class LongFakeEngine:
+                def read_text(self, image_path: Path, min_confidence: float) -> list[str]:
+                    return ["A" * 50, "B" * 50, "C" * 50]
+
+            message = {"type": "图片消息", "content": "media/images/a.jpg"}
+            result = image_ocr.annotate_image_messages([message], root, cfg, engine=LongFakeEngine())
+
+        self.assertEqual(result[0]["image_ocr"], ["A" * 50, "B" * 50, "C" * 50])
+        inline = result[0]["image_ocr_inline"]
+        self.assertTrue(inline.endswith("…"))
+        # 80 char limit (default) + "…"
+        self.assertEqual(len(inline), 81)
+        self.assertIn("[OCR] " + inline, result[0]["content"])
+
     def test_image_ocr_skips_cleanly_when_local_engines_are_unavailable(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

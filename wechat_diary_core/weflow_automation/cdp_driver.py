@@ -24,6 +24,16 @@ class CdpTarget:
     websocket_url: str
 
 
+@dataclass(frozen=True)
+class TaskRow:
+    title: str
+    status: str
+    signature: str
+
+    def matches(self, title_contains: str, status_contains: str) -> bool:
+        return title_contains in self.title and status_contains in self.status
+
+
 class CdpProtocolError(DriverError):
     """Raised when the CDP endpoint returns an error response."""
 
@@ -37,6 +47,7 @@ MODAL_CLOSE_NAMES = (
     "关闭自动化导出",
     "关闭任务中心",
 )
+TASK_STATUS_KEYWORDS = ("已完成", "失败", "已取消", "进行中", "准备中", "排队中", "待处理")
 
 
 class CdpWebSocket:
@@ -192,6 +203,17 @@ class CdpDriver(Driver):
             time.sleep(0.25)
         return False
 
+    def click_after_anchor(self, anchor: str, target: str, timeout: float = 30) -> None:
+        deadline = time.monotonic() + timeout
+        last_result: Any = None
+        while time.monotonic() < deadline:
+            last_result = self._evaluate(_click_after_anchor_script(anchor, target))
+            if isinstance(last_result, dict) and last_result.get("ok"):
+                time.sleep(POST_CLICK_DELAY_SEC)
+                return
+            time.sleep(0.5)
+        raise ElementNotFound(f"Could not click {target!r} after anchor {anchor!r}: {last_result}")
+
     def set_text(self, field_name: str, text: str) -> None:
         result = self._evaluate(_set_text_script(field_name, text))
         if not isinstance(result, dict) or not result.get("ok"):
@@ -290,6 +312,63 @@ class CdpDriver(Driver):
                     return True
             time.sleep(0.25)
         return False
+
+    def snapshot_task_rows(self) -> list[TaskRow]:
+        """Return the visible task-center row signatures, heuristic-based.
+
+        Used by :py:meth:`wait_for_new_task_completion` to tell apart today's task
+        from yesterday's (the task center is append-only, so `wait_for("已完成")`
+        alone would match an old row).
+        """
+        raw = self._evaluate(_task_rows_script())
+        if not isinstance(raw, list):
+            return []
+        rows: list[TaskRow] = []
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            signature = str(item.get("signature") or "").strip()
+            if not signature:
+                continue
+            rows.append(
+                TaskRow(
+                    title=str(item.get("title") or "").strip(),
+                    status=str(item.get("status") or "").strip(),
+                    signature=signature,
+                )
+            )
+        return rows
+
+    def wait_for_new_task_completion(
+        self,
+        baseline: set[str],
+        title_contains: str,
+        status: str = "已完成",
+        timeout: float = 1800,
+        poll_interval: float = 1.0,
+    ) -> TaskRow:
+        """Wait for a brand-new task-center row to reach ``status``.
+
+        ``baseline`` is the set of row signatures observed **before** the action
+        that triggers the new task. The row we're waiting on is the one whose
+        signature is **not** in baseline, title contains ``title_contains``, and
+        status contains ``status`` (e.g. "已完成"). Polls every ``poll_interval``
+        seconds; raises :py:class:`ElementNotFound` on timeout.
+        """
+        deadline = time.monotonic() + timeout
+        last_rows: list[TaskRow] = []
+        while time.monotonic() < deadline:
+            last_rows = self.snapshot_task_rows()
+            for row in last_rows:
+                if row.signature in baseline:
+                    continue
+                if row.matches(title_contains, status):
+                    return row
+            time.sleep(poll_interval)
+        raise ElementNotFound(
+            f"Timed out waiting for new task row title~{title_contains!r} status~{status!r}. "
+            f"Last snapshot: {[(r.title, r.status) for r in last_rows]}"
+        )
 
     def screenshot(self) -> bytes:
         result = self.connection.send("Page.captureScreenshot", {"format": "png", "fromSurface": True})
@@ -445,6 +524,83 @@ def _text_sequence_script(first: str, second: str) -> str:
   return secondIndex >= 0
     ? {{ ok: true, first: firstText, second: secondText }}
     : {{ ok: false, first: firstText, second: secondText }};
+}})()
+"""
+
+
+def _click_after_anchor_script(anchor: str, target: str) -> str:
+    return f"""
+{_dom_helpers()}
+(() => {{
+  const anchor = {json.dumps(anchor, ensure_ascii=False)};
+  const target = {json.dumps(target, ensure_ascii=False)};
+  const candidates = Array.from(document.querySelectorAll("button,a,div,span,li,[role='button'],[tabindex]"))
+    .filter(visible);
+  const anchorNode = candidates.find((node) => isMatch(node, anchor));
+  if (!anchorNode) return {{ ok: false, reason: "anchor not found", anchor }};
+  const anchorRect = anchorNode.getBoundingClientRect();
+  // Among visible candidates, keep those that come AFTER anchor in DOM document order
+  // (or visually below it within ~500px) and match target.
+  const ordered = candidates
+    .filter((node) => isMatch(node, target))
+    .filter((node) => {{
+      const position = anchorNode.compareDocumentPosition(node);
+      const after = !!(position & Node.DOCUMENT_POSITION_FOLLOWING);
+      const rect = node.getBoundingClientRect();
+      const below = rect.top >= anchorRect.top - 8;
+      return after || below;
+    }})
+    .sort((left, right) => {{
+      const leftRect = left.getBoundingClientRect();
+      const rightRect = right.getBoundingClientRect();
+      return leftRect.top - rightRect.top;
+    }});
+  if (ordered.length === 0) return {{ ok: false, reason: "no target after anchor", anchor, target }};
+  const clickable = clickableAncestor(ordered[0]);
+  if (!enabled(clickable)) return {{ ok: false, reason: "disabled", text: textOf(clickable) }};
+  clickable.scrollIntoView({{ block: "center", inline: "center" }});
+  clickElement(clickable);
+  return {{ ok: true, text: textOf(clickable), tag: clickable.tagName }};
+}})()
+"""
+
+
+def _task_rows_script() -> str:
+    """Return JS that snapshots task-center rows in the visible task-center modal.
+
+    Heuristic: locate a visible modal/panel whose text contains 「任务中心」, then
+    pick repeating row-like elements inside it. The selector is permissive on
+    purpose; the row signature is the row's full visible text, so even noise rows
+    don't false-positively match a "new completed task" check.
+    """
+    statuses = json.dumps(list(TASK_STATUS_KEYWORDS), ensure_ascii=False)
+    return f"""
+{_dom_helpers()}
+(() => {{
+  const statuses = {statuses};
+  const modals = Array.from(document.querySelectorAll(".modal-overlay,[role='dialog'],.modal,.task-center"))
+    .filter(visible);
+  const taskCenter = modals.find((modal) => {{
+    const text = (modal.innerText || modal.textContent || "");
+    return text.includes("任务中心") || text.includes("自动化导出");
+  }});
+  if (!taskCenter) return [];
+  const rowSelector = "[class*='row'],[class*='item'],[class*='task'],li,tr";
+  const candidates = Array.from(taskCenter.querySelectorAll(rowSelector)).filter((node) => {{
+    if (!visible(node)) return false;
+    const rect = node.getBoundingClientRect();
+    return rect.height > 10 && rect.width > 80;
+  }});
+  const leaves = candidates.filter((node) => !candidates.some((other) => other !== node && other.contains(node)));
+  return leaves.map((node) => {{
+    const raw = (node.innerText || node.textContent || "").replace(/\\s+/g, " ").trim();
+    let status = "";
+    for (const keyword of statuses) {{
+      if (raw.includes(keyword)) {{ status = keyword; break; }}
+    }}
+    const title = status ? raw.replace(status, "").trim() : raw;
+    return {{ title, status, signature: raw }};
+  }}).filter((row) => row.signature.length > 0);
 }})()
 """
 

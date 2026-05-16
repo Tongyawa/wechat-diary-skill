@@ -107,12 +107,20 @@ def annotate_image_messages(
                 ocr_lines.extend(engine.read_text(image_path, settings.image_ocr_min_confidence))
 
         if ocr_lines:
-            text = "\n".join(ocr_lines)
+            full_text = "\n".join(ocr_lines)
+            inline_text = _truncate_inline(full_text, settings.image_ocr_max_inline_chars)
             message["image_ocr"] = ocr_lines
+            message["image_ocr_inline"] = inline_text
             content = str(message.get("content") or "").strip()
-            message["content"] = f"{content}\n[OCR] {text}" if content else f"[OCR] {text}"
+            message["content"] = f"{content}\n[OCR] {inline_text}" if content else f"[OCR] {inline_text}"
 
     return list(messages)
+
+
+def _truncate_inline(text: str, max_chars: int) -> str:
+    if max_chars <= 0 or len(text) <= max_chars:
+        return text
+    return text[:max_chars] + "…"
 
 
 def _message_image_paths(message: Message, base_dir: Path) -> list[Path]:

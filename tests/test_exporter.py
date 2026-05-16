@@ -21,6 +21,9 @@ class FakeDriver:
         self.calls.append(("click_if_present", name, str(int(timeout))))
         return True
 
+    def click_after_anchor(self, anchor: str, target: str, timeout: float = 30) -> None:
+        self.calls.append(("click_after_anchor", anchor, target))
+
     def set_text(self, field_name: str, text: str) -> None:
         self.calls.append(("set_text", field_name, text))
 
@@ -53,6 +56,23 @@ class FakeDriver:
         self.calls.append(("close_current_modal", "", str(int(timeout))))
         return False
 
+    def snapshot_task_rows(self) -> list:
+        self.calls.append(("snapshot_task_rows", "", None))
+        return []
+
+    def wait_for_new_task_completion(
+        self,
+        baseline,
+        title_contains: str,
+        status: str = "已完成",
+        timeout: float = 1800,
+        poll_interval: float = 1.0,
+    ):
+        self.calls.append(("wait_for_new_task_completion", title_contains, str(int(timeout))))
+        from wechat_diary_core.weflow_automation.cdp_driver import TaskRow
+
+        return TaskRow(title=title_contains, status=status, signature="fake")
+
     def screenshot(self) -> bytes:
         return b""
 
@@ -80,22 +100,29 @@ class ExporterTests(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         driver = FakeDriver()
 
-        result = export_all_chats("2026-05-13", config=cfg, driver=driver)  # type: ignore[arg-type]
+        result = export_all_chats("2026-05-13", config=cfg, driver=driver, cleanup="skip")  # type: ignore[arg-type]
 
         self.assertEqual(result.kind, "all_chats")
         self.assertEqual(
             [(call[0], call[1]) for call in driver.calls],
             [
                 ("close_any_modal", ""),
+                # Pre-flight: snapshot the task center so we can diff later
+                ("wait_for_enabled", "任务中心"),
+                ("click", "任务中心"),
+                ("snapshot_task_rows", ""),
+                ("close_current_modal", ""),
+                # Trigger the export
                 ("click", "导出"),
                 ("wait_for", "自动化导出"),
                 ("click", "自动化导出"),
                 ("wait_for_enabled", "立即执行"),
                 ("click", "立即执行"),
                 ("close_current_modal", ""),
+                # Wait for the new row to reach 已完成
                 ("wait_for_enabled", "任务中心"),
                 ("click", "任务中心"),
-                ("wait_for", "已完成"),
+                ("wait_for_new_task_completion", "自动化导出"),
                 ("close_current_modal", ""),
                 ("click", "首页"),
             ],

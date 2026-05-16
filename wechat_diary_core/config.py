@@ -10,11 +10,13 @@ import tomllib
 DEFAULT_CONFIG: dict[str, Any] = {
     "user": {
         "self_wxids": ["filehelper"],
+        "voice_transcribe_usernames": [],
     },
     "paths": {
         "raw": "WeFlow-raw-exports",
         "processed": "WeFlow-processed-exports",
         "insights": "WeFlow-insights",
+        "rotation_root": "其他/test/test_archive",
     },
     "automation": {
         "driver": "cdp",
@@ -36,6 +38,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "time_compress_interval_sec": 120,
         "image_ocr_enabled": True,
         "image_ocr_min_confidence": 0.55,
+        "image_ocr_max_inline_chars": 80,
         "group_context_window": {
             "messages_before": 3,
             "messages_after": 5,
@@ -57,6 +60,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
 @dataclass(frozen=True)
 class UserConfig:
     self_wxids: list[str]
+    voice_transcribe_usernames: list[str]
 
 
 @dataclass(frozen=True)
@@ -64,6 +68,7 @@ class PathsConfig:
     raw: Path
     processed: Path
     insights: Path
+    rotation_root: Path
 
 
 @dataclass(frozen=True)
@@ -108,6 +113,7 @@ class PreprocessingConfig:
     time_compress_interval_sec: int
     image_ocr_enabled: bool
     image_ocr_min_confidence: float
+    image_ocr_max_inline_chars: int
     group_context_window: GroupContextWindowConfig
 
 
@@ -166,11 +172,15 @@ def _build_config(raw: dict[str, Any], base_dir: Path) -> Config:
         raise ValueError(f"Unsupported automation driver: {driver}")
 
     return Config(
-        user=UserConfig(self_wxids=list(raw["user"]["self_wxids"])),
+        user=UserConfig(
+            self_wxids=list(raw["user"]["self_wxids"]),
+            voice_transcribe_usernames=list(raw["user"].get("voice_transcribe_usernames") or []),
+        ),
         paths=PathsConfig(
             raw=_resolve_path(base_dir, paths["raw"]),
             processed=_resolve_path(base_dir, paths["processed"]),
             insights=_resolve_path(base_dir, paths["insights"]),
+            rotation_root=_resolve_path(base_dir, paths["rotation_root"]),
         ),
         automation=AutomationConfig(
             driver=driver,
@@ -197,6 +207,7 @@ def _build_config(raw: dict[str, Any], base_dir: Path) -> Config:
             time_compress_interval_sec=int(preprocessing["time_compress_interval_sec"]),
             image_ocr_enabled=bool(preprocessing["image_ocr_enabled"]),
             image_ocr_min_confidence=float(preprocessing["image_ocr_min_confidence"]),
+            image_ocr_max_inline_chars=int(preprocessing["image_ocr_max_inline_chars"]),
             group_context_window=GroupContextWindowConfig(
                 messages_before=int(group_window["messages_before"]),
                 messages_after=int(group_window["messages_after"]),
