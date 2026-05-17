@@ -551,9 +551,14 @@ def _click_after_anchor_script(anchor: str, target: str) -> str:
       return after || below;
     }})
     .sort((left, right) => {{
+      const leftRank = elementRank(left, target);
+      const rightRank = elementRank(right, target);
       const leftRect = left.getBoundingClientRect();
       const rightRect = right.getBoundingClientRect();
-      return leftRect.top - rightRect.top;
+      return leftRank[0] - rightRank[0]
+        || leftRank[1] - rightRank[1]
+        || leftRank[2] - rightRank[2]
+        || leftRect.top - rightRect.top;
     }});
   if (ordered.length === 0) return {{ ok: false, reason: "no target after anchor", anchor, target }};
   const clickable = clickableAncestor(ordered[0]);
