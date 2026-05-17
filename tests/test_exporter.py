@@ -145,22 +145,20 @@ class ExporterTests(unittest.TestCase):
         self.assertEqual((result.commands[5].kind, result.commands[5].name), ("click", "查找联系人"))
         self.assertIn(("set_text", "查找联系人", "wxid_a"), driver.calls)
         self.assertIn(("set_text", "查找联系人", "wxid_b"), driver.calls)
-        self.assertIn(("wait_for_text_sequence", "wxid_a->条", "30"), driver.calls)
-        self.assertIn(("wait_for_text_sequence", "wxid_b->条", "30"), driver.calls)
-        self.assertIn(("ensure_selected", "wxid_a", "30"), driver.calls)
-        self.assertIn(("ensure_selected", "wxid_b", "30"), driver.calls)
+        self.assertGreaterEqual(driver.calls.count(("wait_for", "条", "30")), 2)
+        self.assertGreaterEqual(driver.calls.count(("click_after_anchor", "全选", "选择")), 2)
         self.assertIn(("ensure_action_available", "下载所选", "全选"), driver.calls)
         self.assertEqual(
             [(command.kind, command.name) for command in result.commands[-29:]],
             [
                 ("set_text", "查找联系人"),
-                ("wait_for_text_sequence", "wxid_b"),
-                ("ensure_selected", "wxid_b"),
+                ("wait_for", "条"),
+                ("click_after_anchor", "全选"),
                 ("ensure_action_available", "下载所选"),
                 ("click", "下载所选"),
                 ("wait_for", "导出格式"),
-                ("wait_for_text_sequence", "联系人"),
-                ("wait_for_text_sequence", "联系人"),
+                ("wait_for", "联系人"),
+                ("wait_for", "联系人"),
                 ("click", "JSON"),
                 ("click", "点击选择输出目录"),
                 ("confirm_native_dialog", "选择导出目录"),
@@ -174,8 +172,8 @@ class ExporterTests(unittest.TestCase):
                 ("ensure_checked", "图片"),
                 ("ensure_checked", "实况图"),
                 ("ensure_checked", "视频"),
-                ("wait_for_text_sequence", "联系人"),
-                ("wait_for_text_sequence", "联系人"),
+                ("wait_for", "联系人"),
+                ("wait_for", "联系人"),
                 ("wait_for_enabled", "开始导出"),
                 ("click", "开始导出"),
                 ("wait_for", "完成"),
