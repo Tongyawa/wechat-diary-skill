@@ -140,7 +140,7 @@ class ExporterTests(unittest.TestCase):
         self.assertEqual((result.commands[0].kind, result.commands[0].name), ("close_any_modal", ""))
         self.assertEqual((result.commands[1].kind, result.commands[1].name), ("wait_for_absent", "导出格式"))
         self.assertEqual((result.commands[2].kind, result.commands[2].name), ("wait_for", "朋友圈"))
-        self.assertEqual((result.commands[3].kind, result.commands[3].name), ("click", "朋友圈"))
+        self.assertEqual((result.commands[3].kind, result.commands[3].name, result.commands[3].value), ("click_after_anchor", "聊天", "朋友圈"))
         self.assertEqual((result.commands[4].kind, result.commands[4].name), ("wait_for", "查找联系人"))
         self.assertEqual((result.commands[5].kind, result.commands[5].name), ("click", "查找联系人"))
         self.assertIn(("set_text", "查找联系人", "wxid_a"), driver.calls)
