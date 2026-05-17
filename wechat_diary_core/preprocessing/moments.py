@@ -145,7 +145,7 @@ def _render_single_post(post: Post) -> str:
     for comment in post.get("comments") or []:
         speaker = _safe(comment.get("nickname")) or "未知"
         target = _safe(comment.get("refNickname"))
-        body = _compact_text(_safe(comment.get("content")))
+        body = _comment_body(comment)
         if target:
             lines.append(f"💬 {speaker} 回复 {target}：{body}")
         else:
@@ -194,6 +194,17 @@ def _compact_text(value: str) -> str:
     lines = [line.strip() for line in value.replace("\r\n", "\n").replace("\r", "\n").split("\n")]
     lines = [line for line in lines if line]
     return " | ".join(lines)
+
+
+def _comment_body(comment: dict[str, Any]) -> str:
+    body = _compact_text(_safe(comment.get("content")))
+    if body in {"[表情包]", "[表情]"}:
+        return "[表情]"
+    if body:
+        return body
+    if comment.get("emojis") or comment.get("emoji"):
+        return "[表情]"
+    return ""
 
 
 def _safe(value: Any) -> str:
