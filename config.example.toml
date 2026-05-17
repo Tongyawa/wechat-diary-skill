@@ -76,3 +76,20 @@ extra_args = []                           # e.g. ["--permission-mode", "acceptEd
 
 [skills]
 daily = ["wechat-diary"]
+
+[daily_export]
+# Contacts to export as an additional sidecar stream. Use wxid when possible;
+# display names also work for WeFlow search, but wxid is more stable.
+target_usernames = []
+
+# Sidecar markdown lands in:
+#   WeFlow-processed-exports/<target_processed_subroot>/chats/<yyyy-mm-dd>.md
+#   WeFlow-processed-exports/<target_processed_subroot>/moments/<yyyy-mm-dd>.md
+target_processed_subroot = "_targets"
+
+# Double-click daily export defaults to archive so manual runs do not silently
+# delete yesterday's raw/processed workspace.
+cleanup_mode = "archive"
+
+# Stop WeFlow before rotating old exports so media files are not locked.
+restart_weflow = true

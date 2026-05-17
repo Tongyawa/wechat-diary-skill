@@ -4,7 +4,9 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Literal
+import os
 import shutil
+import stat
 
 from .config import Config, load_config
 
@@ -51,7 +53,7 @@ def rotate_export_workspace(
 
     if mode == "delete":
         for source in populated.values():
-            shutil.rmtree(source, ignore_errors=True)
+            _remove_tree(source)
             source.mkdir(parents=True, exist_ok=True)
         for path in candidates.values():
             path.mkdir(parents=True, exist_ok=True)
@@ -65,7 +67,7 @@ def rotate_export_workspace(
     moved: dict[str, Path] = {}
     for key, source in populated.items():
         destination = rotation_target / key
-        shutil.move(str(source), str(destination))
+        _archive_tree(source, destination)
         source.mkdir(parents=True, exist_ok=True)
         moved[key] = destination
 
@@ -76,3 +78,18 @@ def rotate_export_workspace(
 
 def _is_non_empty_dir(path: Path) -> bool:
     return path.exists() and path.is_dir() and any(path.iterdir())
+
+
+def _archive_tree(source: Path, destination: Path) -> None:
+    """Copy then remove so read-only media files cannot break rotation."""
+    shutil.copytree(source, destination, copy_function=shutil.copy2)
+    _remove_tree(source)
+
+
+def _remove_tree(path: Path) -> None:
+    shutil.rmtree(path, onerror=_handle_remove_error)
+
+
+def _handle_remove_error(function, path: str, _exc_info) -> None:
+    os.chmod(path, stat.S_IREAD | stat.S_IWRITE)
+    function(path)

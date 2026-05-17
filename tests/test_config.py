@@ -32,6 +32,31 @@ raw = "raw"
         self.assertEqual(cfg.preprocessing.group_context_window.time_window_minutes, 15)
         self.assertEqual(cfg.preprocessing.group_context_window.anchor_keywords, [])
         self.assertEqual(cfg.skills.daily, ["wechat-diary"])
+        self.assertEqual(cfg.daily_export.target_usernames, [])
+        self.assertEqual(cfg.daily_export.target_processed_subroot, "_targets")
+        self.assertEqual(cfg.daily_export.cleanup_mode, "archive")
+        self.assertTrue(cfg.daily_export.restart_weflow)
+
+    def test_load_config_reads_daily_export_settings(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.toml"
+            config_path.write_text(
+                """
+[daily_export]
+target_usernames = ["wxid_target"]
+target_processed_subroot = "_sidecar"
+cleanup_mode = "delete"
+restart_weflow = false
+""".strip(),
+                encoding="utf-8",
+            )
+
+            cfg = load_config(config_path)
+
+        self.assertEqual(cfg.daily_export.target_usernames, ["wxid_target"])
+        self.assertEqual(cfg.daily_export.target_processed_subroot, "_sidecar")
+        self.assertEqual(cfg.daily_export.cleanup_mode, "delete")
+        self.assertFalse(cfg.daily_export.restart_weflow)
 
 
 if __name__ == "__main__":

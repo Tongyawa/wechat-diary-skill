@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
+import stat
 
 from wechat_diary_core.config import load_config
 from wechat_diary_core.workspace import rotate_export_workspace
@@ -110,6 +111,24 @@ class WorkspaceRotationTests(unittest.TestCase):
 
             self.assertEqual(result.mode, "skip")
             self.assertTrue((cfg.paths.raw / "session_a" / "data.json").exists())
+
+    def test_archive_mode_handles_readonly_media_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = _load_test_config(root)
+            media = cfg.paths.raw / "session_a" / "media" / "videos" / "clip.mp4"
+            media.parent.mkdir(parents=True)
+            media.write_bytes(b"video")
+            media.chmod(stat.S_IREAD)
+
+            result = rotate_export_workspace(
+                cfg,
+                label="all_chats",
+                timestamp=datetime(2026, 5, 16, 17, 30, 0),
+            )
+
+            self.assertTrue((result.moved["raw"] / "session_a" / "media" / "videos" / "clip.mp4").exists())
+            self.assertEqual(list(cfg.paths.raw.iterdir()), [])
 
 
 if __name__ == "__main__":
