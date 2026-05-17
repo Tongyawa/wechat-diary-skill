@@ -28,6 +28,7 @@ CLAUDE.md
 # ---- Raw / intermediate / output data ----
 WeFlow-raw-exports/
 WeFlow-processed-exports/
+WeFlow-archived-exports/
 WeFlow-insights/
 
 # ---- Skills published in this repo are allowlisted; everything else stays local ----
