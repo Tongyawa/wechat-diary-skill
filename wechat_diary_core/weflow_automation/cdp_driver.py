@@ -536,7 +536,18 @@ def _click_after_anchor_script(anchor: str, target: str) -> str:
   const target = {json.dumps(target, ensure_ascii=False)};
   const candidates = Array.from(document.querySelectorAll("button,a,div,span,li,[role='button'],[tabindex]"))
     .filter(visible);
-  const anchorNode = candidates.find((node) => isMatch(node, anchor));
+  const anchorNode = candidates
+    .filter((node) => isMatch(node, anchor))
+    .sort((left, right) => {{
+      const leftRank = elementRank(left, anchor);
+      const rightRank = elementRank(right, anchor);
+      const leftRect = left.getBoundingClientRect();
+      const rightRect = right.getBoundingClientRect();
+      return leftRank[0] - rightRank[0]
+        || leftRank[1] - rightRank[1]
+        || leftRank[2] - rightRank[2]
+        || leftRect.top - rightRect.top;
+    }})[0] || null;
   if (!anchorNode) return {{ ok: false, reason: "anchor not found", anchor }};
   const anchorRect = anchorNode.getBoundingClientRect();
   // Among visible candidates, keep those that come AFTER anchor in DOM document order
