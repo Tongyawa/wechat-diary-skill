@@ -699,7 +699,7 @@ function isMatch(element, target) {
 function elementRank(element, target) {
   const left = norm(textOf(element));
   const right = norm(target);
-  const exactPenalty = left === right ? 0 : 1;
+  const exactPenalty = (left === right || left === `${right}${right}`) ? 0 : 1;
   const interactivePenalty = element.matches?.("button,a,input,textarea,label,[contenteditable='true'],[role='button'],[role='link'],[tabindex]") ? 0 : 1;
   return [exactPenalty, interactivePenalty, left.length];
 }
