@@ -24,11 +24,13 @@ description: 拉取昨日 WeChat 消息（经 WeFlow 自动化），清洗后归
    - `media/images/*` 走本地 OCR，识别文本以 `[OCR] ...` 后缀内联到对应消息里。
    - 「转文字失败」标记仅写警告日志，不阻塞流程。
 3. **归档** —— 调 `wechat_diary_core.archiving.archive(processed_date_dir)`，按会话写出 `WeFlow-processed-exports/<session_dir>/<yyyy-mm-dd>.md` 极简聊天流（`session_dir` 去掉原始文件夹后缀的日期）。
-4. **二次加工** —— 读 `WeFlow-processed-exports/**/<yesterday>.md`。在 `WeFlow-insights/` 下产出四份 Markdown：
+4. **二次加工** —— 读 `WeFlow-processed-exports/**/<yesterday>.md`（**不读**子目录前缀以 `_` 开头的；下划线前缀目录是私有 skill 的旁路通道，diary 二次加工只扫顶层 session）。在 `WeFlow-insights/` 下产出四份 Markdown：
    - `Diary/<yyyy>/<yyyy-mm-dd>.md` —— 第一人称当日日记。
    - `DoneList/<yyyy>/<yyyy-mm-dd>.md` —— 分类捕捉的 DoneList；优先把 `config.toml [user].self_wxids` 指定的「自己 / 文件传输助手」会话里以 `D：` 开头的条目升级为正式条目。
    - `Inspirations/<yyyy>/<yyyy-mm-dd>.md` —— 散落在各会话里的项目灵感与待办。
    - `ExtraNotes/<yyyy>/<yyyy-mm-dd>.md` —— Agent 主动挑出但我没注意到的值得关注的点。
+
+5. **长期归档** —— 四份 Markdown 写完后调 `wechat_diary_core.promote_day_to_archive(yesterday_iso, config=cfg)`，把当日 `WeFlow-processed-exports/<session>/<yesterday>.md` 拷贝到 `WeFlow-archived-exports/<session>/<yesterday>.md`。明早 cron 的 `cleanup="delete"` 会清空 processed，archived 不会丢；月报 / 年报 skill 以后从 archived 读全历史。
 
 > **Phase B TODO**：在此处补四段产物的具体 prompt，每段作为独立的 fenced 代码块，prompt 内严格规定输出结构（章节、列表样式），方便后续月报 / 年报 skill 按 glob 聚合。
 
@@ -48,7 +50,8 @@ description: 拉取昨日 WeChat 消息（经 WeFlow 自动化），清洗后归
 | 来源 | 路径 |
 |---|---|
 | 原始导出 | `WeFlow-raw-exports/<yyyymmdd> 每日导出聊天记录示例/...`（或生产中的实际命名） |
-| 归档 | `WeFlow-processed-exports/<session>/<yyyy-mm-dd>.md` |
+| 当日归档 | `WeFlow-processed-exports/<session>/<yyyy-mm-dd>.md`（明早被 cleanup="delete" 清掉） |
+| 长期归档 | `WeFlow-archived-exports/<session>/<yyyy-mm-dd>.md`（二次加工后从 processed 复制过来）|
 | 日产出 | `WeFlow-insights/{Diary,DoneList,Inspirations,ExtraNotes}/<yyyy>/<yyyy-mm-dd>.md` |
 | 一次性总结 | `WeFlow-insights/Summaries/<folder>__<timestamp>.md` |
 
