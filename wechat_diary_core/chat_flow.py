@@ -14,6 +14,9 @@ TRAILING_NOTE_RE = re.compile(r"(?:（[^（）]*）|\([^()]*\))+$")
 NAME_SPLIT_RE = re.compile(r"[-－—–]")
 VOICE_FAIL_PATTERN_RE = re.compile(r"^\[?语音消息\s*-\s*转文字失败.*\]?$")
 XML_TITLE_RE = re.compile(r"<title>(.*?)</title>", re.DOTALL | re.IGNORECASE)
+LINK_MARKER_RE = re.compile(r"^\[链接\]\s*(.+)$")
+LINK_URL_SUFFIX_RE = re.compile(r"\s*\|\s*https?://\S+\s*$")
+RECALL_NOTICE_RE = re.compile(r'^(?:(?:["“][^"”]+["”])|(?:你|我)|(?:[^\s：:]{1,80}))?\s*撤回了一条消息\d*$')
 
 
 def render_chat_flow(messages: list[Message]) -> str:
@@ -34,7 +37,10 @@ def render_chat_flow(messages: list[Message]) -> str:
             sender = "拍一拍"
         content = render_message_content(message)
         if content:
-            lines.append(f"{sender}：{content}")
+            if _is_recall_notice(message, content):
+                lines.append(f"{sender} {content}")
+            else:
+                lines.append(f"{sender}：{content}")
 
         previous_time = current_time
 
@@ -88,6 +94,7 @@ def _base_message_content(message: Message) -> str:
     text = _compact_message_text(raw_content, join_lines=bool(message.get("compressed_local_ids")))
     if _has_quote_context(message):
         text = _strip_embedded_quote_text(text)
+    text = _normalize_special_text(text)
     return text
 
 
@@ -184,10 +191,10 @@ def _quote_text_from_raw(value: str) -> str:
     text = _compact_message_text(value, join_lines=True)
     unescaped = html.unescape(text)
     if not _looks_like_wechat_xml(unescaped):
-        return text
+        return _normalize_special_text(text)
     if unescaped.lstrip().startswith("<"):
-        return _extract_xml_title(unescaped) or "[消息]"
-    return _strip_embedded_quote_text(unescaped)
+        return _normalize_special_text(_extract_xml_title(unescaped)) or "[消息]"
+    return _normalize_special_text(_strip_embedded_quote_text(unescaped))
 
 
 def _looks_like_wechat_xml(value: str) -> bool:
@@ -197,6 +204,31 @@ def _looks_like_wechat_xml(value: str) -> bool:
 def _extract_xml_title(value: str) -> str:
     match = XML_TITLE_RE.search(html.unescape(value))
     return _compact_message_text(match.group(1), join_lines=True) if match else ""
+
+
+def _normalize_special_text(value: str) -> str:
+    recall = _normalize_recall_notice(value)
+    if recall:
+        return recall
+    return _normalize_link_text(value)
+
+
+def _normalize_link_text(value: str) -> str:
+    match = LINK_MARKER_RE.match(value.strip())
+    if not match:
+        return value
+    title = LINK_URL_SUFFIX_RE.sub("", match.group(1)).strip()
+    return f"[链接：{title or '链接'}]"
+
+
+def _normalize_recall_notice(value: str) -> str:
+    return "撤回了一条消息" if RECALL_NOTICE_RE.match(value.strip()) else ""
+
+
+def _is_recall_notice(message: Message, content: str) -> bool:
+    if content != "撤回了一条消息":
+        return False
+    return bool(_normalize_recall_notice(str(message.get("content") or "")))
 
 
 def _extract_ocr_text(value: str) -> str:
