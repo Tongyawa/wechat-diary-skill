@@ -82,6 +82,7 @@ class MomentsTests(unittest.TestCase):
             comments=[
                 {"nickname": "Carol", "content": "好看", "refNickname": ""},
                 {"nickname": "Target", "content": "谢谢", "refNickname": "Carol"},
+                {"nickname": "Wenyao", "content": "", "refNickname": "", "emojis": [{"md5": "abc"}]},
             ],
             location={"latitude": 1, "longitude": 1, "poiName": "武汉大学"},
         )
@@ -96,6 +97,7 @@ class MomentsTests(unittest.TestCase):
         self.assertNotIn("Alice、Bob", text)
         self.assertIn("💬 Carol：好看", text)
         self.assertIn("💬 Target 回复 Carol：谢谢", text)
+        self.assertIn("💬 Wenyao：[表情]", text)
         self.assertIn("📍 武汉大学", text)
 
     def test_archive_moments_for_filters_by_username_and_writes_per_day(self) -> None:
