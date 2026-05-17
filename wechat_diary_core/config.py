@@ -55,6 +55,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "skills": {
         "daily": ["wechat-diary"],
     },
+    "daily_export": {
+        "target_usernames": [],
+        "target_processed_subroot": "_targets",
+        "cleanup_mode": "archive",
+        "restart_weflow": True,
+    },
 }
 
 
@@ -132,6 +138,14 @@ class SkillsConfig:
 
 
 @dataclass(frozen=True)
+class DailyExportConfig:
+    target_usernames: list[str]
+    target_processed_subroot: str
+    cleanup_mode: str
+    restart_weflow: bool
+
+
+@dataclass(frozen=True)
 class Config:
     user: UserConfig
     paths: PathsConfig
@@ -139,6 +153,7 @@ class Config:
     preprocessing: PreprocessingConfig
     agent: AgentConfig
     skills: SkillsConfig
+    daily_export: DailyExportConfig
     base_dir: Path
     raw: dict[str, Any]
 
@@ -168,10 +183,14 @@ def _build_config(raw: dict[str, Any], base_dir: Path) -> Config:
     group_window = preprocessing["group_context_window"]
     template = automation["template_fallback"]
     geometry = automation["window_geometry"]
+    daily_export = raw["daily_export"]
 
     driver = str(automation["driver"]).strip().lower()
     if driver not in {"cdp", "uia", "template"}:
         raise ValueError(f"Unsupported automation driver: {driver}")
+    cleanup_mode = str(daily_export.get("cleanup_mode") or "archive").strip().lower()
+    if cleanup_mode not in {"archive", "delete", "skip"}:
+        raise ValueError(f"Unsupported daily_export cleanup_mode: {cleanup_mode}")
 
     return Config(
         user=UserConfig(
@@ -224,6 +243,12 @@ def _build_config(raw: dict[str, Any], base_dir: Path) -> Config:
             extra_args=list(raw["agent"]["extra_args"]),
         ),
         skills=SkillsConfig(daily=list(raw["skills"]["daily"])),
+        daily_export=DailyExportConfig(
+            target_usernames=[str(value).strip() for value in daily_export.get("target_usernames") or [] if str(value).strip()],
+            target_processed_subroot=str(daily_export.get("target_processed_subroot") or "_targets").strip() or "_targets",
+            cleanup_mode=cleanup_mode,
+            restart_weflow=bool(daily_export.get("restart_weflow", True)),
+        ),
         base_dir=base_dir,
         raw=copy.deepcopy(raw),
     )
