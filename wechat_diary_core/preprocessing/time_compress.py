@@ -46,6 +46,7 @@ def _can_merge(left: Message, right: Message, max_interval_sec: int, merge_types
 
 
 def _merge_into(left: Message, right: Message) -> None:
+    left["compressed_segments"] = _message_segments(left) + _message_segments(right)
     left["content"] = f"{_content(left)}\n{_content(right)}"
     left["endCreateTime"] = int(right.get("createTime") or left.get("endCreateTime") or left.get("createTime") or 0)
     left["compressed_count"] = int(left.get("compressed_count", 1)) + int(right.get("compressed_count", 1))
@@ -61,3 +62,23 @@ def _merge_into(left: Message, right: Message) -> None:
 
 def _content(message: Message) -> str:
     return str(message.get("content") or "").strip()
+
+
+def _message_segments(message: Message) -> list[Message]:
+    segments = message.get("compressed_segments")
+    if isinstance(segments, list) and segments:
+        return [copy.deepcopy(segment) for segment in segments if isinstance(segment, dict)]
+    return [_segment_copy(message)]
+
+
+def _segment_copy(message: Message) -> Message:
+    segment = copy.deepcopy(message)
+    for key in (
+        "compressed_segments",
+        "compressed_count",
+        "compressed_local_ids",
+        "compressed_platform_message_ids",
+        "endCreateTime",
+    ):
+        segment.pop(key, None)
+    return segment

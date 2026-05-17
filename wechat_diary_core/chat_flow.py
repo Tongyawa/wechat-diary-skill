@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Any
+import html
 import re
 
 
@@ -12,6 +13,7 @@ QUOTE_IMAGE_MAX_CHARS = 10
 TRAILING_NOTE_RE = re.compile(r"(?:（[^（）]*）|\([^()]*\))+$")
 NAME_SPLIT_RE = re.compile(r"[-－—–]")
 VOICE_FAIL_PATTERN_RE = re.compile(r"^\[?语音消息\s*-\s*转文字失败.*\]?$")
+XML_TITLE_RE = re.compile(r"<title>(.*?)</title>", re.DOTALL | re.IGNORECASE)
 
 
 def render_chat_flow(messages: list[Message]) -> str:
@@ -57,6 +59,11 @@ def simplify_display_name(name: str) -> str:
 
 
 def render_message_content(message: Message) -> str:
+    segments = message.get("compressed_segments")
+    if isinstance(segments, list) and segments:
+        parts = [render_message_content(segment) for segment in segments if isinstance(segment, dict)]
+        return " | ".join(part for part in parts if part)
+
     content = _base_message_content(message)
     quote = _quote_content(message)
     if quote:
@@ -110,8 +117,10 @@ def _quote_content(message: Message) -> str:
     else:
         if not any(message.get(field) for field in ("replyToMessageId", "quotedContent", "quotedSenderDisplayName", "quotedSender")):
             return ""
-        sender = simplify_display_name(str(message.get("quotedSenderDisplayName") or message.get("quotedSender") or "未知"))
-        text = _compact_message_text(str(message.get("quotedContent") or ""), join_lines=True)
+        sender = "我" if message.get("quotedIsSelf") else simplify_display_name(
+            str(message.get("quotedSenderDisplayName") or message.get("quotedSender") or "未知")
+        )
+        text = _quote_text_from_raw(str(message.get("quotedContent") or ""))
 
     if not text:
         text = "[消息]"
@@ -128,12 +137,18 @@ def _quote_text_for_target(target: Message) -> str:
             return f"[图片：{ocr[:QUOTE_IMAGE_MAX_CHARS]}…]"
         return f"[图片：{ocr}]"
 
-    raw = str(target.get("content") or target.get("quotedContent") or "")
     if str(target.get("type") or "") == "语音消息" and (
-        target.get("transcribe_failed") or _is_voice_fail_only(raw)
+        target.get("transcribe_failed") or _is_voice_fail_only(str(target.get("content") or ""))
     ):
         return "[语音]"
-    return _compact_message_text(raw, join_lines=True)
+    if _has_quote_context(target):
+        return render_message_content(target)
+
+    raw = str(target.get("content") or target.get("quotedContent") or "")
+    text = _quote_text_from_raw(raw)
+    if _looks_like_wechat_xml(text):
+        text = _strip_embedded_quote_text(text)
+    return text
 
 
 def _target_is_image(target: Message) -> bool:
@@ -163,6 +178,25 @@ def _strip_embedded_quote_text(value: str) -> str:
     if index < 0:
         return value
     return value[:index].rstrip()
+
+
+def _quote_text_from_raw(value: str) -> str:
+    text = _compact_message_text(value, join_lines=True)
+    unescaped = html.unescape(text)
+    if not _looks_like_wechat_xml(unescaped):
+        return text
+    if unescaped.lstrip().startswith("<"):
+        return _extract_xml_title(unescaped) or "[消息]"
+    return _strip_embedded_quote_text(unescaped)
+
+
+def _looks_like_wechat_xml(value: str) -> bool:
+    return "<msg" in value or "<appmsg" in value or "&lt;msg" in value or "&lt;appmsg" in value
+
+
+def _extract_xml_title(value: str) -> str:
+    match = XML_TITLE_RE.search(html.unescape(value))
+    return _compact_message_text(match.group(1), join_lines=True) if match else ""
 
 
 def _extract_ocr_text(value: str) -> str:

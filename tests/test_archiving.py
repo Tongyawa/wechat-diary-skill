@@ -261,6 +261,140 @@ class ArchivingTests(unittest.TestCase):
         self.assertIn("Voicer：晚安呢", text)
         self.assertNotIn("转文字失败", text)
 
+    def test_nested_quote_appmsg_xml_is_rendered_from_resolved_context(self) -> None:
+        from wechat_diary_core.chat_flow import render_chat_flow
+        from wechat_diary_core.preprocessing.cleaner import clean_messages, resolve_reply_context
+        from wechat_diary_core.config import load_config
+
+        xml_quote = '<msg><appmsg appid="" sdkver="0"><title>nested quote body</title><type>57</type><content>'
+        messages = [
+            {
+                "localId": 1,
+                "createTime": 1778941200,
+                "formattedTime": "2026-05-16 22:20:00",
+                "type": "语音消息",
+                "content": "[语音消息 - 转文字失败: Silk 解码失败]",
+                "isSend": 0,
+                "senderUsername": "other",
+                "senderDisplayName": "Peer",
+                "platformMessageId": "voice-1",
+            },
+            {
+                "localId": 2,
+                "createTime": 1778941299,
+                "formattedTime": "2026-05-16 22:21:39",
+                "type": "引用消息",
+                "content": "nested quote body[引用 Peer：[语音]]",
+                "isSend": 1,
+                "senderUsername": "me",
+                "senderDisplayName": "SelfRawName",
+                "platformMessageId": "quote-1",
+                "replyToMessageId": "voice-1",
+                "quotedSender": "Peer",
+                "quotedContent": "[语音]",
+            },
+            {
+                "localId": 3,
+                "createTime": 1778941543,
+                "formattedTime": "2026-05-16 22:25:43",
+                "type": "引用消息",
+                "content": f"current message body[引用 SelfRawName：{xml_quote}]",
+                "isSend": 1,
+                "senderUsername": "me",
+                "senderDisplayName": "SelfRawName",
+                "platformMessageId": "quote-2",
+                "replyToMessageId": "quote-1",
+                "quotedSender": "SelfRawName",
+                "quotedContent": xml_quote,
+            },
+            {
+                "localId": 4,
+                "createTime": 1778941571,
+                "formattedTime": "2026-05-16 22:26:11",
+                "type": "语音消息",
+                "content": "[引用 [消息]]",
+                "isSend": 0,
+                "senderUsername": "other",
+                "senderDisplayName": "Peer",
+                "platformMessageId": "quote-3",
+                "replyToMessageId": "quote-2",
+                "quotedContent": "[消息]",
+            },
+        ]
+
+        cfg = load_config(Path("missing.toml"))
+        resolved = resolve_reply_context(clean_messages(messages, cfg.preprocessing))
+        text = render_chat_flow(resolved)
+
+        self.assertIn("我：current message body[引用 我：nested quote body[引用 Peer：[语音]]]", text)
+        self.assertIn("Peer：[引用 我：current message body[引用 我：nested quote body[引用 Peer：[语音]]]]", text)
+        self.assertNotIn("<msg", text)
+        self.assertNotIn("SelfRawName", text)
+
+    def test_compressed_quote_segment_preserves_reply_context_and_self_sender(self) -> None:
+        from wechat_diary_core.chat_flow import render_chat_flow
+        from wechat_diary_core.preprocessing.cleaner import clean_messages, resolve_reply_context
+        from wechat_diary_core.preprocessing.time_compress import compress_nearby_messages
+        from wechat_diary_core.config import load_config
+
+        messages = [
+            {
+                "localId": 1,
+                "createTime": 1778941434,
+                "formattedTime": "2026-05-16 22:23:54",
+                "type": "文本消息",
+                "content": "self original text",
+                "isSend": 1,
+                "senderUsername": "me",
+                "senderDisplayName": "SelfRawName",
+                "platformMessageId": "self-1",
+            },
+            {
+                "localId": 2,
+                "createTime": 1778941545,
+                "formattedTime": "2026-05-16 22:25:45",
+                "type": "文本消息",
+                "content": "first peer text",
+                "isSend": 0,
+                "senderUsername": "other",
+                "senderDisplayName": "Peer",
+                "platformMessageId": "other-1",
+            },
+            {
+                "localId": 3,
+                "createTime": 1778941549,
+                "formattedTime": "2026-05-16 22:25:49",
+                "type": "文本消息",
+                "content": "second peer text",
+                "isSend": 0,
+                "senderUsername": "other",
+                "senderDisplayName": "Peer",
+                "platformMessageId": "other-2",
+            },
+            {
+                "localId": 4,
+                "createTime": 1778941560,
+                "formattedTime": "2026-05-16 22:26:00",
+                "type": "引用消息",
+                "content": "third peer text[引用 SelfRawName：self original text]",
+                "isSend": 0,
+                "senderUsername": "other",
+                "senderDisplayName": "Peer",
+                "platformMessageId": "other-3",
+                "replyToMessageId": "self-1",
+                "quotedSender": "SelfRawName",
+                "quotedContent": "self original text",
+            },
+        ]
+
+        cfg = load_config(Path("missing.toml"))
+        resolved = resolve_reply_context(clean_messages(messages, cfg.preprocessing))
+        compressed = compress_nearby_messages(resolved, max_interval_sec=120)
+        text = render_chat_flow(compressed)
+
+        self.assertIn("Peer：first peer text | second peer text | third peer text[引用 我：self original text]", text)
+        self.assertNotIn("SelfRawName", text)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -66,29 +66,48 @@ def preprocess_export(
 
 
 def resolve_reply_context(messages: list[Message]) -> list[Message]:
-    by_platform_id = {
+    raw_by_platform_id = {
         str(message.get("platformMessageId")): message
         for message in messages
         if message.get("platformMessageId") is not None
     }
+    resolved_by_platform_id: dict[str, Message] = {}
     resolved: list[Message] = []
     for message in messages:
         current = copy.deepcopy(message)
         reply_to = current.get("replyToMessageId")
-        target = by_platform_id.get(str(reply_to)) if reply_to is not None else None
+        target = None
+        if reply_to is not None:
+            key = str(reply_to)
+            target = resolved_by_platform_id.get(key) or raw_by_platform_id.get(key)
         if target:
-            current["replyContext"] = {
-                "senderUsername": target.get("senderUsername"),
-                "senderDisplayName": target.get("senderDisplayName"),
-                "isSend": target.get("isSend"),
-                "content": target.get("content"),
-                "type": target.get("type"),
-                "platformMessageId": target.get("platformMessageId"),
-                "image_ocr": target.get("image_ocr"),
-                "image_ocr_inline": target.get("image_ocr_inline"),
-            }
+            current["replyContext"] = _reply_context_from(target)
         resolved.append(current)
+        platform_id = current.get("platformMessageId")
+        if platform_id is not None:
+            resolved_by_platform_id[str(platform_id)] = current
     return resolved
+
+
+def _reply_context_from(target: Message) -> Message:
+    fields = (
+        "senderUsername",
+        "senderDisplayName",
+        "isSend",
+        "content",
+        "type",
+        "platformMessageId",
+        "image_ocr",
+        "image_ocr_inline",
+        "transcribe_failed",
+        "replyToMessageId",
+        "quotedContent",
+        "quotedSender",
+        "quotedSenderDisplayName",
+        "quotedIsSelf",
+        "replyContext",
+    )
+    return {field: copy.deepcopy(target.get(field)) for field in fields if target.get(field) is not None}
 
 
 def load_chat_export(path: str | Path) -> dict[str, Any]:
@@ -106,7 +125,10 @@ def clean_messages(
     pat_keep_names: Sequence[str] | None = None,
 ) -> list[Message]:
     cleaned: list[Message] = []
-    self_display_names = _self_display_names(messages, pat_keep_names or [])
+    actual_self_display_names = _self_display_names(messages, [])
+    self_display_names = actual_self_display_names | {
+        str(name).strip() for name in pat_keep_names or [] if str(name).strip()
+    }
     pending_chatroom_top_message = False
     for message in messages:
         if _is_chatroom_top_protocol(message):
@@ -119,6 +141,8 @@ def clean_messages(
         current = copy.deepcopy(message)
         if is_self_related_pat:
             current["is_self_related_pat"] = True
+        if _quoted_sender_is_self(current, actual_self_display_names):
+            current["quotedIsSelf"] = True
         if pending_chatroom_top_message:
             current["is_chatroom_top_message"] = True
             pending_chatroom_top_message = False
@@ -209,3 +233,10 @@ def _self_display_names(messages: Sequence[Message], extra_names: Sequence[str])
             if value:
                 names.add(value)
     return names
+
+
+def _quoted_sender_is_self(message: Message, self_display_names: set[str]) -> bool:
+    quoted_sender = str(
+        message.get("quotedSenderDisplayName") or message.get("quotedSender") or ""
+    ).strip()
+    return bool(quoted_sender and quoted_sender in self_display_names)
