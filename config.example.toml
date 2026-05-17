@@ -14,6 +14,9 @@ voice_transcribe_usernames = []
 [paths]
 raw = "WeFlow-raw-exports"
 processed = "WeFlow-processed-exports"
+# After二次加工 finishes, each day's processed markdown is promoted here for
+# permanent per-session history. Processed gets wiped daily; archived doesn't.
+archived = "WeFlow-archived-exports"
 insights = "WeFlow-insights"
 # Where pre-export rotations land. Each automated `export_all_chats` run moves
 # the current raw + processed contents here into a timestamped subfolder so

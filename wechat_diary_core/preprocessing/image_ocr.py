@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 import contextlib
 import io
 import logging
@@ -14,6 +14,7 @@ from ..config import PreprocessingConfig
 LOGGER = logging.getLogger(__name__)
 Message = dict[str, Any]
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
+ImageMode = Literal["ocr_inline", "preserve_paths"]
 
 
 class OcrEngine(Protocol):
@@ -82,7 +83,18 @@ def annotate_image_messages(
     base_dir: Path,
     settings: PreprocessingConfig,
     engine: OcrEngine | None = None,
+    image_mode: ImageMode = "ocr_inline",
 ) -> list[Message]:
+    """Either run OCR on referenced images or just record their paths.
+
+    ``image_mode="preserve_paths"`` skips OCR entirely and records the relative
+    image path on the message so chat_flow renders
+    ``[图片：media/images/xxx.jpg]`` — a downstream Agent reads the image
+    multimodally later (used by private per-contact pipelines).
+    """
+    if image_mode == "preserve_paths":
+        return _preserve_image_paths(messages, base_dir)
+
     if not settings.image_ocr_enabled:
         return list(messages)
 
@@ -115,6 +127,26 @@ def annotate_image_messages(
             message["content"] = f"{content}\n[OCR] {inline_text}" if content else f"[OCR] {inline_text}"
 
     return list(messages)
+
+
+def _preserve_image_paths(messages: Sequence[Message], base_dir: Path) -> list[Message]:
+    for message in messages:
+        refs = _message_image_path_strings(message)
+        if not refs:
+            continue
+        # Use the first referenced path as the renderable token.
+        message["image_paths"] = refs
+        message["image_ocr_inline"] = refs[0]
+    return list(messages)
+
+
+def _message_image_path_strings(message: Message) -> list[str]:
+    refs: list[str] = []
+    for field in ("content", "source"):
+        value = message.get(field)
+        if isinstance(value, str) and _looks_like_image_ref(value):
+            refs.append(value.replace("\\", "/"))
+    return refs
 
 
 def _truncate_inline(text: str, max_chars: int) -> str:

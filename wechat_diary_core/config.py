@@ -15,6 +15,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "paths": {
         "raw": "WeFlow-raw-exports",
         "processed": "WeFlow-processed-exports",
+        "archived": "WeFlow-archived-exports",
         "insights": "WeFlow-insights",
         "rotation_root": "其他/test/test_archive",
     },
@@ -67,6 +68,7 @@ class UserConfig:
 class PathsConfig:
     raw: Path
     processed: Path
+    archived: Path
     insights: Path
     rotation_root: Path
 
@@ -179,6 +181,7 @@ def _build_config(raw: dict[str, Any], base_dir: Path) -> Config:
         paths=PathsConfig(
             raw=_resolve_path(base_dir, paths["raw"]),
             processed=_resolve_path(base_dir, paths["processed"]),
+            archived=_resolve_path(base_dir, paths["archived"]),
             insights=_resolve_path(base_dir, paths["insights"]),
             rotation_root=_resolve_path(base_dir, paths["rotation_root"]),
         ),

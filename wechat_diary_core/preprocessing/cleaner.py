@@ -12,7 +12,7 @@ import re
 from ..config import Config, PreprocessingConfig, load_config
 from .context_window import filter_group_context_window
 from .exceptions import InvalidExportError
-from .image_ocr import OcrEngine, annotate_image_messages
+from .image_ocr import ImageMode, OcrEngine, annotate_image_messages
 from .time_compress import compress_nearby_messages
 
 
@@ -31,6 +31,7 @@ def preprocess_export(
     source_path: str | Path,
     config: Config | None = None,
     ocr_engine: OcrEngine | None = None,
+    image_mode: ImageMode = "ocr_inline",
 ) -> ProcessedChatExport:
     cfg = config or load_config()
     path = Path(source_path)
@@ -54,7 +55,7 @@ def preprocess_export(
             anchor_keywords=window.anchor_keywords,
         )
 
-    messages = annotate_image_messages(messages, path.parent, cfg.preprocessing, engine=ocr_engine)
+    messages = annotate_image_messages(messages, path.parent, cfg.preprocessing, engine=ocr_engine, image_mode=image_mode)
     messages = resolve_reply_context(messages)
     messages = compress_nearby_messages(messages, cfg.preprocessing.time_compress_interval_sec)
 
