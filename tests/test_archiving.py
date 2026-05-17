@@ -232,6 +232,66 @@ class ArchivingTests(unittest.TestCase):
         self.assertIn("Bystander：回复瓜子脸[引用 Huuu.：[图片：北京香壶ABCDEF…]]", text)
         self.assertNotIn("media/images/", text)
 
+    def test_link_messages_keep_title_without_url(self) -> None:
+        from wechat_diary_core.chat_flow import render_chat_flow
+
+        link = (
+            "[链接] 某同学(男)：妈妈出轨了怎么办… | "
+            "https://mp.weixin.qq.com/s?__biz=MzYyMTY3MTg5Mg==&mid=2247485081#rd"
+        )
+        messages = [
+            {
+                "createTime": 1778864821,
+                "formattedTime": "2026-05-16 09:07:01",
+                "type": "链接消息",
+                "content": link,
+                "isSend": 1,
+                "senderDisplayName": "SelfRawName",
+                "platformMessageId": "link-1",
+            },
+            {
+                "createTime": 1778864880,
+                "formattedTime": "2026-05-16 09:08:00",
+                "type": "引用消息",
+                "content": "我是不管的[引用 SelfRawName：" + link + "]",
+                "isSend": 0,
+                "senderDisplayName": "浪前(_)-格子",
+                "replyContext": {
+                    "senderDisplayName": "SelfRawName",
+                    "isSend": 1,
+                    "type": "链接消息",
+                    "content": link,
+                },
+            },
+        ]
+
+        text = render_chat_flow(messages)
+
+        self.assertIn("我：[链接：某同学(男)：妈妈出轨了怎么办…]", text)
+        self.assertIn("格子：我是不管的[引用 我：[链接：某同学(男)：妈妈出轨了怎么办…]]", text)
+        self.assertNotIn("mp.weixin.qq.com", text)
+
+    def test_recall_notice_uses_simplified_sender_without_colon_or_raw_name(self) -> None:
+        from wechat_diary_core.chat_flow import render_chat_flow
+
+        messages = [
+            {
+                "createTime": 1778864900,
+                "formattedTime": "2026-05-16 09:08:20",
+                "type": "其他消息",
+                "content": '"浪前(*)-格子" 撤回了一条消息0',
+                "isSend": 0,
+                "senderDisplayName": "浪前(_)-格子",
+            },
+        ]
+
+        text = render_chat_flow(messages)
+
+        self.assertIn("格子 撤回了一条消息", text)
+        self.assertNotIn("格子：", text)
+        self.assertNotIn("浪前", text)
+        self.assertNotIn("消息0", text)
+
     def test_voice_fail_messages_collapse_to_voice_marker(self) -> None:
         from wechat_diary_core.chat_flow import render_chat_flow
 
