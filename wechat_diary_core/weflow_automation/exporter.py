@@ -140,19 +140,27 @@ def _moments_commands(usernames: list[str], config: Config) -> list[DriverComman
         DriverCommand("click", "查找联系人"),
     ]
     for username in usernames:
-        commands.extend(
-            [
-                DriverCommand("set_text", "查找联系人", value=username),
-                DriverCommand("wait_for_text_sequence", username, value="条", timeout=30),
-                DriverCommand("ensure_selected", username, timeout=30),
-            ]
-        )
+        commands.append(DriverCommand("set_text", "查找联系人", value=username))
+        if _looks_like_wxid(username):
+            commands.extend(
+                [
+                    DriverCommand("wait_for", "条", timeout=30),
+                    DriverCommand("click_after_anchor", "全选", value="选择", timeout=30),
+                ]
+            )
+        else:
+            commands.extend(
+                [
+                    DriverCommand("wait_for_text_sequence", username, value="条", timeout=30),
+                    DriverCommand("ensure_selected", username, timeout=30),
+                ]
+            )
     commands.extend(
         [
             DriverCommand("ensure_action_available", "下载所选", value="全选", timeout=30),
             DriverCommand("click", "下载所选"),
             DriverCommand("wait_for", "导出格式", timeout=30),
-            *[DriverCommand("wait_for_text_sequence", "联系人", value=username, timeout=30) for username in usernames],
+            *_contact_verification_commands(usernames),
             DriverCommand("click", "JSON"),
             DriverCommand("click", "点击选择输出目录"),
             DriverCommand("confirm_native_dialog", "选择导出目录", value="选择文件夹", timeout=30),
@@ -166,7 +174,7 @@ def _moments_commands(usernames: list[str], config: Config) -> list[DriverComman
             DriverCommand("ensure_checked", "图片", timeout=10),
             DriverCommand("ensure_checked", "实况图", timeout=10),
             DriverCommand("ensure_checked", "视频", timeout=10),
-            *[DriverCommand("wait_for_text_sequence", "联系人", value=username, timeout=30) for username in usernames],
+            *_contact_verification_commands(usernames),
             DriverCommand("wait_for_enabled", "开始导出", timeout=30),
             DriverCommand("click", "开始导出"),
             DriverCommand("wait_for", "完成", timeout=max(300, config.automation.poll_export_interval_sec * 10)),
@@ -184,3 +192,17 @@ def _coerce_date(value: date | str | None) -> date:
     if isinstance(value, date):
         return value
     return datetime.strptime(value, "%Y-%m-%d").date()
+
+
+def _looks_like_wxid(value: str) -> bool:
+    return value.strip().startswith(("wxid_", "gh_"))
+
+
+def _contact_verification_commands(usernames: list[str]) -> list[DriverCommand]:
+    commands: list[DriverCommand] = []
+    for username in usernames:
+        if _looks_like_wxid(username):
+            commands.append(DriverCommand("wait_for", "联系人", timeout=30))
+        else:
+            commands.append(DriverCommand("wait_for_text_sequence", "联系人", value=username, timeout=30))
+    return commands
