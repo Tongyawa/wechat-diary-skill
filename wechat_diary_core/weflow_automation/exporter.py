@@ -135,7 +135,7 @@ def _moments_commands(usernames: list[str], config: Config) -> list[DriverComman
         DriverCommand("close_any_modal", timeout=5),
         DriverCommand("wait_for_absent", "导出格式", timeout=5),
         DriverCommand("wait_for", "朋友圈", timeout=30),
-        DriverCommand("click", "朋友圈"),
+        DriverCommand("click_after_anchor", "聊天", value="朋友圈", timeout=15),
         DriverCommand("wait_for", "查找联系人", timeout=30),
         DriverCommand("click", "查找联系人"),
     ]
