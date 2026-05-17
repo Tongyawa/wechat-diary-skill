@@ -70,7 +70,7 @@ class MomentsTests(unittest.TestCase):
         self.assertEqual(len(export.posts), 1)
         self.assertEqual(export.posts[0]["id"], "p1")
 
-    def test_render_includes_images_likes_comments_and_location(self) -> None:
+    def test_render_includes_images_comments_and_location_but_not_likes(self) -> None:
         post = _post(
             pid="p1",
             content="今天天气不错",
@@ -92,7 +92,8 @@ class MomentsTests(unittest.TestCase):
         self.assertIn("Target：今天天气不错", text)
         self.assertIn("[图片：media/p1_0.jpg]", text)
         self.assertIn("[视频：media/p1_1.mp4]", text)
-        self.assertIn("❤ Alice、Bob (2)", text)
+        self.assertNotIn("❤", text)
+        self.assertNotIn("Alice、Bob", text)
         self.assertIn("💬 Carol：好看", text)
         self.assertIn("💬 Target 回复 Carol：谢谢", text)
         self.assertIn("📍 武汉大学", text)

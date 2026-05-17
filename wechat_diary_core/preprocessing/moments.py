@@ -65,7 +65,6 @@ def render_moments_flow(posts: Sequence[Post]) -> str:
         2026-05-14 12:22:55
         Alice：朋友吃八点钟咖啡
         [图片：media/...jpg]
-        ❤ Bob (1)
         💬 Carol：好看
         💬 Alice 回复 Carol：是的
         📍 武汉 - 武汉大学
@@ -142,15 +141,6 @@ def _render_single_post(post: Post) -> str:
             lines.append(f"[视频：{local_path}]")
         else:
             lines.append(f"[图片：{local_path}]")
-
-    likes = [_safe(name) for name in post.get("likes") or []]
-    likes = [name for name in likes if name]
-    if likes:
-        if len(likes) <= 5:
-            lines.append(f"❤ {'、'.join(likes)} ({len(likes)})")
-        else:
-            preview = "、".join(likes[:5])
-            lines.append(f"❤ {preview}… ({len(likes)})")
 
     for comment in post.get("comments") or []:
         speaker = _safe(comment.get("nickname")) or "未知"
