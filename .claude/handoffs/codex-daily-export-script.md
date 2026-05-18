@@ -90,12 +90,25 @@ base SHA：`f877bed5b62c285720f2092d86b0407aba7e78fb`
 
 ## 评审
 
-结论：未评审。
+结论：通过（带 2 处修复）。
 
-查了&命令：无。
+查了：Claude Opus 4.7 静态审阅 `git diff main..codex-daily-export-script` 全部 15 个文件。
 
-没查：未由独立 Agent 复跑验证；未做代码审查。
+命令：`python -m unittest discover -s tests`（修复后 77 个全过，含新增 1 个）。
 
-问题：无。
+没查：未独立复跑 `.bat`（用户已盯过真实产物）；未穷举 `_set_toml_value` 对多行字符串/表数组的鲁棒性（当前涉及的键都是简单 string/bool/字符串数组）。
 
-最小修复：如评审打回，优先从 `scripts/run_daily_export.py` 的时序和 `wechat_diary_core/weflow_automation/voice_transcribe.py` 的失败重试路径开始。
+问题1：`ensure_local_config` 每次 daily run 都无条件 `_set_toml_value` 写回 4 个 `[daily_export]` 键，而 `_set_toml_value` 用 `^[ \t]*{key}[ \t]*=.*$` 整行替换，会吞掉行尾 `# comment`。后果：从 `config.example.toml` 继承过来的注释在首次 daily run 后永久消失。
+
+修复：改为「key 缺失才插入」；present 的键不再 normalize。`voice_transcribe_usernames` 自动填充因为是真值变更（[] → target_usernames）保持原样，inline 注释丢失视为该 feature 的代价。
+
+问题2：首次双击 `.bat` 时 `input("WeFlow.exe path: ")` 的 prompt 走 python stdout → `cmd /d /c 2>&1` → PowerShell `ForEach-Object` 管道，partial 行（无换行）被块缓冲卡住、用户看不到提示就以为窗口卡死。
+
+修复：prompt 前显式 `print(..., flush=True)`，`input()` 用空 prompt 参数。
+
+新增测试：`test_ensure_local_config_preserves_inline_comments_on_existing_keys` 钉死问题1的回归。
+
+未修（建议后续）：
+- `TASK_FAILURE_STATUSES` 用子串匹配，「失败重试中」会误触发重试；3 次上限兜底。
+- PowerShell wrapper 的 `cmd /d /c "python" "{0}" 2>&1` 引号脱壳依赖当前路径无空格；clone 到带空格目录可能脱错。
+- `archive_moments_for(None, ...)` 当前因 rotation 先跑而安全；传 `target_usernames` 语义更紧。

@@ -149,37 +149,35 @@ def ensure_local_config(
     if _needs_weflow_path(data):
         if not prompt:
             raise RuntimeError("config.toml is missing a usable [automation].weflow_exe value.")
-        weflow_exe = input_func("WeFlow.exe path: ").strip().strip('"')
+        # input()'s prompt arg goes to stdout, which under .bat → cmd /c 2>&1 |
+        # PowerShell ForEach-Object is block-buffered; a partial line stays
+        # invisible until something flushes. Print + flush explicitly so the
+        # double-click user actually sees the prompt before stdin blocks.
+        print("WeFlow.exe path: ", end="", flush=True)
+        weflow_exe = input_func("").strip().strip('"')
         if not weflow_exe:
             raise RuntimeError("WeFlow.exe path is required.")
         text = _set_toml_value(text, "automation", "weflow_exe", _toml_string(weflow_exe))
         data = _loads_toml(text, config_path)
 
-    target_usernames = _string_list((data.get("daily_export") or {}).get("target_usernames"))
-    text = _set_toml_value(text, "daily_export", "target_usernames", _toml_array(target_usernames))
+    daily_export_section = data.get("daily_export") or {}
 
-    text = _set_toml_value(
-        text,
-        "daily_export",
-        "target_processed_subroot",
-        _toml_string((data.get("daily_export") or {}).get("target_processed_subroot") or "_targets"),
-    )
-    text = _set_toml_value(
-        text,
-        "daily_export",
-        "cleanup_mode",
-        _toml_string((data.get("daily_export") or {}).get("cleanup_mode") or "archive"),
-    )
-    text = _set_toml_value(
-        text,
-        "daily_export",
-        "restart_weflow",
-        "true" if (data.get("daily_export") or {}).get("restart_weflow", True) else "false",
-    )
+    # Only add missing keys. Rewriting present keys would clobber any inline
+    # `# comment` the user inherited from config.example.toml.
+    if "target_usernames" not in daily_export_section:
+        text = _set_toml_value(text, "daily_export", "target_usernames", _toml_array([]))
+    if "target_processed_subroot" not in daily_export_section:
+        text = _set_toml_value(text, "daily_export", "target_processed_subroot", _toml_string("_targets"))
+    if "cleanup_mode" not in daily_export_section:
+        text = _set_toml_value(text, "daily_export", "cleanup_mode", _toml_string("archive"))
+    if "restart_weflow" not in daily_export_section:
+        text = _set_toml_value(text, "daily_export", "restart_weflow", "true")
 
+    target_usernames = _string_list(daily_export_section.get("target_usernames"))
     data = _loads_toml(text, config_path)
     voice_users = _string_list((data.get("user") or {}).get("voice_transcribe_usernames"))
     if not voice_users and target_usernames:
+        # Real value change; any inline comment on the empty default is lost.
         text = _set_toml_value(text, "user", "voice_transcribe_usernames", _toml_array(target_usernames))
 
     config_path.write_text(text, encoding="utf-8")

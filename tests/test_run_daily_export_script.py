@@ -63,6 +63,29 @@ class DailyExportScriptTests(unittest.TestCase):
         self.assertEqual(cfg.user.voice_transcribe_usernames, [])
         self.assertEqual(cfg.daily_export.cleanup_mode, "archive")
 
+    def test_ensure_local_config_preserves_inline_comments_on_existing_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = root / "config.toml"
+            original = f"""
+[user]
+voice_transcribe_usernames = ["wxid_voice"]        # picked by hand, not the target
+
+[automation]
+weflow_exe = "{(root / 'WeFlow.exe').as_posix()}"
+
+[daily_export]
+target_usernames = ["wxid_existing"]               # keep these comments alive
+target_processed_subroot = "_mine"                 # subroot doc
+cleanup_mode = "delete"                            # I really mean delete
+restart_weflow = false                             # I manage WeFlow myself
+""".strip()
+            config_path.write_text(original, encoding="utf-8")
+
+            ensure_local_config(config_path=config_path, example_path=Path("config.example.toml"))
+
+            self.assertEqual(config_path.read_text(encoding="utf-8"), original)
+
     def test_ensure_local_config_uses_target_as_voice_default_when_present(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
