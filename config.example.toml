@@ -87,6 +87,11 @@ target_usernames = []
 #   WeFlow-processed-exports/<target_processed_subroot>/moments/<yyyy-mm-dd>.md
 target_processed_subroot = "_targets"
 
+# Optional local script called after raw exports are stable and before processed
+# markdown is rendered. Keep empty for the public setup. Private/local pipelines
+# can point this at a script that repairs failed voice transcripts in raw JSON.
+voice_fallback_script = ""
+
 # Double-click daily export defaults to archive so manual runs do not silently
 # delete yesterday's raw/processed workspace.
 cleanup_mode = "archive"

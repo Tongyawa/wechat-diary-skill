@@ -58,6 +58,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "daily_export": {
         "target_usernames": [],
         "target_processed_subroot": "_targets",
+        "voice_fallback_script": "",
         "cleanup_mode": "archive",
         "restart_weflow": True,
     },
@@ -141,6 +142,7 @@ class SkillsConfig:
 class DailyExportConfig:
     target_usernames: list[str]
     target_processed_subroot: str
+    voice_fallback_script: Path | None
     cleanup_mode: str
     restart_weflow: bool
 
@@ -246,6 +248,7 @@ def _build_config(raw: dict[str, Any], base_dir: Path) -> Config:
         daily_export=DailyExportConfig(
             target_usernames=[str(value).strip() for value in daily_export.get("target_usernames") or [] if str(value).strip()],
             target_processed_subroot=str(daily_export.get("target_processed_subroot") or "_targets").strip() or "_targets",
+            voice_fallback_script=_optional_path(base_dir, daily_export.get("voice_fallback_script")),
             cleanup_mode=cleanup_mode,
             restart_weflow=bool(daily_export.get("restart_weflow", True)),
         ),
@@ -267,6 +270,11 @@ def _deep_merge(defaults: dict[str, Any], overrides: dict[str, Any]) -> dict[str
 def _resolve_path(base_dir: Path, value: str | Path) -> Path:
     path = Path(value).expanduser()
     return path if path.is_absolute() else (base_dir / path).resolve()
+
+
+def _optional_path(base_dir: Path, value: Any) -> Path | None:
+    text = str(value or "").strip()
+    return _resolve_path(base_dir, text) if text else None
 
 
 def _optional_int(value: Any) -> int | None:
