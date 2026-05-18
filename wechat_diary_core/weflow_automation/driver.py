@@ -18,6 +18,10 @@ class ElementNotFound(DriverError):
     """Raised when a driver cannot locate a requested UI element."""
 
 
+class TaskFailed(DriverError):
+    """Raised when a new task-center row reaches a terminal failure state."""
+
+
 class Driver(Protocol):
     def click_by_name(self, name: str, retries: int = 3) -> None: ...
 

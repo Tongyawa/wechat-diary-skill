@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shutil
 import sys
@@ -28,7 +29,7 @@ from wechat_diary_core.weflow_automation.voice_transcribe import batch_transcrib
 from wechat_diary_core.workspace import rotate_export_workspace
 
 
-SECTION_RE = re.compile(r"(?m)^\s*\[([^\]]+)\]\s*$")
+SECTION_RE = re.compile(r"(?m)^[ \t]*\[([^\]]+)\][ \t]*$")
 
 
 @dataclass(frozen=True)
@@ -40,11 +41,20 @@ class DailyExportResult:
     sidecar_moment_files: list[Path]
 
 
+@dataclass(frozen=True)
+class RawTreeSnapshot:
+    file_count: int
+    dir_count: int
+    latest_mtime_ns: int
+    total_size: int
+
+
 @dataclass
 class DailyExportDeps:
     stop_weflow_processes: Callable[..., Any] = stop_weflow_processes
     ensure_weflow_running: Callable[..., Any] = ensure_weflow_running
     wait_for_ready_page: Callable[..., Any] = None  # type: ignore[assignment]
+    wait_for_raw_exports_stable: Callable[..., Any] = None  # type: ignore[assignment]
     rotate_export_workspace: Callable[..., Any] = rotate_export_workspace
     batch_transcribe_voices_for: Callable[..., Any] = batch_transcribe_voices_for
     export_all_chats: Callable[..., Any] = export_all_chats
@@ -56,6 +66,8 @@ class DailyExportDeps:
     def __post_init__(self) -> None:
         if self.wait_for_ready_page is None:
             self.wait_for_ready_page = wait_for_ready_page
+        if self.wait_for_raw_exports_stable is None:
+            self.wait_for_raw_exports_stable = wait_for_raw_exports_stable
 
 
 class DailyExportStageError(RuntimeError):
@@ -144,14 +156,7 @@ def ensure_local_config(
         data = _loads_toml(text, config_path)
 
     target_usernames = _string_list((data.get("daily_export") or {}).get("target_usernames"))
-    if not target_usernames:
-        if not prompt:
-            raise RuntimeError("config.toml is missing [daily_export].target_usernames.")
-        raw_targets = input_func("Target contact wxid or display name (comma-separated): ").strip()
-        target_usernames = _split_values(raw_targets)
-        if not target_usernames:
-            raise RuntimeError("At least one target contact is required.")
-        text = _set_toml_value(text, "daily_export", "target_usernames", _toml_array(target_usernames))
+    text = _set_toml_value(text, "daily_export", "target_usernames", _toml_array(target_usernames))
 
     text = _set_toml_value(
         text,
@@ -174,7 +179,7 @@ def ensure_local_config(
 
     data = _loads_toml(text, config_path)
     voice_users = _string_list((data.get("user") or {}).get("voice_transcribe_usernames"))
-    if not voice_users:
+    if not voice_users and target_usernames:
         text = _set_toml_value(text, "user", "voice_transcribe_usernames", _toml_array(target_usernames))
 
     config_path.write_text(text, encoding="utf-8")
@@ -190,12 +195,14 @@ def run_daily_export(
     export_day = day or (datetime.now().date() - timedelta(days=1))
     day_iso = export_day.isoformat()
     target_usernames = list(cfg.daily_export.target_usernames)
-    if not target_usernames:
-        raise RuntimeError("[daily_export].target_usernames must contain at least one contact.")
 
     print(f"Daily export day: {day_iso}")
     print(f"Raw root: {cfg.paths.raw}")
     print(f"Processed root: {cfg.paths.processed}")
+    if target_usernames:
+        print(f"Target sidecar contacts: {len(target_usernames)}")
+    else:
+        print("Target sidecar contacts: none; moments and sidecar archives will be skipped.")
 
     if cfg.daily_export.restart_weflow:
         _run_stage(
@@ -223,15 +230,28 @@ def run_daily_export(
             "voice_transcribe",
             lambda: active_deps.batch_transcribe_voices_for(voice_usernames, config=cfg),
         )
+    else:
+        print("voice_transcribe skipped: no configured contacts.")
 
     _run_stage(
         "export_all_chats",
         lambda: active_deps.export_all_chats(date=export_day, config=cfg, cleanup="skip"),
     )
     _run_stage(
-        "export_target_moments",
-        lambda: active_deps.export_moments_for(target_usernames, date=export_day, config=cfg),
+        "wait_raw_exports_stable",
+        lambda: active_deps.wait_for_raw_exports_stable(cfg.paths.raw, min_files=1),
     )
+    if target_usernames:
+        _run_stage(
+            "export_target_moments",
+            lambda: active_deps.export_moments_for(target_usernames, date=export_day, config=cfg),
+        )
+        _run_stage(
+            "wait_raw_exports_stable_after_moments",
+            lambda: active_deps.wait_for_raw_exports_stable(cfg.paths.raw, min_files=1),
+        )
+    else:
+        print("export_target_moments skipped: no target sidecar contacts.")
 
     diary_files = _run_stage(
         "archive_diary_processed",
@@ -239,25 +259,28 @@ def run_daily_export(
     )
 
     subroot = _normalize_subroot(cfg.daily_export.target_processed_subroot)
-    sidecar_chat_files = _run_stage(
-        "archive_target_chats",
-        lambda: active_deps.archive_chats_for(
-            target_usernames,
-            config=cfg,
-            subroot=f"{subroot}/chats",
-            image_mode="preserve_paths",
-            clear_first=True,
-        ),
-    )
-    sidecar_moment_files = _run_stage(
-        "archive_target_moments",
-        lambda: active_deps.archive_moments_for(
-            None,
-            config=cfg,
-            subroot=f"{subroot}/moments",
-            clear_first=True,
-        ),
-    )
+    sidecar_chat_files = []
+    sidecar_moment_files = []
+    if target_usernames:
+        sidecar_chat_files = _run_stage(
+            "archive_target_chats",
+            lambda: active_deps.archive_chats_for(
+                target_usernames,
+                config=cfg,
+                subroot=f"{subroot}/chats",
+                image_mode="preserve_paths",
+                clear_first=True,
+            ),
+        )
+        sidecar_moment_files = _run_stage(
+            "archive_target_moments",
+            lambda: active_deps.archive_moments_for(
+                None,
+                config=cfg,
+                subroot=f"{subroot}/moments",
+                clear_first=True,
+            ),
+        )
 
     return DailyExportResult(
         day=day_iso,
@@ -284,6 +307,83 @@ def wait_for_ready_page(endpoint: str, timeout: float = 60) -> None:
             if driver is not None:
                 driver.close()
     raise DriverUnavailable(f"WeFlow page did not become ready after launch: {last_error}")
+
+
+def wait_for_raw_exports_stable(
+    root: str | Path,
+    *,
+    quiet_seconds: float = 8.0,
+    timeout: float = 180.0,
+    poll_interval: float = 1.0,
+    min_files: int = 1,
+) -> RawTreeSnapshot:
+    """Wait until WeFlow has stopped mutating the raw export tree.
+
+    WeFlow can mark a task completed in the UI before its JSON/media files have
+    all landed on disk. The processed archive step reads the filesystem, so it
+    needs a short quiet window after each GUI export task.
+    """
+    raw_root = Path(root)
+    deadline = time.monotonic() + timeout
+    last_snapshot: RawTreeSnapshot | None = None
+    stable_since: float | None = None
+    latest_snapshot = RawTreeSnapshot(file_count=0, dir_count=0, latest_mtime_ns=0, total_size=0)
+
+    while True:
+        now = time.monotonic()
+        snapshot = _snapshot_raw_tree(raw_root)
+        latest_snapshot = snapshot
+        has_enough_files = snapshot.file_count >= min_files
+
+        if snapshot != last_snapshot:
+            last_snapshot = snapshot
+            stable_since = now if has_enough_files else None
+        elif has_enough_files:
+            if stable_since is None:
+                stable_since = now
+            if now - stable_since >= quiet_seconds:
+                return snapshot
+
+        if now >= deadline:
+            raise TimeoutError(
+                "Raw export directory did not become stable "
+                f"within {timeout:.0f}s "
+                f"(files={latest_snapshot.file_count}, dirs={latest_snapshot.dir_count}, "
+                f"min_files={min_files})."
+            )
+        time.sleep(poll_interval)
+
+
+def _snapshot_raw_tree(root: Path) -> RawTreeSnapshot:
+    if not root.exists():
+        return RawTreeSnapshot(file_count=0, dir_count=0, latest_mtime_ns=0, total_size=0)
+
+    file_count = 0
+    dir_count = 0
+    latest_mtime_ns = 0
+    total_size = 0
+    for dir_path, dir_names, file_names in os.walk(root):
+        dir_count += len(dir_names)
+        try:
+            latest_mtime_ns = max(latest_mtime_ns, Path(dir_path).stat().st_mtime_ns)
+        except OSError:
+            latest_mtime_ns = max(latest_mtime_ns, time.time_ns())
+        for file_name in file_names:
+            path = Path(dir_path) / file_name
+            try:
+                stat = path.stat()
+            except OSError:
+                latest_mtime_ns = max(latest_mtime_ns, time.time_ns())
+                continue
+            file_count += 1
+            total_size += stat.st_size
+            latest_mtime_ns = max(latest_mtime_ns, stat.st_mtime_ns)
+    return RawTreeSnapshot(
+        file_count=file_count,
+        dir_count=dir_count,
+        latest_mtime_ns=latest_mtime_ns,
+        total_size=total_size,
+    )
 
 
 def _run_stage(stage: str, action: Callable[[], Any]) -> Any:
@@ -339,13 +439,13 @@ def _set_toml_value(text: str, section: str, key: str, value: str) -> str:
         return f"{text}{separator}[{section}]\n{line}\n"
 
     body = text[body_start:body_end]
-    key_re = re.compile(rf"(?m)^\s*{re.escape(key)}\s*=.*$")
+    key_re = re.compile(rf"(?m)^[ \t]*{re.escape(key)}[ \t]*=.*$")
     match = key_re.search(body)
     if match:
         body = body[: match.start()] + line + body[match.end() :]
     else:
-        prefix = "\n" if body and not body.startswith("\n") else ""
-        body = f"{prefix}{line}{body}"
+        tail = body if body.startswith("\n") else f"\n{body}" if body else "\n"
+        body = f"\n{line}{tail}"
     return text[:body_start] + body + text[body_end:]
 
 
