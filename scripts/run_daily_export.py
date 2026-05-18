@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import time
 import tomllib
@@ -57,6 +58,7 @@ class DailyExportDeps:
     wait_for_raw_exports_stable: Callable[..., Any] = None  # type: ignore[assignment]
     rotate_export_workspace: Callable[..., Any] = rotate_export_workspace
     batch_transcribe_voices_for: Callable[..., Any] = batch_transcribe_voices_for
+    run_voice_fallback_script: Callable[..., Any] = None  # type: ignore[assignment]
     export_all_chats: Callable[..., Any] = export_all_chats
     export_moments_for: Callable[..., Any] = export_moments_for
     archive: Callable[..., Any] = archive
@@ -68,6 +70,8 @@ class DailyExportDeps:
             self.wait_for_ready_page = wait_for_ready_page
         if self.wait_for_raw_exports_stable is None:
             self.wait_for_raw_exports_stable = wait_for_raw_exports_stable
+        if self.run_voice_fallback_script is None:
+            self.run_voice_fallback_script = run_voice_fallback_script
 
 
 class DailyExportStageError(RuntimeError):
@@ -168,6 +172,8 @@ def ensure_local_config(
         text = _set_toml_value(text, "daily_export", "target_usernames", _toml_array([]))
     if "target_processed_subroot" not in daily_export_section:
         text = _set_toml_value(text, "daily_export", "target_processed_subroot", _toml_string("_targets"))
+    if "voice_fallback_script" not in daily_export_section:
+        text = _set_toml_value(text, "daily_export", "voice_fallback_script", _toml_string(""))
     if "cleanup_mode" not in daily_export_section:
         text = _set_toml_value(text, "daily_export", "cleanup_mode", _toml_string("archive"))
     if "restart_weflow" not in daily_export_section:
@@ -250,6 +256,14 @@ def run_daily_export(
         )
     else:
         print("export_target_moments skipped: no target sidecar contacts.")
+
+    if cfg.daily_export.voice_fallback_script:
+        _run_stage(
+            "voice_fallback",
+            lambda: active_deps.run_voice_fallback_script(cfg.daily_export.voice_fallback_script, cfg),
+        )
+    else:
+        print("voice_fallback skipped: no configured script.")
 
     diary_files = _run_stage(
         "archive_diary_processed",
@@ -350,6 +364,22 @@ def wait_for_raw_exports_stable(
                 f"min_files={min_files})."
             )
         time.sleep(poll_interval)
+
+
+def run_voice_fallback_script(script_path: str | Path, cfg: Config) -> None:
+    script = Path(script_path)
+    if not script.exists():
+        raise FileNotFoundError(f"Voice fallback script does not exist: {script}")
+
+    target_runs = list(cfg.daily_export.target_usernames) or [""]
+    for target in target_runs:
+        command = [sys.executable, str(script), "--raw-root", str(cfg.paths.raw)]
+        if target:
+            command.extend(["--target-wxid", target])
+        env = os.environ.copy()
+        env.setdefault("PYTHONUTF8", "1")
+        env.setdefault("PYTHONIOENCODING", "utf-8")
+        subprocess.run(command, cwd=cfg.base_dir, env=env, check=True)
 
 
 def _snapshot_raw_tree(root: Path) -> RawTreeSnapshot:

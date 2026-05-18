@@ -10,7 +10,13 @@ from scripts.run_daily_export import DailyExportDeps, ensure_local_config, run_d
 from wechat_diary_core.config import load_config
 
 
-def _write_config(root: Path, *, target_users: str = '"Target"', voice_users: str = "") -> Path:
+def _write_config(
+    root: Path,
+    *,
+    target_users: str = '"Target"',
+    voice_users: str = "",
+    voice_fallback_script: str = "",
+) -> Path:
     config_path = root / "config.toml"
     config_path.write_text(
         f"""
@@ -28,6 +34,7 @@ weflow_exe = "{(root / 'WeFlow.exe').as_posix()}"
 [daily_export]
 target_usernames = [{target_users}]
 target_processed_subroot = "_sidecar"
+voice_fallback_script = "{voice_fallback_script}"
 cleanup_mode = "archive"
 restart_weflow = true
 """.strip(),
@@ -61,6 +68,7 @@ class DailyExportScriptTests(unittest.TestCase):
 
         self.assertEqual(cfg.daily_export.target_usernames, [])
         self.assertEqual(cfg.user.voice_transcribe_usernames, [])
+        self.assertIsNone(cfg.daily_export.voice_fallback_script)
         self.assertEqual(cfg.daily_export.cleanup_mode, "archive")
 
     def test_ensure_local_config_preserves_inline_comments_on_existing_keys(self) -> None:
@@ -77,6 +85,7 @@ weflow_exe = "{(root / 'WeFlow.exe').as_posix()}"
 [daily_export]
 target_usernames = ["wxid_existing"]               # keep these comments alive
 target_processed_subroot = "_mine"                 # subroot doc
+voice_fallback_script = ""                         # public default
 cleanup_mode = "delete"                            # I really mean delete
 restart_weflow = false                             # I manage WeFlow myself
 """.strip()
@@ -125,6 +134,7 @@ target_usernames = ["wxid_target"]
                 wait_for_ready_page=lambda endpoint: calls.append(("wait_ready", endpoint)),
                 wait_for_raw_exports_stable=lambda raw_path, min_files: calls.append(("wait_raw", min_files)),
                 batch_transcribe_voices_for=lambda usernames, config: calls.append(("voice", tuple(usernames))),
+                run_voice_fallback_script=lambda script_path, config: calls.append(("fallback", script_path)),
                 export_all_chats=lambda date, config, cleanup: calls.append(("all_chats", cleanup)),
                 export_moments_for=lambda usernames, date, config: calls.append(("moments", tuple(usernames))),
                 archive=lambda raw_path, config, clear_first: calls.append(("archive", clear_first)) or [root / "diary.md"],
@@ -157,6 +167,7 @@ target_usernames = ["wxid_target"]
                 wait_for_ready_page=lambda endpoint: calls.append(("wait_ready", endpoint)),
                 wait_for_raw_exports_stable=lambda raw_path, min_files: calls.append(("wait_raw", min_files)),
                 batch_transcribe_voices_for=lambda usernames, config: calls.append(("voice", tuple(usernames))),
+                run_voice_fallback_script=lambda script_path, config: calls.append(("fallback", script_path)),
                 export_all_chats=lambda date, config, cleanup: calls.append(("all_chats", cleanup)),
                 export_moments_for=lambda usernames, date, config: calls.append(("moments", tuple(usernames))),
                 archive=lambda raw_path, config, clear_first: calls.append(("archive", clear_first)) or [root / "diary.md"],
@@ -216,6 +227,31 @@ target_usernames = ["wxid_target"]
             run_daily_export(cfg, deps=deps, day=date(2026, 5, 16))
 
         self.assertEqual(calls, [("voice", ("VoiceOnly",))])
+
+    def test_runner_calls_voice_fallback_before_archiving(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fallback = root / "voice_fallback.py"
+            fallback.write_text("# placeholder", encoding="utf-8")
+            cfg = load_config(_write_config(root, voice_fallback_script=fallback.as_posix()))
+            calls: list[tuple] = []
+            deps = DailyExportDeps(
+                stop_weflow_processes=lambda timeout: calls.append(("stop_weflow",)),
+                rotate_export_workspace=lambda cfg, label, mode: SimpleNamespace(target=None),
+                ensure_weflow_running=lambda cfg: SimpleNamespace(cdp_endpoint=None),
+                wait_for_raw_exports_stable=lambda raw_path, min_files: calls.append(("wait_raw",)),
+                batch_transcribe_voices_for=lambda usernames, config: calls.append(("voice", tuple(usernames))),
+                run_voice_fallback_script=lambda script_path, config: calls.append(("fallback", Path(script_path).name)),
+                export_all_chats=lambda date, config, cleanup: calls.append(("all_chats",)),
+                export_moments_for=lambda usernames, date, config: calls.append(("moments",)),
+                archive=lambda raw_path, config, clear_first: calls.append(("archive",)) or [],
+                archive_chats_for=lambda usernames, config, subroot, image_mode, clear_first: [],
+                archive_moments_for=lambda usernames, config, subroot, clear_first: [],
+            )
+
+            run_daily_export(cfg, deps=deps, day=date(2026, 5, 16))
+
+        self.assertLess(calls.index(("fallback", "voice_fallback.py")), calls.index(("archive",)))
 
     def test_wait_for_raw_exports_stable_requires_a_written_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
