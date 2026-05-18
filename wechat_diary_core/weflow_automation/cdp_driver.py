@@ -13,7 +13,7 @@ import time
 import urllib.error
 import urllib.request
 
-from .driver import Driver, DriverError, DriverUnavailable, ElementNotFound
+from .driver import Driver, DriverError, DriverUnavailable, ElementNotFound, TaskFailed
 
 
 @dataclass(frozen=True)
@@ -48,6 +48,7 @@ MODAL_CLOSE_NAMES = (
     "关闭任务中心",
 )
 TASK_STATUS_KEYWORDS = ("已完成", "失败", "已取消", "进行中", "准备中", "排队中", "待处理")
+TASK_FAILURE_STATUSES = ("失败", "已取消")
 
 
 class CdpWebSocket:
@@ -362,6 +363,10 @@ class CdpDriver(Driver):
             for row in last_rows:
                 if row.signature in baseline:
                     continue
+                if title_contains in row.title and any(status in row.status for status in TASK_FAILURE_STATUSES):
+                    raise TaskFailed(
+                        f"Task row title~{title_contains!r} reached failure status {row.status!r}: {row.signature}"
+                    )
                 if row.matches(title_contains, status):
                     return row
             time.sleep(poll_interval)

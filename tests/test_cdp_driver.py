@@ -200,6 +200,27 @@ class CdpDriverTests(unittest.TestCase):
                 poll_interval=0.01,
             )
 
+    def test_wait_for_new_task_completion_raises_on_failed_new_row(self) -> None:
+        from wechat_diary_core.weflow_automation.driver import TaskFailed
+
+        connection = FakeConnection(
+            values=[
+                [
+                    {"title": "语音批量转写（联系人）", "status": "失败", "signature": "语音批量转写（联系人） 失败"},
+                ]
+            ]
+        )
+        driver = CdpDriver(connection)  # type: ignore[arg-type]
+
+        with self.assertRaises(TaskFailed):
+            driver.wait_for_new_task_completion(
+                baseline=set(),
+                title_contains="语音批量转写",
+                status="已完成",
+                timeout=5,
+                poll_interval=0.01,
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
