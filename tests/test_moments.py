@@ -14,19 +14,19 @@ from wechat_diary_core.preprocessing.moments import (
 )
 
 
-def _moments_payload(posts: list[dict]) -> dict:
+def _moments_payload(posts: list[dict], usernames: list[str] | None = None) -> dict:
     return {
         "exportTime": "2026-05-15T00:00:00",
         "totalPosts": len(posts),
-        "filters": {"usernames": ["wxid_target"], "keyword": ""},
+        "filters": {"usernames": usernames or ["wxid_target"], "keyword": ""},
         "posts": posts,
     }
 
 
-def _write_moments_file(root: Path, name: str, posts: list[dict]) -> Path:
+def _write_moments_file(root: Path, name: str, posts: list[dict], usernames: list[str] | None = None) -> Path:
     path = root / name
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(_moments_payload(posts), ensure_ascii=False), encoding="utf-8")
+    path.write_text(json.dumps(_moments_payload(posts, usernames=usernames), ensure_ascii=False), encoding="utf-8")
     return path
 
 
@@ -131,6 +131,78 @@ processed = "{(root / 'processed').as_posix()}"
             body = day2.read_text(encoding="utf-8")
             self.assertIn("day2", body)
             self.assertNotIn("other", body)
+
+    def test_archive_moments_for_uses_export_filters_to_separate_target_and_self_streams(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            raw = root / "raw"
+            _write_moments_file(
+                raw / "朋友圈导出_target",
+                "朋友圈.json",
+                [_post(pid="target", username="wxid_target", nickname="Target", content="target post")],
+                usernames=["Target"],
+            )
+            _write_moments_file(
+                raw / "朋友圈导出_self",
+                "朋友圈.json",
+                [_post(pid="self", username="wxid_self", nickname="Self", content="self post")],
+                usernames=["Self"],
+            )
+            config_path = root / "config.toml"
+            config_path.write_text(
+                f"""
+[paths]
+raw = "{raw.as_posix()}"
+processed = "{(root / 'processed').as_posix()}"
+""".strip(),
+                encoding="utf-8",
+            )
+            cfg = load_config(config_path)
+
+            target_written = archive_moments_for(["Target"], config=cfg, subroot="_targets/moments")
+            self_written = archive_moments_for(["Self"], config=cfg, subroot="朋友圈_自己")
+
+            target_body = target_written[0].read_text(encoding="utf-8")
+            self_body = self_written[0].read_text(encoding="utf-8")
+            self.assertIn("target post", target_body)
+            self.assertNotIn("self post", target_body)
+            self.assertIn("self post", self_body)
+            self.assertNotIn("target post", self_body)
+            self.assertEqual(self_written[0].parent.name, "朋友圈_自己")
+
+    def test_archive_moments_for_rewrites_existing_media_paths_to_project_relative_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            raw = root / "raw" / "朋友圈导出_2026-05-15"
+            image = raw / "media" / "p1.jpg"
+            image.parent.mkdir(parents=True)
+            image.write_bytes(b"fake image")
+            _write_moments_file(
+                raw,
+                "朋友圈.json",
+                [
+                    _post(
+                        pid="a",
+                        create_time_str="2026/5/15 09:00:00",
+                        media=[{"localPath": "media/p1.jpg"}],
+                    )
+                ],
+            )
+            config_path = root / "config.toml"
+            config_path.write_text(
+                f"""
+[paths]
+raw = "{(root / 'raw').as_posix()}"
+processed = "{(root / 'processed').as_posix()}"
+""".strip(),
+                encoding="utf-8",
+            )
+            cfg = load_config(config_path)
+
+            written = archive_moments_for(["wxid_target"], config=cfg, subroot="朋友圈_自己")
+
+            body = written[0].read_text(encoding="utf-8")
+            self.assertIn("[图片：raw/朋友圈导出_2026-05-15/media/p1.jpg]", body)
 
     def test_discover_moments_exports_skips_non_moments_json(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

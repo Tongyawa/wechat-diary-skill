@@ -12,7 +12,7 @@ description: 拉取昨日 WeChat 消息（经 WeFlow 自动化），清洗后归
 无参数调用时跑下面这套流程，给早晨脚本链使用。
 
 0. **批量转文字（可选预处理）** —— 若 `config.toml [user].voice_transcribe_usernames` 非空，先调 `wechat_diary_core.weflow_automation.voice_transcribe.batch_transcribe_voices_for(usernames=...)`。WeFlow 内置的「批量语音处理 → 批量转文字 → 开始转写」流程会把指定联系人的「Silk 解码失败」语音消息转成文字，避免下一步导出出来后 processed md 被失败提示横刷。判完成走任务中心差分（新增「语音批量转写(<username>)」行 → 已完成）。空列表时跳过整步，不打开 WeFlow GUI 多余流程。
-1. **导出** —— 调 `wechat_diary_core.weflow_automation.exporter.export_all_chats(date=yesterday)`。底层 driver 由 `config.toml [automation].driver` 决定（uia / cdp / template 三选一），驱动 WeFlow 走「打开任务中心 → 抓 baseline → 关弹窗 → 导出 → 自动化导出 → 立即执行 → 任务中心 → 等差分判完成 → 首页」流程。本 SKILL 不关心是哪一层 driver，全部走 `driver.click_by_name(...) / driver.set_text(...) / driver.wait_for(...)` 抽象接口。`yesterday` 按本地时区计算；默认 `cleanup="delete"` 在跑前清空 raw/processed（前一天的产出应已被二次加工归档到 `WeFlow-archived-exports/`）。**详细步骤、判完成判据与异常分支以项目根 `CLAUDE.md` §5.0 为准**（修复或扩展导出流程前先读规范，不要根据 `exporter.py` 现有实现反推契约）。
+1. **导出** —— 调 `wechat_diary_core.weflow_automation.exporter.export_all_chats(date=yesterday)`。底层 driver 由 `config.toml [automation].driver` 决定（uia / cdp / template 三选一），驱动 WeFlow 走「打开任务中心 → 抓 baseline → 关弹窗 → 导出 → 自动化导出 → 立即执行 → 任务中心 → 等差分判完成 → 首页」流程。本 SKILL 不关心是哪一层 driver，全部走 `driver.click_by_name(...) / driver.set_text(...) / driver.wait_for(...)` 抽象接口。`yesterday` 按本地时区计算；默认 `cleanup="delete"` 在跑前清空 raw/processed（前一天的产出应已被二次加工归档到 `WeFlow-archived-exports/`）。若 `config.toml [daily_export].self_moments_usernames` 非空，runner 还会复用同一套 WeFlow 朋友圈导出逻辑导出自己的朋友圈。**详细步骤、判完成判据与异常分支以项目根 `CLAUDE.md` §5.0 为准**（修复或扩展导出流程前先读规范，不要根据 `exporter.py` 现有实现反推契约）。
 2. **清洗** —— 调 `wechat_diary_core.preprocessing.run(raw_date_dir)`。
    - 空会话文件夹丢弃。
    - `media/emojis/` 目录整体跳过（不做 OCR，消息里仅留 `[表情]` 占位）。
@@ -24,7 +24,7 @@ description: 拉取昨日 WeChat 消息（经 WeFlow 自动化），清洗后归
    - `media/images/*` 走本地 OCR，识别文本以 `[OCR] ...` 后缀内联到对应消息里。
    - 「转文字失败」标记仅写警告日志，不阻塞流程。
 3. **归档** —— 调 `wechat_diary_core.archiving.archive(processed_date_dir)`，按会话写出 `WeFlow-processed-exports/<session_dir>/<yyyy-mm-dd>.md` 极简聊天流（`session_dir` 去掉原始文件夹后缀的日期）。
-4. **二次加工** —— 读 `WeFlow-processed-exports/**/<yesterday>.md`（**不读**子目录前缀以 `_` 开头的；下划线前缀目录是扩展组件 的旁路通道，diary 二次加工只扫顶层 session）。在 `WeFlow-insights/` 下产出四份 Markdown：
+4. **二次加工** —— 读 `WeFlow-processed-exports/**/<yesterday>.md`（**不读**子目录前缀以 `_` 开头的；下划线前缀目录是扩展组件 的旁路通道，diary 二次加工只扫顶层 session）。其中 `朋友圈_自己/<yesterday>.md` 是自己的朋友圈素材，格式不同于聊天流，但属于公开 diary 素材范围。在 `WeFlow-insights/` 下产出四份 Markdown：
    - `Diary/<yyyy>/<yyyy-mm-dd>.md` —— 第一人称当日日记。
    - `DoneList/<yyyy>/<yyyy-mm-dd>.md` —— 分类捕捉的 DoneList；优先把 `config.toml [user].self_wxids` 指定的「自己 / 文件传输助手」会话里以 `D：` 开头的条目升级为正式条目。
    - `Inspirations/<yyyy>/<yyyy-mm-dd>.md` —— 散落在各会话里的项目灵感与待办。
@@ -51,6 +51,7 @@ description: 拉取昨日 WeChat 消息（经 WeFlow 自动化），清洗后归
 |---|---|
 | 原始导出 | `WeFlow-raw-exports/<yyyymmdd> 每日导出聊天记录示例/...`（或生产中的实际命名） |
 | 当日归档 | `WeFlow-processed-exports/<session>/<yyyy-mm-dd>.md`（明早被 cleanup="delete" 清掉） |
+| 自己朋友圈 | `WeFlow-processed-exports/朋友圈_自己/<yyyy-mm-dd>.md`（图片/视频路径指向 raw 导出媒体，供多模态读取） |
 | 长期归档 | `WeFlow-archived-exports/<session>/<yyyy-mm-dd>.md`（二次加工后从 processed 复制过来）|
 | 日产出 | `WeFlow-insights/{Diary,DoneList,Inspirations,ExtraNotes}/<yyyy>/<yyyy-mm-dd>.md` |
 | 一次性总结 | `WeFlow-insights/Summaries/<folder>__<timestamp>.md` |
@@ -77,7 +78,11 @@ Agent 在步骤 4 依次执行以下 prompt。每段输出的 Markdown 结构是
    - `[语音]` = 语音转写失败，跳过。
    - `[表情]` = 微信表情 / 表情包，忽略即可。
 
+   `朋友圈_自己/{yesterday}.md` 是例外输入：它不是聊天流，而是自己的朋友圈流。每条朋友圈一个块：时间、正文、`[图片：WeFlow-raw-exports/...]` / `[视频：WeFlow-raw-exports/...]`、评论、位置。遇到图片/视频路径时，用 Read 工具读取真实媒体文件做多模态理解；不要把它当成 OCR 文字，也不要因为路径存在就写成「发了一张图片」。
+
 4. **标记收集箱**：session 名包含 `self_wxids` 中任一值、或 session 名含「文件传输助手」的，标记为收集箱。收集箱里用户发给自己的消息通常是笔记、备忘、灵感碎片。
+
+5. **标记自己朋友圈**：`朋友圈_自己` 标记为「公开自我记录素材」。它可用于 Diary 的关键时刻/情绪状态、Inspirations 的项目灵感、ExtraNotes 的额外观察；DoneList 只在朋友圈正文明确描述已完成事实时采纳，不把晒图或情绪表达强行改写成 done。
 
 先读取以上文件，然后按 Prompt 1（Diary）、Prompt 2（DoneList）、Prompt 3（Inspirations）、Prompt 4（ExtraNotes）依次输出四份文件。
 
