@@ -69,7 +69,9 @@ time_window_minutes = 15                  # extra time-based bound; whichever is
 anchor_keywords = []                      # e.g. your nickname variants; keep public example empty
 
 [agent]
-# Used by scripts/run_morning.ps1 when invoking the Claude Code CLI.
+# Reserved for optional agent-driven second-stage processing. No bundled script
+# currently reads this section; run daily export first, then invoke the needed
+# skills from the same workspace.
 cli = "claude"
 model = "claude-opus-4.6"
 extra_args = []                           # e.g. ["--permission-mode", "acceptEdits"]
