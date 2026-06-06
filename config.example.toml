@@ -84,6 +84,11 @@ daily = ["wechat-diary"]
 # display names also work for WeFlow search, but wxid is more stable.
 target_usernames = []
 
+# Contacts used only for exporting your own Moments into the public diary
+# material stream. Do not put filehelper here; use your own wxid or a WeFlow
+# searchable display name.
+self_moments_usernames = []
+
 # Sidecar markdown lands in:
 #   WeFlow-processed-exports/<target_processed_subroot>/chats/<yyyy-mm-dd>.md
 #   WeFlow-processed-exports/<target_processed_subroot>/moments/<yyyy-mm-dd>.md

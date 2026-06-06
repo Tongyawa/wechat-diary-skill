@@ -90,10 +90,10 @@ def archive_moments_for(
 ) -> list[Path]:
     """Archive Moments exports into ``<paths.processed>/<subroot>/<yyyy-mm-dd>.md``.
 
-    If ``usernames`` is given, only posts whose ``username`` matches are kept;
-    otherwise all posts in every discovered export are archived. Private
-    per-contact callers typically pass ``usernames=[target_wxid]`` and a
-    matching ``subroot``.
+    If ``usernames`` is given, posts first match by ``username`` / ``nickname``.
+    WeFlow ``filters.usernames`` is only used as a display-name fallback when
+    no post-level candidate matches, keeping separately exported target and
+    self Moments streams from bleeding into each other's sidecar.
     """
     cfg = config or load_config()
     source = Path(raw_path) if raw_path is not None else cfg.paths.raw
@@ -111,10 +111,17 @@ def archive_moments_for(
     all_posts: list[Post] = []
     for export_path in discover_moments_exports(source):
         export = load_moments_export(export_path)
+        include_full_export = (
+            target_set is None
+            or (
+                _export_filter_belongs_to(export, target_set)
+                and not any(_post_matches_usernames(post, target_set) for post in export.posts)
+            )
+        )
         for post in export.posts:
-            if target_set is not None and str(post.get("username") or "").strip() not in target_set:
+            if not include_full_export and not _post_matches_usernames(post, target_set):
                 continue
-            all_posts.append(post)
+            all_posts.append(_with_resolved_media_paths(post, export.source_path.parent, cfg.base_dir))
 
     by_day = _group_posts_by_day(all_posts)
     written: list[Path] = []
@@ -159,6 +166,73 @@ def _render_single_post(post: Post) -> str:
         lines.append(f"📍 {' - '.join(pieces)}")
 
     return "\n".join(lines)
+
+
+def _export_filter_belongs_to(export: MomentsExport, usernames: set[str]) -> bool:
+    filter_names = {
+        str(value).strip()
+        for value in (export.filters.get("usernames") or [])
+        if str(value).strip()
+    }
+    return bool(filter_names) and filter_names <= usernames
+
+
+def _post_matches_usernames(post: Post, usernames: set[str] | None) -> bool:
+    if usernames is None:
+        return True
+    candidates = {
+        _safe(post.get("username")),
+        _safe(post.get("nickname")),
+    }
+    return any(candidate and candidate in usernames for candidate in candidates)
+
+
+def _with_resolved_media_paths(post: Post, export_dir: Path, base_dir: Path) -> Post:
+    media_items = post.get("media") or []
+    if not media_items:
+        return post
+
+    resolved_media: list[Any] = []
+    changed = False
+    for media in media_items:
+        if not isinstance(media, dict):
+            resolved_media.append(media)
+            continue
+        next_media = dict(media)
+        local_path = _safe(media.get("localPath"))
+        resolved = _resolve_media_path(local_path, export_dir, base_dir)
+        if resolved and resolved != local_path:
+            next_media["localPath"] = resolved
+            changed = True
+        resolved_media.append(next_media)
+
+    if not changed:
+        return post
+    next_post = dict(post)
+    next_post["media"] = resolved_media
+    return next_post
+
+
+def _resolve_media_path(local_path: str, export_dir: Path, base_dir: Path) -> str | None:
+    if not local_path:
+        return None
+    path = Path(local_path)
+    if path.is_absolute():
+        if path.exists():
+            return _display_path(path, base_dir)
+        return None
+
+    candidate = export_dir / path
+    if candidate.exists():
+        return _display_path(candidate, base_dir)
+    return None
+
+
+def _display_path(path: Path, base_dir: Path) -> str:
+    try:
+        return path.resolve().relative_to(base_dir.resolve()).as_posix()
+    except ValueError:
+        return str(path.resolve())
 
 
 def _group_posts_by_day(posts: Iterable[Post]) -> dict[str, list[Post]]:

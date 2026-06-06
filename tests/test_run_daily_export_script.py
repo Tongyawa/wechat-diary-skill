@@ -14,6 +14,7 @@ def _write_config(
     root: Path,
     *,
     target_users: str = '"Target"',
+    self_users: str = "",
     voice_users: str = "",
     voice_fallback_script: str = "",
 ) -> Path:
@@ -33,6 +34,7 @@ weflow_exe = "{(root / 'WeFlow.exe').as_posix()}"
 
 [daily_export]
 target_usernames = [{target_users}]
+self_moments_usernames = [{self_users}]
 target_processed_subroot = "_sidecar"
 voice_fallback_script = "{voice_fallback_script}"
 cleanup_mode = "archive"
@@ -67,6 +69,7 @@ class DailyExportScriptTests(unittest.TestCase):
             cfg = load_config(config_path)
 
         self.assertEqual(cfg.daily_export.target_usernames, [])
+        self.assertEqual(cfg.daily_export.self_moments_usernames, [])
         self.assertEqual(cfg.user.voice_transcribe_usernames, [])
         self.assertIsNone(cfg.daily_export.voice_fallback_script)
         self.assertEqual(cfg.daily_export.cleanup_mode, "archive")
@@ -93,7 +96,10 @@ restart_weflow = false                             # I manage WeFlow myself
 
             ensure_local_config(config_path=config_path, example_path=Path("config.example.toml"))
 
-            self.assertEqual(config_path.read_text(encoding="utf-8"), original)
+            updated = config_path.read_text(encoding="utf-8")
+            self.assertIn('target_usernames = ["wxid_existing"]               # keep these comments alive', updated)
+            self.assertIn('target_processed_subroot = "_mine"                 # subroot doc', updated)
+            self.assertIn('self_moments_usernames = []', updated)
 
     def test_ensure_local_config_uses_target_as_voice_default_when_present(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -118,6 +124,7 @@ target_usernames = ["wxid_target"]
             cfg = load_config(config_path)
 
         self.assertEqual(cfg.daily_export.target_usernames, ["wxid_target"])
+        self.assertEqual(cfg.daily_export.self_moments_usernames, [])
         self.assertEqual(cfg.user.voice_transcribe_usernames, ["wxid_target"])
 
     def test_runner_skips_target_steps_when_target_is_empty(self) -> None:
@@ -149,6 +156,7 @@ target_usernames = ["wxid_target"]
             [call[0] for call in calls],
             ["stop_weflow", "rotate", "start_weflow", "wait_ready", "all_chats", "wait_raw", "archive"],
         )
+        self.assertEqual(result.self_moment_files, [])
         self.assertEqual(result.sidecar_chat_files, [])
         self.assertEqual(result.sidecar_moment_files, [])
 
@@ -176,7 +184,7 @@ target_usernames = ["wxid_target"]
                 )
                 or [root / "chats.md"],
                 archive_moments_for=lambda usernames, config, subroot, clear_first: calls.append(
-                    ("sidecar_moments", usernames, subroot, clear_first)
+                    ("sidecar_moments", tuple(usernames), subroot, clear_first)
                 )
                 or [root / "moments.md"],
             )
@@ -204,7 +212,48 @@ target_usernames = ["wxid_target"]
         self.assertIn(("voice", ("Target",)), calls)
         self.assertIn(("all_chats", "skip"), calls)
         self.assertIn(("sidecar_chats", ("Target",), "_sidecar/chats", "preserve_paths", True), calls)
-        self.assertIn(("sidecar_moments", None, "_sidecar/moments", True), calls)
+        self.assertIn(("sidecar_moments", ("Target",), "_sidecar/moments", True), calls)
+
+    def test_runner_exports_and_archives_self_moments_when_configured(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = load_config(_write_config(root, target_users="", self_users='"Self"'))
+            calls: list[tuple] = []
+
+            deps = DailyExportDeps(
+                stop_weflow_processes=lambda timeout: calls.append(("stop_weflow",)),
+                rotate_export_workspace=lambda cfg, label, mode: SimpleNamespace(target=root / "rotation" / "run"),
+                ensure_weflow_running=lambda cfg: SimpleNamespace(cdp_endpoint=None),
+                wait_for_raw_exports_stable=lambda raw_path, min_files: calls.append(("wait_raw", min_files)),
+                batch_transcribe_voices_for=lambda usernames, config: calls.append(("voice", tuple(usernames))),
+                run_voice_fallback_script=lambda script_path, config: calls.append(("fallback", script_path)),
+                export_all_chats=lambda date, config, cleanup: calls.append(("all_chats", cleanup)),
+                export_moments_for=lambda usernames, date, config: calls.append(("moments", tuple(usernames))),
+                archive=lambda raw_path, config, clear_first: calls.append(("archive", clear_first)) or [root / "diary.md"],
+                archive_chats_for=lambda usernames, config, subroot, image_mode, clear_first: [],
+                archive_moments_for=lambda usernames, config, subroot, clear_first: calls.append(
+                    ("archive_moments", tuple(usernames), subroot, clear_first)
+                )
+                or [root / "self-moments.md"],
+            )
+
+            result = run_daily_export(cfg, deps=deps, day=date(2026, 5, 16))
+
+        self.assertEqual(
+            [call[0] for call in calls],
+            [
+                "stop_weflow",
+                "all_chats",
+                "wait_raw",
+                "moments",
+                "wait_raw",
+                "archive",
+                "archive_moments",
+            ],
+        )
+        self.assertIn(("moments", ("Self",)), calls)
+        self.assertIn(("archive_moments", ("Self",), "朋友圈_自己", True), calls)
+        self.assertEqual(result.self_moment_files, [root / "self-moments.md"])
 
     def test_runner_respects_explicit_voice_usernames(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

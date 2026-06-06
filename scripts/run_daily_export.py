@@ -38,6 +38,7 @@ class DailyExportResult:
     day: str
     rotation_target: Path | None
     diary_files: list[Path]
+    self_moment_files: list[Path]
     sidecar_chat_files: list[Path]
     sidecar_moment_files: list[Path]
 
@@ -126,9 +127,10 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Day: {result.day}")
     print(f"Rotation archive: {result.rotation_target or 'none'}")
     print(f"Diary processed files: {len(result.diary_files)}")
+    print(f"Self moments files: {len(result.self_moment_files)}")
     print(f"Sidecar chat files: {len(result.sidecar_chat_files)}")
     print(f"Sidecar moments files: {len(result.sidecar_moment_files)}")
-    for path in result.diary_files + result.sidecar_chat_files + result.sidecar_moment_files:
+    for path in result.diary_files + result.self_moment_files + result.sidecar_chat_files + result.sidecar_moment_files:
         print(f"- {path}")
     return 0
 
@@ -170,6 +172,8 @@ def ensure_local_config(
     # `# comment` the user inherited from config.example.toml.
     if "target_usernames" not in daily_export_section:
         text = _set_toml_value(text, "daily_export", "target_usernames", _toml_array([]))
+    if "self_moments_usernames" not in daily_export_section:
+        text = _set_toml_value(text, "daily_export", "self_moments_usernames", _toml_array([]))
     if "target_processed_subroot" not in daily_export_section:
         text = _set_toml_value(text, "daily_export", "target_processed_subroot", _toml_string("_targets"))
     if "voice_fallback_script" not in daily_export_section:
@@ -199,6 +203,7 @@ def run_daily_export(
     export_day = day or (datetime.now().date() - timedelta(days=1))
     day_iso = export_day.isoformat()
     target_usernames = list(cfg.daily_export.target_usernames)
+    self_moments_usernames = list(cfg.daily_export.self_moments_usernames)
 
     print(f"Daily export day: {day_iso}")
     print(f"Raw root: {cfg.paths.raw}")
@@ -207,6 +212,10 @@ def run_daily_export(
         print(f"Target sidecar contacts: {len(target_usernames)}")
     else:
         print("Target sidecar contacts: none; moments and sidecar archives will be skipped.")
+    if self_moments_usernames:
+        print(f"Self moments contacts: {len(self_moments_usernames)}")
+    else:
+        print("Self moments contacts: none; diary self moments will be skipped.")
 
     if cfg.daily_export.restart_weflow:
         _run_stage(
@@ -256,6 +265,17 @@ def run_daily_export(
         )
     else:
         print("export_target_moments skipped: no target sidecar contacts.")
+    if self_moments_usernames:
+        _run_stage(
+            "export_self_moments",
+            lambda: active_deps.export_moments_for(self_moments_usernames, date=export_day, config=cfg),
+        )
+        _run_stage(
+            "wait_raw_exports_stable_after_self_moments",
+            lambda: active_deps.wait_for_raw_exports_stable(cfg.paths.raw, min_files=1),
+        )
+    else:
+        print("export_self_moments skipped: no configured self moments contacts.")
 
     if cfg.daily_export.voice_fallback_script:
         _run_stage(
@@ -269,6 +289,17 @@ def run_daily_export(
         "archive_diary_processed",
         lambda: active_deps.archive(cfg.paths.raw, config=cfg, clear_first=True),
     )
+    self_moment_files = []
+    if self_moments_usernames:
+        self_moment_files = _run_stage(
+            "archive_self_moments",
+            lambda: active_deps.archive_moments_for(
+                self_moments_usernames,
+                config=cfg,
+                subroot="朋友圈_自己",
+                clear_first=True,
+            ),
+        )
 
     subroot = _normalize_subroot(cfg.daily_export.target_processed_subroot)
     sidecar_chat_files = []
@@ -287,7 +318,7 @@ def run_daily_export(
         sidecar_moment_files = _run_stage(
             "archive_target_moments",
             lambda: active_deps.archive_moments_for(
-                None,
+                target_usernames,
                 config=cfg,
                 subroot=f"{subroot}/moments",
                 clear_first=True,
@@ -298,6 +329,7 @@ def run_daily_export(
         day=day_iso,
         rotation_target=getattr(rotation, "target", None),
         diary_files=list(diary_files),
+        self_moment_files=list(self_moment_files),
         sidecar_chat_files=list(sidecar_chat_files),
         sidecar_moment_files=list(sidecar_moment_files),
     )

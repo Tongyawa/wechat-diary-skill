@@ -33,6 +33,7 @@ raw = "raw"
         self.assertEqual(cfg.preprocessing.group_context_window.anchor_keywords, [])
         self.assertEqual(cfg.skills.daily, ["wechat-diary"])
         self.assertEqual(cfg.daily_export.target_usernames, [])
+        self.assertEqual(cfg.daily_export.self_moments_usernames, [])
         self.assertEqual(cfg.daily_export.target_processed_subroot, "_targets")
         self.assertEqual(cfg.daily_export.cleanup_mode, "archive")
         self.assertTrue(cfg.daily_export.restart_weflow)
@@ -44,6 +45,7 @@ raw = "raw"
                 """
 [daily_export]
 target_usernames = ["wxid_target"]
+self_moments_usernames = ["wxid_self"]
 target_processed_subroot = "_sidecar"
 cleanup_mode = "delete"
 restart_weflow = false
@@ -54,6 +56,7 @@ restart_weflow = false
             cfg = load_config(config_path)
 
         self.assertEqual(cfg.daily_export.target_usernames, ["wxid_target"])
+        self.assertEqual(cfg.daily_export.self_moments_usernames, ["wxid_self"])
         self.assertEqual(cfg.daily_export.target_processed_subroot, "_sidecar")
         self.assertEqual(cfg.daily_export.cleanup_mode, "delete")
         self.assertFalse(cfg.daily_export.restart_weflow)

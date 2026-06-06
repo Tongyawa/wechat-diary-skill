@@ -57,6 +57,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "daily_export": {
         "target_usernames": [],
+        "self_moments_usernames": [],
         "target_processed_subroot": "_targets",
         "voice_fallback_script": "",
         "cleanup_mode": "archive",
@@ -141,6 +142,7 @@ class SkillsConfig:
 @dataclass(frozen=True)
 class DailyExportConfig:
     target_usernames: list[str]
+    self_moments_usernames: list[str]
     target_processed_subroot: str
     voice_fallback_script: Path | None
     cleanup_mode: str
@@ -247,6 +249,9 @@ def _build_config(raw: dict[str, Any], base_dir: Path) -> Config:
         skills=SkillsConfig(daily=list(raw["skills"]["daily"])),
         daily_export=DailyExportConfig(
             target_usernames=[str(value).strip() for value in daily_export.get("target_usernames") or [] if str(value).strip()],
+            self_moments_usernames=[
+                str(value).strip() for value in daily_export.get("self_moments_usernames") or [] if str(value).strip()
+            ],
             target_processed_subroot=str(daily_export.get("target_processed_subroot") or "_targets").strip() or "_targets",
             voice_fallback_script=_optional_path(base_dir, daily_export.get("voice_fallback_script")),
             cleanup_mode=cleanup_mode,
