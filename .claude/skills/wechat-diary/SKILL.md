@@ -25,10 +25,12 @@ description: 拉取昨日 WeChat 消息（经 WeFlow 自动化），清洗后归
    - 「转文字失败」标记仅写警告日志，不阻塞流程。
 3. **归档** —— 调 `wechat_diary_core.archiving.archive(processed_date_dir)`，按会话写出 `WeFlow-processed-exports/<session_dir>/<yyyy-mm-dd>.md` 极简聊天流（`session_dir` 去掉原始文件夹后缀的日期）。
 4. **二次加工** —— 读 `WeFlow-processed-exports/**/<yesterday>.md`（**不读**子目录前缀以 `_` 开头的；下划线前缀目录是扩展组件 的旁路通道，diary 二次加工只扫顶层 session）。其中 `朋友圈_自己/<yesterday>.md` 是自己的朋友圈素材，格式不同于聊天流，但属于公开 diary 素材范围。在 `WeFlow-insights/` 下产出四份 Markdown：
-   - `Diary/<yyyy>/<yyyy-mm-dd>.md` —— 第一人称当日日记。
-   - `DoneList/<yyyy>/<yyyy-mm-dd>.md` —— 分类捕捉的 DoneList；优先把 `config.toml [user].self_wxids` 指定的「自己 / 文件传输助手」会话里以 `D：` 开头的条目升级为正式条目。
-   - `Inspirations/<yyyy>/<yyyy-mm-dd>.md` —— 散落在各会话里的项目灵感与待办。
-   - `ExtraNotes/<yyyy>/<yyyy-mm-dd>.md` —— Agent 主动挑出但我没注意到的值得关注的点。
+   - `Diary/<yyyy>/<yyyy-mm-dd> <每日title> #关键词.md` —— 第一人称当日日记。
+   - `DoneList/<yyyy>/<yyyy-mm-dd> <每日title> #关键词.md` —— 分类捕捉的 DoneList；优先把 `config.toml [user].self_wxids` 指定的「自己 / 文件传输助手」会话里以 `D：` 开头的条目升级为正式条目。
+   - `Inspirations/<yyyy>/<yyyy-mm-dd> <每日title> #关键词.md` —— 散落在各会话里的项目灵感与待办。
+   - `ExtraNotes/<yyyy>/<yyyy-mm-dd> <每日title> #关键词.md` —— Agent 主动挑出但我没注意到的值得关注的点。
+
+   四份文件名都以 `<yyyy-mm-dd>` 开头，后跟当日 title 与 `#关键词`（同一组，由 Diary 步骤统一确定、四份复用）；文件开头也写同样的标题/关键词，方便按主题/关键词搜索本地文件目录。命名与生成规范见下文 §二次加工 Prompt → 每日 title 与当日关键词。
 
 5. **长期归档** —— 四份 Markdown 写完后调 `wechat_diary_core.promote_day_to_archive(yesterday_iso, config=cfg)`，把当日 `WeFlow-processed-exports/<session>/<yesterday>.md` 拷贝到 `WeFlow-archived-exports/<session>/<yesterday>.md`。明早 cron 的 `cleanup="delete"` 会清空 processed，archived 不会丢；月报 / 年报 skill 以后从 archived 读全历史。
 
@@ -59,12 +61,12 @@ WeFlow 的 raw 导出目录是应用内全局设置，不会自动指向当前 G
 | 当日归档 | `WeFlow-processed-exports/<session>/<yyyy-mm-dd>.md`（明早被 cleanup="delete" 清掉） |
 | 自己朋友圈 | `WeFlow-processed-exports/朋友圈_自己/<yyyy-mm-dd>.md`（图片/视频路径指向 raw 导出媒体，供多模态读取） |
 | 长期归档 | `WeFlow-archived-exports/<session>/<yyyy-mm-dd>.md`（二次加工后从 processed 复制过来）|
-| 日产出 | `WeFlow-insights/{Diary,DoneList,Inspirations,ExtraNotes}/<yyyy>/<yyyy-mm-dd>.md` |
+| 日产出 | `WeFlow-insights/{Diary,DoneList,Inspirations,ExtraNotes}/<yyyy>/<yyyy-mm-dd> <每日title> #关键词.md` |
 | 一次性总结 | `WeFlow-insights/Summaries/<folder>__<timestamp>.md` |
 
 ## 二次加工 Prompt
 
-Agent 在步骤 4 依次执行以下 prompt。每段输出的 Markdown 结构是**刚性契约**——月报 / 年报 skill 会按标题和列表样式做 glob 聚合，不要随意改结构。
+Agent 在步骤 4 依次执行以下 prompt。每段输出的 Markdown 结构是**刚性契约**——月报 / 年报 skill 会按标题和列表样式做 glob 聚合，不要随意改结构。四份产出的文件名以 `<yyyy-mm-dd>` 开头、后缀当日 title 与 `#关键词`，文件开头也带同样的标题/关键词元数据（见 §每日 title 与当日关键词）；一级标题文本（`日记` / `DoneList` 等）保持不变。月报 / 年报 skill 聚合时按 `<yyyy>/<yyyy-mm-dd>*.md` 前缀 glob，不要假设文件名只有日期。
 
 ### Prompt 0：读取素材
 
@@ -90,7 +92,9 @@ Agent 在步骤 4 依次执行以下 prompt。每段输出的 Markdown 结构是
 
 5. **标记自己朋友圈**：`朋友圈_自己` 标记为「公开自我记录素材」。它可用于 Diary 的关键时刻/情绪状态、Inspirations 的项目灵感、ExtraNotes 的额外观察；DoneList 只在朋友圈正文明确描述已完成事实时采纳，不把晒图或情绪表达强行改写成 done。
 
-先读取以上文件，然后按 Prompt 1（Diary）、Prompt 2（DoneList）、Prompt 3（Inspirations）、Prompt 4（ExtraNotes）依次输出四份文件。
+6. **标记营销/骚扰噪音**：明显的推广号 / 广告 / 培训课程推销 / 带货 / 拉群 / 自动群发 / 陌生营销号推销，视为噪音，**四份产出都不采纳为内容**——既不写进 Diary 关键时刻，也不作为 ExtraNotes 的额外观察。例外：仅当我本人主动就某条推广做出有意义的反应（如认真讨论、决定报名）时，才保留我那部分的语义，且也不要把推广方写成「值得关注」。
+
+先读取以上文件，然后按 Prompt 1（Diary）、Prompt 2（DoneList）、Prompt 3（Inspirations）、Prompt 4（ExtraNotes）依次输出四份文件。Diary 步骤会确定当日唯一一组 title 与关键词，四份产出的文件名与开头都复用这组（见 §每日 title 与当日关键词）。
 
 全部写完后，运行长期归档（步骤 5）：
 python -c "from wechat_diary_core import promote_day_to_archive, load_config; promote_day_to_archive('{yesterday}', load_config())"
@@ -99,17 +103,48 @@ python -c "from wechat_diary_core import promote_day_to_archive, load_config; pr
 如果 processed 目录下没有任何昨日的 md 文件（排除下划线前缀目录后），写一段「昨日无聊天记录」并跳过后续。
 ```
 
+### 每日 title 与当日关键词（四份产出共用）
+
+四份日产出（Diary / DoneList / Inspirations / ExtraNotes）共用同一组「每日 title」和「当日关键词」，由 **Diary 步骤（Prompt 1）统一确定**，后三份直接复用，不另起一组。这组 title/关键词同时写进**文件名**和**每份产出的开头**，方便在本地文件目录里按主题/关键词搜索。
+
+- **每日 title**：6-16 字的名词性主题短语，概括当天主线，与 Diary「今日概览」基调一致。不含标点、`#`，以及 Windows 文件名非法字符 `\ / : * ? " < > |`。
+- **当日关键词**：3-5 个，覆盖当天的人物 / 事件 / 主题，供文件名搜索。每个关键词是**单个不含空格的 token**（多字词直接连写，如 `论文截止`、`和好友约饭`），同样不含 `#`、空格和上述非法字符（`#` 前缀在写入时统一补）。
+- 当天素材极少（总消息 < 10 条）时，title 可写 `日常`，关键词给 1-2 个即可。
+
+**文件名格式（四份一致，日期始终在最前）**：
+
+`<yyyy-mm-dd> <每日title> #kw1 #kw2 #kw3.md`
+
+- 顺序：日期 → 空格 → title → 空格 → 各关键词（每个带 `#` 前缀、空格分隔）。
+- 例：`2026-06-09 论文deadline冲刺与小聚 #论文截止 #和好友约饭 #组会.md`
+- 仍写进对应年份目录：`Diary/<yyyy>/<上述文件名>`、`DoneList/<yyyy>/...`，其余同理。
+- 整个文件名（不含 `.md`）控制在 ~80 字符内；超长时优先截短 title，保留全部关键词。
+- title 与关键词里若不慎带入非法字符或空格，写文件前先按上面的规则清洗。
+
+**文档开头元数据**：每份产出在一级标题（`# {yyyy-mm-dd} 日记` 等）正下方、首个 section 之前，写两行：
+
+```
+**标题**：{每日title}
+**关键词**：#kw1 #kw2 #kw3
+```
+
+一级标题文本保持原样（`日记` / `DoneList` / `灵感与待办` / `额外观察`），**不要**把 title 并进一级标题——月报 / 年报 skill 仍按原标题文本聚合。
+
 ### Prompt 1：Diary
 
 ```
 ## 输出文件
-`WeFlow-insights/Diary/{yyyy}/{yyyy-mm-dd}.md`
+`WeFlow-insights/Diary/{yyyy}/{yyyy-mm-dd} {每日title} #kw1 #kw2 ….md`
+（命名与开头元数据规范见 §每日 title 与当日关键词。**本步骤负责确定当日唯一一组 title 与关键词**，DoneList / Inspirations / ExtraNotes 三步复用同一组，不另起。）
 
 用 Write 工具创建文件。目录不存在时先 mkdir -p。
 
 ## 输出结构
 
 # {yyyy-mm-dd} 日记
+
+**标题**：{每日title}
+**关键词**：#kw1 #kw2 #kw3
 
 ## 今日概览
 <!-- 3-5 句话，第一人称，概括今天的主要经历、心情和节奏。
@@ -138,17 +173,22 @@ python -c "from wechat_diary_core import promote_day_to_archive, load_config; pr
 - 如果当天聊天很少（总消息 < 10 条），概览从简，关键时刻可只写 1-2 条。
 - 收集箱中以「D：」开头的条目让给 DoneList 处理，Diary 里不重复。
 - 引用原话时标注来源人（不必标注会话名，除非有歧义）。
+- 先定当日 title（6-16 字主题短语）与 3-5 个关键词，写进文件名与开头元数据；这组 title/关键词供四份产出共用，规范见 §每日 title 与当日关键词。
 ```
 
 ### Prompt 2：DoneList
 
 ```
 ## 输出文件
-`WeFlow-insights/DoneList/{yyyy}/{yyyy-mm-dd}.md`
+`WeFlow-insights/DoneList/{yyyy}/{yyyy-mm-dd} {每日title} #kw1 #kw2 ….md`
+（title 与关键词复用 Diary 步骤已确定的那一组，不要另起；规范见 §每日 title 与当日关键词。）
 
 ## 输出结构
 
 # {yyyy-mm-dd} DoneList
+
+**标题**：{每日title}
+**关键词**：#kw1 #kw2 #kw3
 
 ## 正式条目
 <!-- 收集箱（self_wxids 匹配的会话）中以「D：」开头的消息。
@@ -173,19 +213,22 @@ python -c "from wechat_diary_core import promote_day_to_archive, load_config; pr
 - 「正式条目」优先级最高：同一件事出现在「D：」里就不要在其他分类重复。
 - 每条用一句话描述，不超过 30 字。
 - 三个推断分类有交叉时，按最核心的归一个，不重复。
-- 如果当天没有任何可提取的 done 事项，整个文件只写：
-  `# {yyyy-mm-dd} DoneList\n\n今日无。`
+- 如果当天没有任何可提取的 done 事项，正文只写 `今日无。`（文件名、一级标题、开头的标题/关键词元数据仍照常写）。
 ```
 
 ### Prompt 3：Inspirations
 
 ```
 ## 输出文件
-`WeFlow-insights/Inspirations/{yyyy}/{yyyy-mm-dd}.md`
+`WeFlow-insights/Inspirations/{yyyy}/{yyyy-mm-dd} {每日title} #kw1 #kw2 ….md`
+（title 与关键词复用 Diary 步骤已确定的那一组；规范见 §每日 title 与当日关键词。）
 
 ## 输出结构
 
 # {yyyy-mm-dd} 灵感与待办
+
+**标题**：{每日title}
+**关键词**：#kw1 #kw2 #kw3
 
 ## 项目灵感
 <!-- 从聊天记录中捕捉到的项目想法、功能创意、技术方案。格式：
@@ -203,8 +246,7 @@ python -c "from wechat_diary_core import promote_day_to_archive, load_config; pr
 
 ## 规则
 - 每个 section 0-5 条。没有内容的 section 直接删掉 header。
-- 如果当天没有任何灵感或待办，整个文件只写：
-  `# {yyyy-mm-dd} 灵感与待办\n\n今日无。`
+- 如果当天没有任何灵感或待办，正文只写 `今日无。`（文件名、一级标题、开头的标题/关键词元数据仍照常写）。
 - 不要把 DoneList 里已完成的事项重复列为待办。
 - 来源会话名从文件路径提取（例 `私聊_肖逸涵`、`群聊_小团体`）。
 ```
@@ -213,11 +255,15 @@ python -c "from wechat_diary_core import promote_day_to_archive, load_config; pr
 
 ```
 ## 输出文件
-`WeFlow-insights/ExtraNotes/{yyyy}/{yyyy-mm-dd}.md`
+`WeFlow-insights/ExtraNotes/{yyyy}/{yyyy-mm-dd} {每日title} #kw1 #kw2 ….md`
+（title 与关键词复用 Diary 步骤已确定的那一组；规范见 §每日 title 与当日关键词。）
 
 ## 输出结构
 
 # {yyyy-mm-dd} 额外观察
+
+**标题**：{每日title}
+**关键词**：#kw1 #kw2 #kw3
 
 <!-- 你（Agent）在阅读聊天记录时主动发现的、用户可能没注意到的值得关注的点。
 格式：
@@ -225,14 +271,14 @@ python -c "from wechat_diary_core import promote_day_to_archive, load_config; pr
 
 可能的类型（不必全覆盖）：
 - 社交信号：某人的情绪变化、求助暗示、关系动态
-- 信息差：群里有人分享了重要信息但用户似乎没回应
+- 信息差：群里/私聊有人分享了重要信息但用户似乎没回应（广告、推广、营销号推销不算「信息」，不要写）
 - 时间敏感：提到的截止日期、需要确认的事项、即将到来的约定
 - 异常模式：某人聊天频率突变、群讨论氛围异常等
 -->
 
 ## 规则
-- 0-5 条。如果没有值得提的，整个文件只写：
-  `# {yyyy-mm-dd} 额外观察\n\n今日无特别发现。`
+- 0-5 条。如果没有值得提的，正文只写 `今日无特别发现。`（文件名、一级标题、开头的标题/关键词元数据仍照常写）。
+- **排除营销/骚扰**：推广链接、广告、培训课程推销、带货、拉群、自动群发、陌生营销号的推销等一律不写——它们不是「值得关注的点」，也不要塞进「信息差」或「异常模式」。
 - 每条必须有具体依据（指向聊天中的某个片段），不要纯猜测。
 - 不要重复 Diary / DoneList / Inspirations 已覆盖的内容。
 - 保持中性客观，不做道德评判。
