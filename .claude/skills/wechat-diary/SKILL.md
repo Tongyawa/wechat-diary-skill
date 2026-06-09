@@ -1,6 +1,6 @@
 ---
 name: wechat-diary
-description: 拉取昨日 WeChat 消息（经 WeFlow 自动化），清洗后归档，再生成日记 / DoneList / 灵感 / 额外观察四份 Markdown。默认每天早上由脚本链触发；也支持 `/wechat-diary summarize <folder>` 子命令对单个会话做一次性总结。
+description: 拉取昨日 WeChat 消息（经 WeFlow 自动化），清洗后归档，再生成日记 / DoneList / 灵感 / 额外观察四份 Markdown，并增量维护一份长期自我画像。默认每天早上由脚本链触发；也支持 `/wechat-diary summarize <folder>` 子命令对单个会话做一次性总结。
 ---
 
 # wechat-diary
@@ -32,6 +32,8 @@ description: 拉取昨日 WeChat 消息（经 WeFlow 自动化），清洗后归
 
    四份文件名都以 `<yyyy-mm-dd>` 开头，后跟当日 title 与 `#关键词`（同一组，由 Diary 步骤统一确定、四份复用）；文件开头也写同样的标题/关键词，方便按主题/关键词搜索本地文件目录。命名与生成规范见下文 §二次加工 Prompt → 每日 title 与当日关键词。
 
+   另外**增量维护**一份长期自我画像 `WeFlow-insights/Profile/自我画像.md`（单一文件、不按日新建，每天把新的长期信号合并进去；见下文 §二次加工 Prompt → Prompt 5）。
+
 5. **长期归档** —— 四份 Markdown 写完后调 `wechat_diary_core.promote_day_to_archive(yesterday_iso, config=cfg)`，把当日 `WeFlow-processed-exports/<session>/<yesterday>.md` 拷贝到 `WeFlow-archived-exports/<session>/<yesterday>.md`。明早 cron 的 `cleanup="delete"` 会清空 processed，archived 不会丢；月报 / 年报 skill 以后从 archived 读全历史。
 
 > Prompt 详见下文 §二次加工 Prompt。
@@ -62,6 +64,7 @@ WeFlow 的 raw 导出目录是应用内全局设置，不会自动指向当前 G
 | 自己朋友圈 | `WeFlow-processed-exports/朋友圈_自己/<yyyy-mm-dd>.md`（图片/视频路径指向 raw 导出媒体，供多模态读取） |
 | 长期归档 | `WeFlow-archived-exports/<session>/<yyyy-mm-dd>.md`（二次加工后从 processed 复制过来）|
 | 日产出 | `WeFlow-insights/{Diary,DoneList,Inspirations,ExtraNotes}/<yyyy>/<yyyy-mm-dd> <每日title> #关键词.md` |
+| 长期自我画像 | `WeFlow-insights/Profile/自我画像.md`（单一文件，长期增量维护） |
 | 一次性总结 | `WeFlow-insights/Summaries/<folder>__<timestamp>.md` |
 
 ## 二次加工 Prompt
@@ -72,6 +75,8 @@ Agent 在步骤 4 依次执行以下 prompt。每段输出的 Markdown 结构是
 
 ```
 你是用户的私人日记助手。以下是你的输入素材：昨日的微信聊天记录（已经过预处理的极简聊天流）。
+
+**写入原则（贯穿全部产出）**：这是用户私人、本地、不公开的日记，只给用户自己看。凡与用户本人相关的内容——个人口味与偏好、私下玩笑、不便对外讲的话题——都照实写、优先收录，不要因为「是否适合公开 / 上不上得了台面」而自我审查、淡化或回避。判定标准只有一条：跟用户本人有没有关。该过滤的只是与用户无关的第三方隐私、纯八卦和营销噪音（见步骤 6），绝不是用户自己的私密内容。
 
 1. **确定日期**：`yesterday` = 今天日期减 1 天（本地时区）。
 
@@ -94,7 +99,7 @@ Agent 在步骤 4 依次执行以下 prompt。每段输出的 Markdown 结构是
 
 6. **标记营销/骚扰噪音**：明显的推广号 / 广告 / 培训课程推销 / 带货 / 拉群 / 自动群发 / 陌生营销号推销，视为噪音，**四份产出都不采纳为内容**——既不写进 Diary 关键时刻，也不作为 ExtraNotes 的额外观察。例外：仅当我本人主动就某条推广做出有意义的反应（如认真讨论、决定报名）时，才保留我那部分的语义，且也不要把推广方写成「值得关注」。
 
-先读取以上文件，然后按 Prompt 1（Diary）、Prompt 2（DoneList）、Prompt 3（Inspirations）、Prompt 4（ExtraNotes）依次输出四份文件。Diary 步骤会确定当日唯一一组 title 与关键词，四份产出的文件名与开头都复用这组（见 §每日 title 与当日关键词）。
+先读取以上文件，然后按 Prompt 1（Diary）、Prompt 2（DoneList）、Prompt 3（Inspirations）、Prompt 4（ExtraNotes）依次输出四份文件。Diary 步骤会确定当日唯一一组 title 与关键词，四份产出的文件名与开头都复用这组（见 §每日 title 与当日关键词）。四份写完后，再按 Prompt 5 增量更新长期自我画像。
 
 全部写完后，运行长期归档（步骤 5）：
 python -c "from wechat_diary_core import promote_day_to_archive, load_config; promote_day_to_archive('{yesterday}', load_config())"
@@ -173,6 +178,7 @@ python -c "from wechat_diary_core import promote_day_to_archive, load_config; pr
 - 如果当天聊天很少（总消息 < 10 条），概览从简，关键时刻可只写 1-2 条。
 - 收集箱中以「D：」开头的条目让给 DoneList 处理，Diary 里不重复。
 - 引用原话时标注来源人（不必标注会话名，除非有歧义）。
+- 私人/私密的个人内容（口味、偏好、玩笑等）只要与我相关就照写，不因「是否适合公开」而省略或淡化（见 Prompt 0 写入原则）。
 - 先定当日 title（6-16 字主题短语）与 3-5 个关键词，写进文件名与开头元数据；这组 title/关键词供四份产出共用，规范见 §每日 title 与当日关键词。
 ```
 
@@ -285,6 +291,41 @@ python -c "from wechat_diary_core import promote_day_to_archive, load_config; pr
 - 来源会话名从文件路径提取。
 ```
 
+### Prompt 5：长期自我画像（增量维护）
+
+一份长期、跨天维护的用户自我画像，类似联系人画像但对象是用户本人。每天在四份日产出写完后增量更新一次。
+
+```
+## 输出文件
+`WeFlow-insights/Profile/自我画像.md`（单一文件，长期累积；不是按日新建。文件名可自行改成你习惯的称呼。）
+
+## 更新方式
+1. 文件已存在就先用 Read 读入现有画像；不存在则按下面的结构新建骨架。
+2. 读昨日素材里**关于「我」本人**的长期信号：收集箱、私聊、群聊里我直接参与的部分、我自己的朋友圈。
+3. **增量合并，不要整篇重写**：新信号补进对应小节；与旧描述冲突时保留时间线（旧描述标注「（至 <旧日期>）」或存疑，再写入新的并注明日期），不抹掉历史。
+4. 每条尽量附**日期戳 + 简短依据**，例：「偏好独处、安静环境下效率最高（2026-06-09，私聊自述）」，方便日后回看来源。
+
+## 输出结构（小节可按需增删，但不要随意改已有小节名）
+
+# 自我画像
+
+## 基本风格与性格
+## 兴趣与主题
+## 口味与偏好
+## 价值观与态度
+## 长期目标与方向
+## 人际关系模式
+## 待观察 / 存疑
+<!-- 还不确定、只出现过一两次、需后续印证的信号。 -->
+
+## 规则
+- 对象只有「我」本人；他人的画像不在这里写。
+- 遵循 Prompt 0 写入原则：凡与我相关的私密/私人偏好都照写、优先收录，不自我审查、不做尺度或道德评判，判定只看「跟我有没有关」。
+- 只收**长期、稳定或反复出现**的信号；一次性情绪和临时事件留给 Diary，不往画像里堆。
+- 单日没有任何新的长期信号时，不改动文件（或只在末尾追加一行「<日期>：无新增」）。
+- 不编造、不过度推断；证据弱的放「待观察 / 存疑」。
+```
+
 ### Summarize Prompt（`/wechat-diary summarize <folder>` 子命令专用）
 
 ```
@@ -334,5 +375,5 @@ python -c "from wechat_diary_core import promote_day_to_archive, load_config; pr
 
 ## 不做的事
 
-- 本 skill 不做单个联系人的私人画像或深度分析。涉及这类内容的逻辑都不在本开源 skill 范围内。
+- 本 skill 维护**用户自己**的长期自我画像（Prompt 5）；但不做针对**他人**（单个联系人）的私人画像或深度复盘——那类逻辑在扩展组件 里，不属于本开源 skill 范围。
 - 本 skill 不做跨天聚合。月报 / 年报 skill 以后另写，会读这些按日产出的 Markdown 文件。
