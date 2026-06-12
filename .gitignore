@@ -24,12 +24,15 @@ CLAUDE.md
 
 # ---- Claude Code agent worktrees (transient, machine-local) ----
 .claude/worktrees/
+.claude/scheduled_tasks.lock
 
 # ---- Raw / intermediate / output data ----
-WeFlow-raw-exports/
-WeFlow-processed-exports/
-WeFlow-archived-exports/
-WeFlow-insights/
+# Suffixed variants (WeFlow-raw-exports-20260607/, WeFlow-raw-exports-去年/ …)
+# are backfill snapshots and must stay out of git just like the live roots.
+WeFlow-raw-exports*/
+WeFlow-processed-exports*/
+WeFlow-archived-exports*/
+WeFlow-insights*/
 
 # ---- Skills published in this repo are allowlisted; everything else stays local ----
 .claude/skills/*
