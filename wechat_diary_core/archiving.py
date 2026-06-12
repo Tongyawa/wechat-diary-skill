@@ -98,40 +98,6 @@ def archive_chats_for(
     return written
 
 
-def promote_day_to_archive(
-    day: str,
-    config: Config | None = None,
-    *,
-    source_root: str | Path | None = None,
-    archive_root: str | Path | None = None,
-    move: bool = False,
-) -> list[Path]:
-    """Promote ``<source>/<session>/<day>.md`` files to
-    ``<archive>/<session>/<day>.md`` for long-term per-session history.
-
-    Each SKILL calls this after its二次加工 succeeds. ``move=True`` deletes the
-    source file post-copy; default copies so other SKILLs running later in the
-    same day can still read processed.
-    """
-    cfg = config or load_config()
-    source = Path(source_root) if source_root is not None else cfg.paths.processed
-    target = Path(archive_root) if archive_root is not None else cfg.paths.archived
-    if not source.exists():
-        return []
-
-    promoted: list[Path] = []
-    for md_path in source.rglob(f"{day}.md"):
-        relative = md_path.relative_to(source)
-        out_path = target / relative
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        if move:
-            shutil.move(str(md_path), str(out_path))
-        else:
-            shutil.copy2(str(md_path), str(out_path))
-        promoted.append(out_path)
-    return promoted
-
-
 def _export_matches_usernames(export: ProcessedChatExport, usernames: set[str]) -> bool:
     session = export.data.get("session") or {}
     candidates = {

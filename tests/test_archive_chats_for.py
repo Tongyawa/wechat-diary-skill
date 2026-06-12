@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from wechat_diary_core.archiving import archive_chats_for, promote_day_to_archive
+from wechat_diary_core.archiving import archive_chats_for
 from wechat_diary_core.config import load_config
 
 
@@ -96,40 +96,6 @@ class ArchiveChatsForTests(unittest.TestCase):
 
             self.assertEqual(written, [])
             self.assertTrue(keep.exists())
-
-
-class PromoteDayToArchiveTests(unittest.TestCase):
-    def test_copies_matching_day_files_into_archived(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            cfg = _config(root)
-            a = cfg.paths.processed / "私聊_X" / "2026-05-15.md"
-            b = cfg.paths.processed / "私聊_Y" / "2026-05-15.md"
-            c = cfg.paths.processed / "私聊_X" / "2026-05-14.md"  # different day, should be ignored
-            for path, text in ((a, "alpha"), (b, "beta"), (c, "stale")):
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(text, encoding="utf-8")
-
-            promoted = promote_day_to_archive("2026-05-15", config=cfg)
-
-            names = {p.relative_to(cfg.paths.archived).as_posix() for p in promoted}
-            self.assertEqual(names, {"私聊_X/2026-05-15.md", "私聊_Y/2026-05-15.md"})
-            self.assertTrue(a.exists())
-            self.assertTrue(b.exists())
-            self.assertFalse((cfg.paths.archived / "私聊_X" / "2026-05-14.md").exists())
-
-    def test_move_mode_removes_source(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            cfg = _config(root)
-            source = cfg.paths.processed / "私聊_X" / "2026-05-15.md"
-            source.parent.mkdir(parents=True)
-            source.write_text("hi", encoding="utf-8")
-
-            promote_day_to_archive("2026-05-15", config=cfg, move=True)
-
-            self.assertFalse(source.exists())
-            self.assertTrue((cfg.paths.archived / "私聊_X" / "2026-05-15.md").exists())
 
 
 if __name__ == "__main__":

@@ -34,7 +34,7 @@ description: 拉取昨日 WeChat 消息（经 WeFlow 自动化），清洗后归
 
    另外**增量维护**一份长期自我画像 `WeFlow-insights/Profile/自我画像.md`（单一文件、不按日新建，每天把新的长期信号合并进去；见下文 §二次加工 Prompt → Prompt 5），并**按年增量维护**一份主线脉络 `WeFlow-insights/Threads/<yyyy>.md`（沉淀跨多日的长程线索；见 Prompt 6）。
 
-5. **长期归档** —— 四份 Markdown 写完后调 `wechat_diary_core.promote_day_to_archive(yesterday_iso, config=cfg)`，把当日 `WeFlow-processed-exports/<session>/<yesterday>.md` 拷贝到 `WeFlow-archived-exports/<session>/<yesterday>.md`。明早 cron 的 `cleanup="delete"` 会清空 processed，archived 不会丢；月报 / 年报 skill 以后从 archived 读全历史。
+5. **长期归档（自动，无需 skill 动作）** —— 次日 daily export 开跑时把当前 processed 整树合并进 `WeFlow-archived-exports/processed/<会话>/<日期>.md`（同路径新覆盖旧、天然去重），raw 同理合并进 `archived/raw/<会话>/`。月报 / 年报 skill 以后从 `archived/processed/` 读全历史。
 
 > Prompt 详见下文 §二次加工 Prompt。
 
@@ -120,9 +120,7 @@ Agent 在步骤 4 依次执行以下 prompt。每段输出的 Markdown 结构是
 
 先读取以上文件，然后按 Prompt 1（Diary）、Prompt 2（DoneList）、Prompt 3（Inspirations）、Prompt 4（ExtraNotes）依次输出四份文件。Diary 步骤会确定当日唯一一组 title 与关键词，四份产出的文件名与开头都复用这组（见 §每日 title 与当日关键词）。四份写完后，再按 Prompt 5 增量更新长期自我画像、按 Prompt 6 更新当年主线脉络。
 
-全部写完后，运行长期归档（步骤 5）：
-python -c "from wechat_diary_core import promote_day_to_archive, load_config; promote_day_to_archive('{yesterday}', load_config())"
-把 {yesterday} 替换为实际日期（如 2026-05-19）。
+长期归档无需 skill 动作：次日 daily export 开跑时会把当前 processed 整树合并进 `WeFlow-archived-exports/processed/`（同路径新覆盖旧），raw 同理进 `archived/raw/<会话>/`。
 
 如果 processed 目录下没有任何昨日的 md 文件（排除下划线前缀目录后），写一段「昨日无聊天记录」并跳过后续。
 ```
