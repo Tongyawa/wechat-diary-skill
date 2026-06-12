@@ -1,3 +1,6 @@
+# ---- Test artifacts (per-run outputs, archived by convention) ----
+tests/_artifacts/
+
 # ---- Python ----
 __pycache__/
 *.py[cod]
