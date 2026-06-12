@@ -34,9 +34,14 @@ raw = "raw"
         self.assertEqual(cfg.skills.daily, ["wechat-diary"])
         self.assertEqual(cfg.daily_export.target_usernames, [])
         self.assertEqual(cfg.daily_export.self_moments_usernames, [])
+        self.assertFalse(cfg.daily_export.self_moments_configured)
         self.assertEqual(cfg.daily_export.target_processed_subroot, "_targets")
         self.assertEqual(cfg.daily_export.cleanup_mode, "archive")
         self.assertTrue(cfg.daily_export.restart_weflow)
+        # The rotation default must live under the long-term archive root, not
+        # a scratch/test directory.
+        self.assertEqual(cfg.paths.rotation_root.name, "_rotation")
+        self.assertEqual(cfg.paths.rotation_root.parent.name, "WeFlow-archived-exports")
 
     def test_load_config_reads_daily_export_settings(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -57,9 +62,26 @@ restart_weflow = false
 
         self.assertEqual(cfg.daily_export.target_usernames, ["wxid_target"])
         self.assertEqual(cfg.daily_export.self_moments_usernames, ["wxid_self"])
+        self.assertTrue(cfg.daily_export.self_moments_configured)
         self.assertEqual(cfg.daily_export.target_processed_subroot, "_sidecar")
         self.assertEqual(cfg.daily_export.cleanup_mode, "delete")
         self.assertFalse(cfg.daily_export.restart_weflow)
+
+    def test_load_config_treats_explicit_empty_self_moments_as_configured(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.toml"
+            config_path.write_text(
+                """
+[daily_export]
+self_moments_usernames = []
+""".strip(),
+                encoding="utf-8",
+            )
+
+            cfg = load_config(config_path)
+
+        self.assertEqual(cfg.daily_export.self_moments_usernames, [])
+        self.assertTrue(cfg.daily_export.self_moments_configured)
 
 
 if __name__ == "__main__":

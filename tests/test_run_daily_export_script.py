@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import io
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,15 +12,34 @@ from scripts.run_daily_export import DailyExportDeps, ensure_local_config, run_d
 from wechat_diary_core.config import load_config
 
 
+def _quiet_deps(root: Path) -> DailyExportDeps:
+    """Stub deps that run every stage as a no-op for output-focused tests."""
+    return DailyExportDeps(
+        stop_weflow_processes=lambda timeout: None,
+        rotate_export_workspace=lambda cfg, label, mode: SimpleNamespace(target=None),
+        ensure_weflow_running=lambda cfg: SimpleNamespace(cdp_endpoint=None),
+        wait_for_raw_exports_stable=lambda raw_path, min_files: None,
+        batch_transcribe_voices_for=lambda usernames, config: None,
+        run_voice_fallback_script=lambda script_path, config: None,
+        export_all_chats=lambda date, config, cleanup: None,
+        export_moments_for=lambda usernames, date, config: None,
+        archive=lambda raw_path, config, clear_first: [],
+        archive_chats_for=lambda usernames, config, subroot, image_mode, clear_first: [],
+        archive_moments_for=lambda usernames, config, subroot, clear_first: [],
+    )
+
+
 def _write_config(
     root: Path,
     *,
     target_users: str = '"Target"',
-    self_users: str = "",
+    self_users: str | None = "",
     voice_users: str = "",
     voice_fallback_script: str = "",
 ) -> Path:
     config_path = root / "config.toml"
+    # self_users=None omits the key entirely (the "never configured" state).
+    self_moments_line = "" if self_users is None else f"self_moments_usernames = [{self_users}]\n"
     config_path.write_text(
         f"""
 [user]
@@ -34,8 +55,7 @@ weflow_exe = "{(root / 'WeFlow.exe').as_posix()}"
 
 [daily_export]
 target_usernames = [{target_users}]
-self_moments_usernames = [{self_users}]
-target_processed_subroot = "_sidecar"
+{self_moments_line}target_processed_subroot = "_sidecar"
 voice_fallback_script = "{voice_fallback_script}"
 cleanup_mode = "archive"
 restart_weflow = true
@@ -58,7 +78,8 @@ class DailyExportScriptTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             config_path = root / "config.toml"
-            answers = iter([(root / "WeFlow.exe").as_posix()])
+            # WeFlow.exe path, then empty answer to the self-moments question.
+            answers = iter([(root / "WeFlow.exe").as_posix(), ""])
 
             ensure_local_config(
                 config_path=config_path,
@@ -70,6 +91,8 @@ class DailyExportScriptTests(unittest.TestCase):
 
         self.assertEqual(cfg.daily_export.target_usernames, [])
         self.assertEqual(cfg.daily_export.self_moments_usernames, [])
+        # The empty answer is persisted as an explicit opt-out, not left dangling.
+        self.assertTrue(cfg.daily_export.self_moments_configured)
         self.assertEqual(cfg.user.voice_transcribe_usernames, [])
         self.assertIsNone(cfg.daily_export.voice_fallback_script)
         self.assertEqual(cfg.daily_export.cleanup_mode, "archive")
@@ -94,7 +117,11 @@ restart_weflow = false                             # I manage WeFlow myself
 """.strip()
             config_path.write_text(original, encoding="utf-8")
 
-            ensure_local_config(config_path=config_path, example_path=Path("config.example.toml"))
+            ensure_local_config(
+                config_path=config_path,
+                example_path=Path("config.example.toml"),
+                input_func=lambda _prompt: "",
+            )
 
             updated = config_path.read_text(encoding="utf-8")
             self.assertIn('target_usernames = ["wxid_existing"]               # keep these comments alive', updated)
@@ -119,13 +146,43 @@ target_usernames = ["wxid_target"]
                 encoding="utf-8",
             )
 
-            ensure_local_config(config_path=config_path, example_path=Path("config.example.toml"))
+            ensure_local_config(
+                config_path=config_path,
+                example_path=Path("config.example.toml"),
+                input_func=lambda _prompt: "wxid_me",
+            )
 
             cfg = load_config(config_path)
 
         self.assertEqual(cfg.daily_export.target_usernames, ["wxid_target"])
-        self.assertEqual(cfg.daily_export.self_moments_usernames, [])
+        self.assertEqual(cfg.daily_export.self_moments_usernames, ["wxid_me"])
+        self.assertTrue(cfg.daily_export.self_moments_configured)
         self.assertEqual(cfg.user.voice_transcribe_usernames, ["wxid_target"])
+
+    def test_ensure_local_config_without_prompt_leaves_self_moments_unconfigured(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = root / "config.toml"
+            config_path.write_text(
+                f"""
+[automation]
+weflow_exe = "{(root / 'WeFlow.exe').as_posix()}"
+""".strip(),
+                encoding="utf-8",
+            )
+
+            ensure_local_config(
+                config_path=config_path,
+                example_path=Path("config.example.toml"),
+                prompt=False,
+            )
+
+            updated = config_path.read_text(encoding="utf-8")
+            cfg = load_config(config_path)
+
+        # Non-interactive runs must not fabricate an opt-out the user never chose.
+        self.assertNotIn("self_moments_usernames", updated)
+        self.assertFalse(cfg.daily_export.self_moments_configured)
 
     def test_runner_skips_target_steps_when_target_is_empty(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -254,6 +311,36 @@ target_usernames = ["wxid_target"]
         self.assertIn(("moments", ("Self",)), calls)
         self.assertIn(("archive_moments", ("Self",), "朋友圈_自己", True), calls)
         self.assertEqual(result.self_moment_files, [root / "self-moments.md"])
+
+    def test_runner_warns_loudly_when_self_moments_unconfigured(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = load_config(_write_config(root, target_users="", self_users=None))
+            deps = _quiet_deps(root)
+
+            buffer = io.StringIO()
+            with redirect_stdout(buffer):
+                result = run_daily_export(cfg, deps=deps, day=date(2026, 5, 16))
+            output = buffer.getvalue()
+
+        self.assertIn("Self moments contacts: NOT CONFIGURED", output)
+        self.assertIn("[WARN]", output)
+        self.assertIn("self_moments_usernames", output)
+        self.assertEqual(result.self_moment_files, [])
+
+    def test_runner_stays_quiet_when_self_moments_explicitly_empty(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = load_config(_write_config(root, target_users="", self_users=""))
+            deps = _quiet_deps(root)
+
+            buffer = io.StringIO()
+            with redirect_stdout(buffer):
+                run_daily_export(cfg, deps=deps, day=date(2026, 5, 16))
+            output = buffer.getvalue()
+
+        self.assertIn("explicitly disabled", output)
+        self.assertNotIn("[WARN]", output)
 
     def test_runner_respects_explicit_voice_usernames(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -17,7 +17,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "processed": "WeFlow-processed-exports",
         "archived": "WeFlow-archived-exports",
         "insights": "WeFlow-insights",
-        "rotation_root": "其他/test/test_archive",
+        "rotation_root": "WeFlow-archived-exports/_rotation",
     },
     "automation": {
         "driver": "cdp",
@@ -57,7 +57,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "daily_export": {
         "target_usernames": [],
-        "self_moments_usernames": [],
+        # None = key absent in config.toml (never answered); [] = explicit opt-out.
+        "self_moments_usernames": None,
         "target_processed_subroot": "_targets",
         "voice_fallback_script": "",
         "cleanup_mode": "archive",
@@ -143,6 +144,9 @@ class SkillsConfig:
 class DailyExportConfig:
     target_usernames: list[str]
     self_moments_usernames: list[str]
+    # False when the key is absent from config.toml; lets the runner tell
+    # "never configured" apart from "deliberately disabled with []".
+    self_moments_configured: bool
     target_processed_subroot: str
     voice_fallback_script: Path | None
     cleanup_mode: str
@@ -252,6 +256,7 @@ def _build_config(raw: dict[str, Any], base_dir: Path) -> Config:
             self_moments_usernames=[
                 str(value).strip() for value in daily_export.get("self_moments_usernames") or [] if str(value).strip()
             ],
+            self_moments_configured=daily_export.get("self_moments_usernames") is not None,
             target_processed_subroot=str(daily_export.get("target_processed_subroot") or "_targets").strip() or "_targets",
             voice_fallback_script=_optional_path(base_dir, daily_export.get("voice_fallback_script")),
             cleanup_mode=cleanup_mode,

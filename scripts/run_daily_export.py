@@ -127,7 +127,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Day: {result.day}")
     print(f"Rotation archive: {result.rotation_target or 'none'}")
     print(f"Diary processed files: {len(result.diary_files)}")
-    print(f"Self moments files: {len(result.self_moment_files)}")
+    self_moments_note = "" if cfg.daily_export.self_moments_configured else "（未配置，本轮已跳过——见上方 [WARN]）"
+    print(f"Self moments files: {len(result.self_moment_files)}{self_moments_note}")
     print(f"Sidecar chat files: {len(result.sidecar_chat_files)}")
     print(f"Sidecar moments files: {len(result.sidecar_moment_files)}")
     for path in result.diary_files + result.self_moment_files + result.sidecar_chat_files + result.sidecar_moment_files:
@@ -172,8 +173,19 @@ def ensure_local_config(
     # `# comment` the user inherited from config.example.toml.
     if "target_usernames" not in daily_export_section:
         text = _set_toml_value(text, "daily_export", "target_usernames", _toml_array([]))
-    if "self_moments_usernames" not in daily_export_section:
-        text = _set_toml_value(text, "daily_export", "self_moments_usernames", _toml_array([]))
+    if "self_moments_usernames" not in daily_export_section and prompt:
+        # Never silently write [] here: an auto-written empty list is
+        # indistinguishable from a deliberate opt-out and made the runner skip
+        # the user's own moments for whole runs. Ask once instead; an empty
+        # answer becomes an explicit [] so we do not nag on every run.
+        print(
+            "未配置「自己的朋友圈」导出（diary 素材）。输入你自己的 wxid（多个用逗号分隔）；"
+            "直接回车 = 不导出（之后可在 config.toml [daily_export].self_moments_usernames 修改）。",
+            flush=True,
+        )
+        print("self moments wxid: ", end="", flush=True)
+        self_moments_values = _split_values(input_func(""))
+        text = _set_toml_value(text, "daily_export", "self_moments_usernames", _toml_array(self_moments_values))
     if "target_processed_subroot" not in daily_export_section:
         text = _set_toml_value(text, "daily_export", "target_processed_subroot", _toml_string("_targets"))
     if "voice_fallback_script" not in daily_export_section:
@@ -214,8 +226,14 @@ def run_daily_export(
         print("Target sidecar contacts: none; moments and sidecar archives will be skipped.")
     if self_moments_usernames:
         print(f"Self moments contacts: {len(self_moments_usernames)}")
+    elif cfg.daily_export.self_moments_configured:
+        print("Self moments contacts: none (explicitly disabled); diary self moments will be skipped.")
     else:
-        print("Self moments contacts: none; diary self moments will be skipped.")
+        print("Self moments contacts: NOT CONFIGURED; diary self moments will be skipped this run.")
+        print(
+            "[WARN] 自己的朋友圈未配置导出：在 config.toml [daily_export].self_moments_usernames "
+            "填入自己的 wxid；确认不需要则设为 [] 显式关闭。"
+        )
 
     if cfg.daily_export.restart_weflow:
         _run_stage(

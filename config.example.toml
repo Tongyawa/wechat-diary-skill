@@ -14,14 +14,16 @@ voice_transcribe_usernames = []
 [paths]
 raw = "WeFlow-raw-exports"
 processed = "WeFlow-processed-exports"
-# After二次加工 finishes, each day's processed markdown is promoted here for
-# permanent per-session history. Processed gets wiped daily; archived doesn't.
+# Long-term root: pre-export rotations land in `_rotation` below, and
+# `promote_day_to_archive` (core API, not yet wired into the daily runner) can
+# copy per-session day markdown here for permanent history.
 archived = "WeFlow-archived-exports"
 insights = "WeFlow-insights"
 # Where pre-export rotations land. Each automated `export_all_chats` run moves
 # the current raw + processed contents here into a timestamped subfolder so
-# nothing is silently overwritten.
-rotation_root = "其他/test/test_archive"
+# nothing is silently overwritten. Kept under the archived root so yesterday's
+# workspace stays with long-term history instead of a scratch directory.
+rotation_root = "WeFlow-archived-exports/_rotation"
 
 [automation]
 # Which GUI-automation backend to use.
@@ -87,7 +89,10 @@ target_usernames = []
 # Contacts used only for exporting your own Moments into the public diary
 # material stream. Do not put filehelper here; use your own wxid or a WeFlow
 # searchable display name.
-self_moments_usernames = []
+# Deliberately left commented out: a missing key means "never configured", so
+# the first interactive run asks once and non-interactive runs warn loudly.
+# An explicit [] means "deliberately disabled" and silences the prompt/warning.
+# self_moments_usernames = ["wxid_yourself"]
 
 # Sidecar markdown lands in:
 #   WeFlow-processed-exports/<target_processed_subroot>/chats/<yyyy-mm-dd>.md
