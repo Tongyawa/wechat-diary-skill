@@ -77,7 +77,7 @@ python scripts/process_existing_raw.py --raw-root WeFlow-raw-exports --day <yyyy
 |---|---|
 | 原始导出 | `WeFlow-raw-exports/<yyyymmdd> 每日导出聊天记录示例/...`（或生产中的实际命名） |
 | 当日归档 | `WeFlow-processed-exports/<session>/<yyyy-mm-dd>.md`（明早被 cleanup="delete" 清掉） |
-| 自己朋友圈 | `WeFlow-processed-exports/朋友圈_自己/<yyyy-mm-dd>.md`（图片/视频路径指向 raw 导出媒体，供多模态读取） |
+| 自己朋友圈 | `WeFlow-processed-exports/朋友圈_自己/<yyyy-mm-dd>.md`（图片/视频随 md 存放在同目录 `media/`，路径相对于该 md 所在目录，供多模态读取） |
 | 长期归档 | `WeFlow-archived-exports/<session>/<yyyy-mm-dd>.md`（二次加工后从 processed 复制过来）|
 | 日产出 | `WeFlow-insights/{Diary,DoneList,Inspirations,ExtraNotes}/<yyyy>/<yyyy-mm-dd> <每日title> #关键词.md` |
 | 长期自我画像 | `WeFlow-insights/Profile/自我画像.md`（单一文件，长期增量维护） |
@@ -110,7 +110,7 @@ Agent 在步骤 4 依次执行以下 prompt。每段输出的 Markdown 结构是
    - `[语音]` = 语音转写失败，跳过。
    - `[表情]` = 微信表情 / 表情包，忽略即可。
 
-   `朋友圈_自己/{yesterday}.md` 是例外输入：它不是聊天流，而是自己的朋友圈流。每条朋友圈一个块：时间、正文、`[图片：WeFlow-raw-exports/...]` / `[视频：WeFlow-raw-exports/...]`、评论、位置。遇到图片/视频路径时，用 Read 工具读取真实媒体文件做多模态理解；不要把它当成 OCR 文字，也不要因为路径存在就写成「发了一张图片」。
+   `朋友圈_自己/{yesterday}.md` 是例外输入：它不是聊天流，而是自己的朋友圈流。每条朋友圈一个块：时间、正文、`[图片：media/...]` / `[视频：media/...]`、评论、位置。媒体路径**相对于该 md 所在目录**（即 `朋友圈_自己/media/...`）；用 Read 工具读取真实媒体文件做多模态理解；不要把它当成 OCR 文字，也不要因为路径存在就写成「发了一张图片」。历史产物中旧式 `WeFlow-raw-exports/...` 绝对语义路径若已失效，按归档库 `WeFlow-archived-exports/raw/` 下的对应路径找。
 
 4. **标记收集箱**：session 名包含 `self_wxids` 中任一值、或 session 名含「文件传输助手」的，标记为收集箱。收集箱里用户发给自己的消息通常是笔记、备忘、灵感碎片。
 

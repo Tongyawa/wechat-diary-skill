@@ -170,7 +170,7 @@ processed = "{(root / 'processed').as_posix()}"
             self.assertNotIn("target post", self_body)
             self.assertEqual(self_written[0].parent.name, "朋友圈_自己")
 
-    def test_archive_moments_for_rewrites_existing_media_paths_to_project_relative_paths(self) -> None:
+    def test_archive_moments_for_copies_media_next_to_markdown_with_relative_paths(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             raw = root / "raw" / "朋友圈导出_2026-05-15"
@@ -202,7 +202,13 @@ processed = "{(root / 'processed').as_posix()}"
             written = archive_moments_for(["wxid_target"], config=cfg, subroot="朋友圈_自己")
 
             body = written[0].read_text(encoding="utf-8")
-            self.assertIn("[图片：raw/朋友圈导出_2026-05-15/media/p1.jpg]", body)
+            # path is relative to the markdown's own directory…
+            self.assertIn("[图片：media/p1.jpg]", body)
+            # …and the bytes were copied next to it, so the sidecar survives
+            # the raw export being merged away into the archive library.
+            copied = root / "processed" / "朋友圈_自己" / "media" / "p1.jpg"
+            self.assertTrue(copied.exists())
+            self.assertEqual(copied.read_bytes(), b"fake image")
 
     def test_discover_moments_exports_skips_non_moments_json(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

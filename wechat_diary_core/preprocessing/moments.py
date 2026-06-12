@@ -70,7 +70,8 @@ def render_moments_flow(posts: Sequence[Post]) -> str:
         📍 武汉 - 武汉大学
 
     Posts are separated by blank lines. Image / video paths come from
-    ``media[].localPath`` verbatim — Agent reads the bytes multimodally later.
+    ``media[].localPath`` verbatim — Agent reads the bytes multimodally later,
+    resolving relative paths against the markdown file's own directory.
     """
     sorted_posts = sorted(posts, key=lambda post: int(post.get("createTime") or 0))
     blocks: list[str] = []
@@ -121,7 +122,7 @@ def archive_moments_for(
         for post in export.posts:
             if not include_full_export and not _post_matches_usernames(post, target_set):
                 continue
-            all_posts.append(_with_resolved_media_paths(post, export.source_path.parent, cfg.base_dir))
+            all_posts.append(_with_localized_media(post, export.source_path.parent, root / "media"))
 
     by_day = _group_posts_by_day(all_posts)
     written: list[Path] = []
@@ -187,52 +188,51 @@ def _post_matches_usernames(post: Post, usernames: set[str] | None) -> bool:
     return any(candidate and candidate in usernames for candidate in candidates)
 
 
-def _with_resolved_media_paths(post: Post, export_dir: Path, base_dir: Path) -> Post:
+def _with_localized_media(post: Post, export_dir: Path, media_dir: Path) -> Post:
+    """Copy each media file next to the markdown (``<subroot>/media/``) and
+    point ``localPath`` at the copy, relative to the markdown's directory.
+
+    This keeps the moments sidecar self-contained the same way WeFlow's
+    per-session-directory export does: after the raw export is merged away
+    into the archive library, the markdown still resolves its own images.
+    Unresolvable paths are kept verbatim so older exports degrade gracefully.
+    """
     media_items = post.get("media") or []
     if not media_items:
         return post
 
-    resolved_media: list[Any] = []
+    localized_media: list[Any] = []
     changed = False
     for media in media_items:
         if not isinstance(media, dict):
-            resolved_media.append(media)
+            localized_media.append(media)
             continue
         next_media = dict(media)
-        local_path = _safe(media.get("localPath"))
-        resolved = _resolve_media_path(local_path, export_dir, base_dir)
-        if resolved and resolved != local_path:
-            next_media["localPath"] = resolved
+        source = _locate_media_source(_safe(media.get("localPath")), export_dir)
+        if source is not None:
+            media_dir.mkdir(parents=True, exist_ok=True)
+            destination = media_dir / source.name
+            if not destination.exists():
+                shutil.copy2(source, destination)
+            next_media["localPath"] = f"media/{source.name}"
             changed = True
-        resolved_media.append(next_media)
+        localized_media.append(next_media)
 
     if not changed:
         return post
     next_post = dict(post)
-    next_post["media"] = resolved_media
+    next_post["media"] = localized_media
     return next_post
 
 
-def _resolve_media_path(local_path: str, export_dir: Path, base_dir: Path) -> str | None:
+def _locate_media_source(local_path: str, export_dir: Path) -> Path | None:
     if not local_path:
         return None
     path = Path(local_path)
     if path.is_absolute():
-        if path.exists():
-            return _display_path(path, base_dir)
-        return None
-
+        return path if path.exists() else None
     candidate = export_dir / path
-    if candidate.exists():
-        return _display_path(candidate, base_dir)
-    return None
-
-
-def _display_path(path: Path, base_dir: Path) -> str:
-    try:
-        return path.resolve().relative_to(base_dir.resolve()).as_posix()
-    except ValueError:
-        return str(path.resolve())
+    return candidate if candidate.exists() else None
 
 
 def _group_posts_by_day(posts: Iterable[Post]) -> dict[str, list[Post]]:
