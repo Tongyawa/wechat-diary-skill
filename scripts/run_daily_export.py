@@ -125,7 +125,7 @@ def main(argv: list[str] | None = None) -> int:
 
     print("\nDaily export completed.")
     print(f"Day: {result.day}")
-    print(f"Rotation archive: {result.rotation_target or 'none'}")
+    print(f"Archive root: {result.rotation_target or 'none'}")
     print(f"Diary processed files: {len(result.diary_files)}")
     self_moments_note = "" if cfg.daily_export.self_moments_configured else "（未配置，本轮已跳过——见上方 [WARN]）"
     print(f"Self moments files: {len(result.self_moment_files)}{self_moments_note}")

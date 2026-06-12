@@ -20,6 +20,7 @@ if str(ROOT) not in sys.path:
 from wechat_diary_core.archiving import archive, archive_chats_for
 from wechat_diary_core.config import Config, load_config
 from wechat_diary_core.preprocessing import archive_moments_for
+from wechat_diary_core.workspace import merge_tree
 
 
 DAY_SUFFIX_RE = re.compile(r"_(\d{8})$")
@@ -142,7 +143,7 @@ def process_existing_raw(
 
     backup = _run_stage(
         "archive_existing_processed",
-        lambda: archive_existing_processed(cfg.paths.processed, cfg.paths.rotation_root, timestamp=timestamp),
+        lambda: archive_existing_processed(cfg.paths.processed, cfg.paths.archived / "processed"),
     )
 
     if cfg.daily_export.voice_fallback_script and not skip_voice_fallback:
@@ -237,19 +238,20 @@ def infer_single_day(raw_root: str | Path) -> str | None:
 
 def archive_existing_processed(
     processed_root: str | Path,
-    rotation_root: str | Path,
-    *,
-    timestamp: datetime | None = None,
+    archived_processed_root: str | Path,
 ) -> Path | None:
+    """Merge the current processed tree into the long-term archive library.
+
+    Same relative path = the incoming file replaces the archived one, so
+    re-processing a day never duplicates and always keeps the newest render.
+    """
     source = Path(processed_root)
     if not _is_non_empty_dir(source):
         source.mkdir(parents=True, exist_ok=True)
         return None
 
-    stamp = (timestamp or datetime.now()).strftime("%Y%m%d-%H%M%S")
-    target = Path(rotation_root) / f"{stamp}-process_existing_raw" / "processed"
-    target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(source, target, copy_function=shutil.copy2)
+    target = Path(archived_processed_root)
+    merge_tree(source, target)
     shutil.rmtree(source, onerror=_handle_remove_error)
     source.mkdir(parents=True, exist_ok=True)
     return target

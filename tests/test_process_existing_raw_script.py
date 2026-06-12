@@ -29,7 +29,7 @@ voice_transcribe_usernames = []
 [paths]
 raw = "{(root / 'raw').as_posix()}"
 processed = "{(root / 'processed').as_posix()}"
-rotation_root = "{(root / 'rotation').as_posix()}"
+archived = "{(root / 'archived').as_posix()}"
 
 [automation]
 weflow_exe = "{(root / 'WeFlow.exe').as_posix()}"
@@ -77,7 +77,7 @@ class ProcessExistingRawScriptTests(unittest.TestCase):
 
             self.assertEqual(result.day, "2026-06-09")
             self.assertTrue(raw_marker.exists())
-            self.assertEqual(result.processed_backup, root / "rotation" / "20260611-120000-process_existing_raw" / "processed")
+            self.assertEqual(result.processed_backup, root / "archived" / "processed")
             self.assertTrue((result.processed_backup / "old" / "2026-06-08.md").exists())
 
     def test_raw_root_is_passed_to_all_processing_steps(self) -> None:

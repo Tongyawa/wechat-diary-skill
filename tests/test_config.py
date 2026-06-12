@@ -38,10 +38,7 @@ raw = "raw"
         self.assertEqual(cfg.daily_export.target_processed_subroot, "_targets")
         self.assertEqual(cfg.daily_export.cleanup_mode, "archive")
         self.assertTrue(cfg.daily_export.restart_weflow)
-        # The rotation default must live under the long-term archive root, not
-        # a scratch/test directory.
-        self.assertEqual(cfg.paths.rotation_root.name, "_rotation")
-        self.assertEqual(cfg.paths.rotation_root.parent.name, "WeFlow-archived-exports")
+        self.assertEqual(cfg.paths.archived.name, "WeFlow-archived-exports")
 
     def test_load_config_reads_daily_export_settings(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

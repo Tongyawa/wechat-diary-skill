@@ -33,10 +33,9 @@ def export_all_chats(
     ``cleanup`` controls how the raw + processed roots get wiped first so today's
     WeFlow output never mixes with yesterday's:
 
-    - ``"delete"`` (default, daily cron): rmtree both roots. Yesterday's data
-      should already be in ``WeFlow-archived-exports/`` by now.
-    - ``"archive"``: move both roots into ``paths.rotation_root`` first (used
-      when you want to preserve the prior state for inspection).
+    - ``"delete"``: rmtree both roots without archiving.
+    - ``"archive"`` (daily default): merge both roots into the ``paths.archived``
+      library first (per-session, newer file wins), so nothing is lost.
     - ``"skip"``: do nothing (tests / partial reruns).
     """
     cfg = config or load_config()

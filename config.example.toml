@@ -14,16 +14,12 @@ voice_transcribe_usernames = []
 [paths]
 raw = "WeFlow-raw-exports"
 processed = "WeFlow-processed-exports"
-# Long-term root: pre-export rotations land in `_rotation` below, and
-# `promote_day_to_archive` (core API, not yet wired into the daily runner) can
-# copy per-session day markdown here for permanent history.
+# Long-term library. Each daily run first merges the previous raw + processed
+# into `archived/raw/<会话>/` and `archived/processed/<会话>/<day>.md` (same
+# relative path: the newer export wins, so repeated runs deduplicate), then
+# clears the live roots. Backfill ingestion uses scripts/archive_exports.py.
 archived = "WeFlow-archived-exports"
 insights = "WeFlow-insights"
-# Where pre-export rotations land. Each automated `export_all_chats` run moves
-# the current raw + processed contents here into a timestamped subfolder so
-# nothing is silently overwritten. Kept under the archived root so yesterday's
-# workspace stays with long-term history instead of a scratch directory.
-rotation_root = "WeFlow-archived-exports/_rotation"
 
 [automation]
 # Which GUI-automation backend to use.

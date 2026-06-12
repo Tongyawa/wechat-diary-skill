@@ -17,7 +17,6 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "processed": "WeFlow-processed-exports",
         "archived": "WeFlow-archived-exports",
         "insights": "WeFlow-insights",
-        "rotation_root": "WeFlow-archived-exports/_rotation",
     },
     "automation": {
         "driver": "cdp",
@@ -79,7 +78,6 @@ class PathsConfig:
     processed: Path
     archived: Path
     insights: Path
-    rotation_root: Path
 
 
 @dataclass(frozen=True)
@@ -210,7 +208,6 @@ def _build_config(raw: dict[str, Any], base_dir: Path) -> Config:
             processed=_resolve_path(base_dir, paths["processed"]),
             archived=_resolve_path(base_dir, paths["archived"]),
             insights=_resolve_path(base_dir, paths["insights"]),
-            rotation_root=_resolve_path(base_dir, paths["rotation_root"]),
         ),
         automation=AutomationConfig(
             driver=driver,

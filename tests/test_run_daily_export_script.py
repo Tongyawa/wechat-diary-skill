@@ -48,7 +48,7 @@ voice_transcribe_usernames = [{voice_users}]
 [paths]
 raw = "{(root / 'raw').as_posix()}"
 processed = "{(root / 'processed').as_posix()}"
-rotation_root = "{(root / 'rotation').as_posix()}"
+archived = "{(root / 'archived').as_posix()}"
 
 [automation]
 weflow_exe = "{(root / 'WeFlow.exe').as_posix()}"
