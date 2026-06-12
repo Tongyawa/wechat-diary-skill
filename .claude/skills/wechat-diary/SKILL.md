@@ -42,7 +42,23 @@ description: 拉取昨日 WeChat 消息（经 WeFlow 自动化），清洗后归
 
 WeFlow 的 raw 导出目录是应用内全局设置，不会自动指向当前 Git worktree。实机测试 worktree 时，先确保 WeFlow 实际写入的 raw 目录和当前 worktree 的 `config.toml [paths].raw` 一致；否则 runner 会在错误目录等待，表现为 `wait_raw_exports_stable` 看到 `files=0`。
 
-如果只是想消费主仓库根目录已经导出的 raw，不要直接跑完整 daily export runner，因为 runner 开头会 rotate `paths.raw` / `paths.processed`。当前公开仓库还没有“只从现有 raw 生成 processed”的专用入口。
+如果只是想消费主仓库根目录已经导出的 raw，不要直接跑完整 daily export runner，因为 runner 开头会 rotate `paths.raw` / `paths.processed`。改用下方「已有 raw 补跑入口」，它只读 raw 并重建 processed，不启动 WeFlow。
+
+## 已有 raw 补跑入口
+
+当用户已经手动在 WeFlow 导出了 raw，或明确要求「只处理现有 raw / 不启动 WeFlow / 不重导」时，先跑正式 CLI：
+
+```powershell
+python scripts/process_existing_raw.py --raw-root WeFlow-raw-exports --day <yyyy-mm-dd> --require-day
+```
+
+- `--raw-root` 可省略，默认读 `config.toml [paths].raw`。
+- 若 raw 目录里的会话文件夹都是单一 `_YYYYMMDD` 后缀，可省略 `--day`，脚本会自动推断；skill 生成 insights 前仍要以脚本输出的 Day 为准。
+- 若 raw 是 `_YYYYMMDD-YYYYMMDD` 全年/区间导出，或混有多个日期，必须显式传 `--day`；脚本仍会生成全部 processed，但每日总结只处理这一天。
+- 该入口会在已有 `WeFlow-processed-exports` 非空时先把旧 processed 归档，不会移动或删除 raw。
+- 该入口会同时生成公开 diary processed、`朋友圈_自己`（若配置了 self moments）、以及 target sidecar chats/moments（若配置了 target）。target 目录名来自 config，不要在 prompt 里硬编码。
+
+脚本成功后，继续执行本 skill 的二次加工 Prompt；此时「昨日」改为 `--day` / 脚本输出 Day，而不是按当前日期减 1 天。
 
 ## 子命令：`/wechat-diary summarize <folder>`
 
@@ -81,7 +97,7 @@ Agent 在步骤 4 依次执行以下 prompt。每段输出的 Markdown 结构是
 
 **回写先前产物（贯穿全部产出）**：若今日素材补充或更正了**先前某天**已记录的事件（如后续才得知的结果、当时漏记的细节），可扩大输出范围，把补充写回那天对应的产物（Diary 关键时刻、Threads 里程碑等），并注明「（<今日>补）」。正常每日运行可直接回写；并行回填窗口不要直接回写更早日期文件（会与其它窗口/主会话撞车），改写进汇报交主会话统一应用。
 
-1. **确定日期**：`yesterday` = 今天日期减 1 天（本地时区）。
+1. **确定日期**：默认 `yesterday` = 今天日期减 1 天（本地时区）。若本次是通过「已有 raw 补跑入口」进入，则 `yesterday` = `scripts/process_existing_raw.py` 输出的 Day / 用户显式传入的 `--day`。
 
 2. **读取 config.toml**：获取 `[user].self_wxids`（用户自己的 wxid 列表，通常含 filehelper）。匹配这些 wxid 的会话是用户的「收集箱」——用户给自己 / 文件传输助手发的消息，是最直接的一手素材。
 
