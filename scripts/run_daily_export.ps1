@@ -20,19 +20,72 @@ $LogPath = Join-Path $LogDir "$(Get-Date -Format yyyy-MM-dd)-daily-export.log"
 Write-Host "Running daily export from $Root"
 Write-Host "Log: $LogPath"
 
+# Console whitelist: stages, results, warnings, errors and the first-run
+# wizard prompts. Everything (WeFlow/WCDB chatter included) still lands in
+# the runlog file above.
+function ShouldShowDailyExportLine {
+  param([string]$Line)
+
+  if ([string]::IsNullOrWhiteSpace($Line)) {
+    return $true
+  }
+
+  if ($Line -match '^(DETAIL:|\[weflow\]|.*QueryMessageBatch|.*fetch_message_batch|.*WCDB日志)') {
+    return $false
+  }
+
+  if ($Line.Length -gt 240) {
+    return $false
+  }
+
+  if ($Line -match '^\[\d{2}:\d{2}:\d{2}\] .+') {
+    return $true
+  }
+
+  if ($Line -match '^\[WARN\]') {
+    return $true
+  }
+
+  if ($Line -match '^(Daily export day|Raw root|Processed root|Target sidecar contacts|Self moments contacts):') {
+    return $true
+  }
+
+  if ($Line -match '^(voice_transcribe|export_target_moments|export_self_moments|voice_fallback) skipped:') {
+    return $true
+  }
+
+  if ($Line -match '^(FAILED at stage|FAILED before export completed|Reason|Next step):') {
+    return $true
+  }
+
+  if ($Line -match '^(Daily export completed\.|Day:|Archive root:|Diary processed files:|Self moments files:|Sidecar chat files:|Sidecar moments files:)') {
+    return $true
+  }
+
+  # First-run wizard output must never be filtered away.
+  if ($Line -match '^(Created local config:|WeFlow\.exe path:|self moments wxid:|未配置)') {
+    return $true
+  }
+
+  return $false
+}
+
 $ScriptPath = Join-Path $Root "scripts\run_daily_export.py"
 $CommandLine = '"python" "{0}" 2>&1' -f $ScriptPath
 
 cmd /d /c $CommandLine | ForEach-Object {
-  Write-Host $_
-  Add-Content -LiteralPath $LogPath -Encoding UTF8 -Value $_
+  $Line = [string]$_
+  Add-Content -LiteralPath $LogPath -Encoding UTF8 -Value $Line
+  if (ShouldShowDailyExportLine $Line) {
+    Write-Host $Line
+  }
 }
 $ExitCode = $LASTEXITCODE
 
 if ($ExitCode -eq 0) {
   Write-Host "Daily export finished successfully."
 } else {
-  Write-Host "Daily export failed. Check the log above: $LogPath"
+  Write-Host "Daily export failed. Check the full log: $LogPath"
 }
 
 if (-not $NoPause) {

@@ -74,6 +74,17 @@ class DailyExportScriptTests(unittest.TestCase):
         self.assertIn("cmd /d /c $CommandLine", script)
         self.assertNotIn("*>&1 | Tee-Object", script)
 
+    def test_powershell_wrapper_filters_console_but_logs_everything(self) -> None:
+        script = Path("scripts/run_daily_export.ps1").read_text(encoding="utf-8")
+
+        self.assertIn("ShouldShowDailyExportLine", script)
+        # every line still reaches the runlog file
+        self.assertIn("Add-Content -LiteralPath $LogPath", script)
+        # warnings, result summary and wizard prompts must never be filtered away
+        self.assertIn("'^\\[WARN\\]'", script)
+        self.assertIn("Archive root:", script)
+        self.assertIn("self moments wxid:", script)
+
     def test_ensure_local_config_allows_empty_target_defaults(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
