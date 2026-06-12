@@ -36,8 +36,8 @@ foreach ($Kind in @("Diary", "DoneList", "Inspirations", "ExtraNotes")) {
   }
 }
 
-# Private sidecar products (any `_`-prefixed dir) open alongside when present;
-# their names stay out of this public script on purpose.
+# Sidecar products (any `_`-prefixed dir) open alongside when present; their
+# concrete names are workspace-local and stay out of this script on purpose.
 if (Test-Path -LiteralPath $InsightsRoot) {
   $SidecarRoots = @(Get-ChildItem -LiteralPath $InsightsRoot -Directory | Where-Object { $_.Name.StartsWith("_") })
   foreach ($SidecarRoot in $SidecarRoots) {

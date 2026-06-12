@@ -90,7 +90,7 @@ def annotate_image_messages(
     ``image_mode="preserve_paths"`` skips OCR entirely and records the relative
     image path on the message so chat_flow renders
     ``[图片：media/images/xxx.jpg]`` — a downstream Agent reads the image
-    multimodally later (used by private per-contact pipelines).
+    multimodally later (used by per-contact sidecar pipelines).
     """
     if image_mode == "preserve_paths":
         return _preserve_image_paths(messages, base_dir)

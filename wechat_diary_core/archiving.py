@@ -32,7 +32,7 @@ def archive(
 
     ``image_mode="preserve_paths"`` disables OCR and renders
     ``[图片：media/images/xxx.jpg]`` so a downstream Agent reads the image
-    multimodally (used by private per-contact pipelines).
+    multimodally (used by per-contact sidecar pipelines).
     """
     cfg = config or load_config()
     exports = (
@@ -68,7 +68,7 @@ def archive_chats_for(
     """Archive only sessions whose participants match ``usernames`` into
     ``<paths.processed>/<subroot>/<yyyy-mm-dd>.md`` (no per-session folder).
 
-    Used by private per-contact pipelines that prefer to feed the original
+    Used by per-contact sidecar pipelines that prefer to feed the original
     image bytes to a multimodal Agent rather than baking OCR into the markdown.
     The ``subroot`` is the caller's responsibility — core stays topic-neutral.
     """

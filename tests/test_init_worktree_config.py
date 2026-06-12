@@ -22,7 +22,7 @@ weflow_exe = "E:/Apps/WeFlow/WeFlow.exe"   # keep my comment
 
 [daily_export]
 target_usernames = ["wxid_t"]
-voice_fallback_script = ".claude/skills/private/voice_fallback.py"
+voice_fallback_script = "local-ext/voice_fallback.py"
 """.strip(),
         encoding="utf-8",
     )
@@ -47,10 +47,10 @@ class InitWorktreeConfigTests(unittest.TestCase):
                 value = data["paths"][key]
                 self.assertTrue(Path(value).is_absolute(), key)
                 self.assertTrue(value.startswith(resolved_main), key)
-            # private fallback script must also anchor at the main workspace
+            # the local fallback script must also anchor at the main workspace
             self.assertEqual(
                 data["daily_export"]["voice_fallback_script"],
-                (main_root.resolve() / ".claude/skills/private/voice_fallback.py").as_posix(),
+                (main_root.resolve() / "local-ext/voice_fallback.py").as_posix(),
             )
             # untouched keys (and their comments) survive
             self.assertEqual(data["daily_export"]["target_usernames"], ["wxid_t"])

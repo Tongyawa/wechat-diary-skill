@@ -99,8 +99,8 @@ def init_worktree_config(worktree_root: Path, main_root: Path, *, force: bool = 
         absolute = _anchor(value, main_root)
         text = _set_toml_value(text, "paths", key, _toml_string(absolute))
 
-    # The private voice fallback script lives only in the main workspace (its
-    # directory is a separate gitignored repo a worktree never carries).
+    # An optional local voice fallback script lives only in the main workspace
+    # (its directory is gitignored, so a worktree never carries it).
     fallback = str((data.get("daily_export") or {}).get("voice_fallback_script") or "").strip()
     if fallback:
         text = _set_toml_value(

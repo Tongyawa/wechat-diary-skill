@@ -96,7 +96,7 @@ target_usernames = []
 target_processed_subroot = "_targets"
 
 # Optional local script called after raw exports are stable and before processed
-# markdown is rendered. Keep empty for the public setup. Private/local pipelines
+# markdown is rendered. Keep empty for the default setup. A local extension
 # can point this at a script that repairs failed voice transcripts in raw JSON.
 voice_fallback_script = ""
 

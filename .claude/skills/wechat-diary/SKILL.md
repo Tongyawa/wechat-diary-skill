@@ -24,7 +24,7 @@ description: 拉取昨日 WeChat 消息（经 WeFlow 自动化），清洗后归
    - `media/images/*` 走本地 OCR，识别文本以 `[OCR] ...` 后缀内联到对应消息里。
    - 「转文字失败」标记仅写警告日志，不阻塞流程。
 3. **归档** —— 调 `wechat_diary_core.archiving.archive(processed_date_dir)`，按会话写出 `WeFlow-processed-exports/<session_dir>/<yyyy-mm-dd>.md` 极简聊天流（`session_dir` 去掉原始文件夹后缀的日期）。
-4. **二次加工** —— 读 `WeFlow-processed-exports/**/<yesterday>.md`（**不读**子目录前缀以 `_` 开头的；下划线前缀目录是扩展组件 的旁路通道，diary 二次加工只扫顶层 session）。其中 `朋友圈_自己/<yesterday>.md` 是自己的朋友圈素材，格式不同于聊天流，但属于公开 diary 素材范围。在 `WeFlow-insights/` 下产出四份 Markdown：
+4. **二次加工** —— 读 `WeFlow-processed-exports/**/<yesterday>.md`（**不读**子目录前缀以 `_` 开头的；下划线前缀目录是 sidecar 旁路流，留给其他 skill / 本地扩展消费，diary 二次加工只扫顶层 session）。其中 `朋友圈_自己/<yesterday>.md` 是自己的朋友圈素材，格式不同于聊天流，但属于公开 diary 素材范围。在 `WeFlow-insights/` 下产出四份 Markdown：
    - `Diary/<yyyy>/<yyyy-mm-dd> <每日title> #关键词.md` —— 第一人称当日日记。
    - `DoneList/<yyyy>/<yyyy-mm-dd> <每日title> #关键词.md` —— 分类捕捉的 DoneList；优先把 `config.toml [user].self_wxids` 指定的「自己 / 文件传输助手」会话里以 `D：` 开头的条目升级为正式条目。
    - `Inspirations/<yyyy>/<yyyy-mm-dd> <每日title> #关键词.md` —— 散落在各会话里的项目灵感与待办。
@@ -423,5 +423,5 @@ Agent 在步骤 4 依次执行以下 prompt。每段输出的 Markdown 结构是
 
 ## 不做的事
 
-- 本 skill 维护**用户自己**的长期自我画像（Prompt 5）；但不做针对**他人**（单个联系人）的私人画像或深度复盘——那类逻辑在扩展组件 里，不属于本开源 skill 范围。
+- 本 skill 维护**用户自己**的长期自我画像（Prompt 5）；不对**他人**（单个联系人）建立画像或做深度复盘，这超出本 skill 的范围。
 - 本 skill 不做跨天**批量**聚合：Prompt 6 主线脉络是**增量**沉淀长程线索（每天顺手并一次），不等于将来的月报 / 年报批量聚合 skill——那类以后另写，会读这些按日产出 + 主线脉络。
