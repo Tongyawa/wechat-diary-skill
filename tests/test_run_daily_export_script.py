@@ -76,7 +76,15 @@ def _write_voice_failure_raw(root: Path, *, message_ids: list[int] | None = None
         json.dumps(
             {
                 "weflow": {},
-                "session": {"type": "私聊", "username": "Target", "messageCount": len(ids)},
+                "session": {
+                    "wxid": "Target",
+                    "nickname": "Target",
+                    "remark": "",
+                    "displayName": "Target",
+                    "type": "私聊",
+                    "username": "Target",
+                    "messageCount": len(ids),
+                },
                 "messages": [
                     {
                         "localId": local_id,
@@ -84,6 +92,7 @@ def _write_voice_failure_raw(root: Path, *, message_ids: list[int] | None = None
                         "formattedTime": f"2026-05-16 10:{local_id % 60:02d}:00",
                         "type": "语音消息",
                         "content": "[语音消息 - 转文字失败: 未知错误]",
+                        "source": "",
                         "isSend": 0,
                         "senderUsername": "Target",
                         "senderDisplayName": "Peer",

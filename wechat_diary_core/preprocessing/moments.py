@@ -10,6 +10,7 @@ import json
 import shutil
 
 from ..config import Config, load_config
+from ..raw_schema import RawSchemaError, validate_moments_json
 from .exceptions import InvalidExportError
 
 
@@ -38,6 +39,10 @@ def load_moments_export(path: str | Path) -> MomentsExport:
         data = json.load(fh)
     if not isinstance(data, dict) or "posts" not in data:
         raise InvalidExportError(f"Not a Moments export: {file}")
+    try:
+        validate_moments_json(data)
+    except RawSchemaError as exc:
+        raise InvalidExportError(f"{file}: {exc}") from exc
     posts = list(data.get("posts") or [])
     filters = dict(data.get("filters") or {})
     return MomentsExport(source_path=file, posts=posts, filters=filters)

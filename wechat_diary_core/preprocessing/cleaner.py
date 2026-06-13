@@ -13,6 +13,7 @@ import re
 import sys
 
 from ..config import Config, PreprocessingConfig, load_config
+from ..raw_schema import RawSchemaError, validate_session_json
 from .context_window import filter_group_context_window
 from .exceptions import InvalidExportError
 from .image_ocr import ImageMode, OcrEngine, annotate_image_messages
@@ -217,6 +218,10 @@ def load_chat_export(path: str | Path) -> dict[str, Any]:
 
     if not isinstance(data, dict) or not isinstance(data.get("session"), dict) or not isinstance(data.get("messages"), list):
         raise InvalidExportError(f"Not a chat export: {path}")
+    try:
+        validate_session_json(data)
+    except RawSchemaError as exc:
+        raise InvalidExportError(f"{path}: {exc}") from exc
     return data
 
 
@@ -274,10 +279,11 @@ def discover_chat_exports(root: str | Path) -> list[Path]:
 
 def _looks_like_chat_export(path: Path) -> bool:
     try:
-        load_chat_export(path)
+        with path.open("r", encoding="utf-8-sig") as fh:
+            data = json.load(fh)
     except (InvalidExportError, json.JSONDecodeError, OSError):
         return False
-    return True
+    return isinstance(data, dict) and isinstance(data.get("session"), dict) and isinstance(data.get("messages"), list)
 
 
 def _is_emoji_message(message: Message) -> bool:

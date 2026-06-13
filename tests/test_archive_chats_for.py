@@ -18,8 +18,10 @@ def _write_chat(folder: Path, *, target_wxid: str, day_iso: str, ts: int, image_
             "formattedTime": f"{day_iso} 18:00:00",
             "type": "文本消息",
             "content": "你好",
+            "source": "",
             "isSend": 1,
             "senderUsername": "me",
+            "senderDisplayName": "Me",
             "platformMessageId": "p1",
         },
         {
@@ -28,6 +30,7 @@ def _write_chat(folder: Path, *, target_wxid: str, day_iso: str, ts: int, image_
             "formattedTime": f"{day_iso} 18:01:00",
             "type": "图片消息" if image_ref else "文本消息",
             "content": image_ref if image_ref else "回声",
+            "source": "",
             "isSend": 0,
             "senderUsername": target_wxid,
             "senderDisplayName": "Target",
@@ -35,7 +38,14 @@ def _write_chat(folder: Path, *, target_wxid: str, day_iso: str, ts: int, image_
         },
     ]
     payload = {
-        "session": {"type": "私聊", "username": target_wxid, "displayName": "Target"},
+        "session": {
+            "wxid": target_wxid,
+            "nickname": "Target",
+            "remark": "",
+            "displayName": "Target",
+            "type": "私聊",
+            "username": target_wxid,
+        },
         "messages": messages,
     }
     (folder / f"{folder.name}.json").write_text(
