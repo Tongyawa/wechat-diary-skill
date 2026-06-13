@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -9,6 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from scripts.run_daily_export import DailyExportDeps, ensure_local_config, run_daily_export, wait_for_raw_exports_stable
+from wechat_diary_core.archiving import archive, archive_chats_for
 from wechat_diary_core.config import load_config
 
 
@@ -63,6 +65,38 @@ restart_weflow = true
         encoding="utf-8",
     )
     return config_path
+
+
+def _write_voice_failure_raw(root: Path, *, message_ids: list[int] | None = None) -> Path:
+    ids = message_ids or [72, 73, 74]
+    export_dir = root / "raw" / "Chat_20260516"
+    export_dir.mkdir(parents=True)
+    export_path = export_dir / "Chat_20260516.json"
+    export_path.write_text(
+        json.dumps(
+            {
+                "weflow": {},
+                "session": {"type": "私聊", "username": "Target", "messageCount": len(ids)},
+                "messages": [
+                    {
+                        "localId": local_id,
+                        "createTime": 1778840000 + local_id,
+                        "formattedTime": f"2026-05-16 10:{local_id % 60:02d}:00",
+                        "type": "语音消息",
+                        "content": "[语音消息 - 转文字失败: 未知错误]",
+                        "isSend": 0,
+                        "senderUsername": "Target",
+                        "senderDisplayName": "Peer",
+                        "platformMessageId": f"voice-{local_id}",
+                    }
+                    for local_id in ids
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    return export_path
 
 
 class DailyExportScriptTests(unittest.TestCase):
@@ -399,6 +433,64 @@ weflow_exe = "{(root / 'WeFlow.exe').as_posix()}"
             run_daily_export(cfg, deps=deps, day=date(2026, 5, 16))
 
         self.assertLess(calls.index(("fallback", "voice_fallback.py")), calls.index(("archive",)))
+
+    def test_runner_reports_repeated_voice_failures_once_across_archive_stages(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_voice_failure_raw(root)
+            cfg = load_config(_write_config(root))
+            deps = DailyExportDeps(
+                stop_weflow_processes=lambda timeout: None,
+                rotate_export_workspace=lambda cfg, label, mode: SimpleNamespace(target=None),
+                ensure_weflow_running=lambda cfg: SimpleNamespace(cdp_endpoint=None),
+                wait_for_raw_exports_stable=lambda raw_path, min_files: None,
+                batch_transcribe_voices_for=lambda usernames, config: None,
+                export_all_chats=lambda date, config, cleanup: None,
+                export_moments_for=lambda usernames, date, config: None,
+                archive=archive,
+                archive_chats_for=archive_chats_for,
+                archive_moments_for=lambda usernames, config, subroot, clear_first: [],
+            )
+
+            with self.assertLogs("wechat_diary_core.preprocessing.cleaner", level="WARNING") as captured:
+                run_daily_export(cfg, deps=deps, day=date(2026, 5, 16))
+
+        log_text = "\n".join(record.getMessage() for record in captured.records)
+        self.assertIn("[WARN] 3 条语音转写失败：message 72,73,74", log_text)
+        self.assertEqual(log_text.count("Voice transcription failed in message 72."), 1)
+        self.assertEqual(log_text.count("Voice transcription failed in message 73."), 1)
+        self.assertEqual(log_text.count("Voice transcription failed in message 74."), 1)
+
+    def test_runner_does_not_report_voice_failures_after_fallback_updates_raw(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            export_path = _write_voice_failure_raw(root, message_ids=[72])
+            fallback = root / "voice_fallback.py"
+            fallback.write_text("# placeholder", encoding="utf-8")
+            cfg = load_config(_write_config(root, voice_fallback_script=fallback.as_posix()))
+
+            def apply_fallback(script_path: str | Path, config) -> None:
+                data = json.loads(export_path.read_text(encoding="utf-8"))
+                data["messages"][0]["content"] = "[语音转文字] 已兜底"
+                data["messages"][0]["voiceFallback"] = {"engine": "test"}
+                export_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+            deps = DailyExportDeps(
+                stop_weflow_processes=lambda timeout: None,
+                rotate_export_workspace=lambda cfg, label, mode: SimpleNamespace(target=None),
+                ensure_weflow_running=lambda cfg: SimpleNamespace(cdp_endpoint=None),
+                wait_for_raw_exports_stable=lambda raw_path, min_files: None,
+                batch_transcribe_voices_for=lambda usernames, config: None,
+                run_voice_fallback_script=apply_fallback,
+                export_all_chats=lambda date, config, cleanup: None,
+                export_moments_for=lambda usernames, date, config: None,
+                archive=archive,
+                archive_chats_for=archive_chats_for,
+                archive_moments_for=lambda usernames, config, subroot, clear_first: [],
+            )
+
+            with self.assertNoLogs("wechat_diary_core.preprocessing.cleaner", level="WARNING"):
+                run_daily_export(cfg, deps=deps, day=date(2026, 5, 16))
 
     def test_wait_for_raw_exports_stable_requires_a_written_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

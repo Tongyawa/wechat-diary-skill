@@ -22,6 +22,7 @@ if str(ROOT) not in sys.path:
 from wechat_diary_core.archiving import archive, archive_chats_for
 from wechat_diary_core.config import Config, load_config
 from wechat_diary_core.preprocessing import archive_moments_for
+from wechat_diary_core.preprocessing import collect_voice_transcription_failures
 from wechat_diary_core.weflow_automation.cdp_driver import CdpDriver
 from wechat_diary_core.weflow_automation.driver import DriverUnavailable, ElementNotFound
 from wechat_diary_core.weflow_automation.exporter import export_all_chats, export_moments_for
@@ -303,45 +304,46 @@ def run_daily_export(
     else:
         print("voice_fallback skipped: no configured script.")
 
-    diary_files = _run_stage(
-        "archive_diary_processed",
-        lambda: active_deps.archive(cfg.paths.raw, config=cfg, clear_first=True),
-    )
-    self_moment_files = []
-    if self_moments_usernames:
-        self_moment_files = _run_stage(
-            "archive_self_moments",
-            lambda: active_deps.archive_moments_for(
-                self_moments_usernames,
-                config=cfg,
-                subroot="朋友圈_自己",
-                clear_first=True,
-            ),
+    with collect_voice_transcription_failures():
+        diary_files = _run_stage(
+            "archive_diary_processed",
+            lambda: active_deps.archive(cfg.paths.raw, config=cfg, clear_first=True),
         )
+        self_moment_files = []
+        if self_moments_usernames:
+            self_moment_files = _run_stage(
+                "archive_self_moments",
+                lambda: active_deps.archive_moments_for(
+                    self_moments_usernames,
+                    config=cfg,
+                    subroot="朋友圈_自己",
+                    clear_first=True,
+                ),
+            )
 
-    subroot = _normalize_subroot(cfg.daily_export.target_processed_subroot)
-    sidecar_chat_files = []
-    sidecar_moment_files = []
-    if target_usernames:
-        sidecar_chat_files = _run_stage(
-            "archive_target_chats",
-            lambda: active_deps.archive_chats_for(
-                target_usernames,
-                config=cfg,
-                subroot=f"{subroot}/chats",
-                image_mode="preserve_paths",
-                clear_first=True,
-            ),
-        )
-        sidecar_moment_files = _run_stage(
-            "archive_target_moments",
-            lambda: active_deps.archive_moments_for(
-                target_usernames,
-                config=cfg,
-                subroot=f"{subroot}/moments",
-                clear_first=True,
-            ),
-        )
+        subroot = _normalize_subroot(cfg.daily_export.target_processed_subroot)
+        sidecar_chat_files = []
+        sidecar_moment_files = []
+        if target_usernames:
+            sidecar_chat_files = _run_stage(
+                "archive_target_chats",
+                lambda: active_deps.archive_chats_for(
+                    target_usernames,
+                    config=cfg,
+                    subroot=f"{subroot}/chats",
+                    image_mode="preserve_paths",
+                    clear_first=True,
+                ),
+            )
+            sidecar_moment_files = _run_stage(
+                "archive_target_moments",
+                lambda: active_deps.archive_moments_for(
+                    target_usernames,
+                    config=cfg,
+                    subroot=f"{subroot}/moments",
+                    clear_first=True,
+                ),
+            )
 
     return DailyExportResult(
         day=day_iso,

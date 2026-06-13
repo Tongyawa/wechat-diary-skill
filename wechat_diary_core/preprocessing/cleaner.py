@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 import copy
 import json
 import logging
 import re
+import sys
 
 from ..config import Config, PreprocessingConfig, load_config
 from .context_window import filter_group_context_window
@@ -18,6 +21,11 @@ from .time_compress import compress_nearby_messages
 
 LOGGER = logging.getLogger(__name__)
 Message = dict[str, Any]
+VOICE_FAILURE_REASON_RE = re.compile(r"转文字失败\s*:?\s*(?P<reason>[^\]\n]*)")
+_ACTIVE_VOICE_FAILURE_REPORTER: ContextVar["VoiceTranscriptionFailureReporter | None"] = ContextVar(
+    "active_voice_transcription_failure_reporter",
+    default=None,
+)
 
 
 @dataclass(frozen=True)
@@ -27,7 +35,99 @@ class ProcessedChatExport:
     data: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class VoiceTranscriptionFailure:
+    source_id: str
+    local_id: str
+    create_time: str
+    formatted_time: str
+    platform_message_id: str
+    reason: str
+
+    @property
+    def message_ref(self) -> str:
+        return self.local_id or self.platform_message_id or self.create_time or self.formatted_time or "unknown"
+
+    @property
+    def key(self) -> tuple[str, str, str, str, str]:
+        return (
+            self.source_id,
+            self.local_id,
+            self.platform_message_id,
+            self.create_time,
+            self.formatted_time,
+        )
+
+
+class VoiceTranscriptionFailureReporter:
+    def __init__(self) -> None:
+        self._failures: dict[tuple[str, str, str, str, str], VoiceTranscriptionFailure] = {}
+        self._flushed = False
+
+    @property
+    def failures(self) -> list[VoiceTranscriptionFailure]:
+        return sorted(self._failures.values(), key=_voice_failure_sort_key)
+
+    def add(self, failure: VoiceTranscriptionFailure) -> None:
+        if self._flushed:
+            raise RuntimeError("Cannot add voice transcription failures after flush.")
+        self._failures.setdefault(failure.key, failure)
+
+    def flush(self) -> None:
+        if self._flushed:
+            return
+        self._flushed = True
+        failures = self.failures
+        if not failures:
+            return
+
+        sys.stdout.flush()
+        refs = ",".join(failure.message_ref for failure in failures)
+        LOGGER.warning("[WARN] %s 条语音转写失败：message %s", len(failures), refs)
+        for failure in failures:
+            LOGGER.warning(
+                "Voice transcription failed in message %s. reason=%s formattedTime=%s platformMessageId=%s",
+                failure.message_ref,
+                failure.reason or "unknown",
+                failure.formatted_time or "unknown",
+                failure.platform_message_id or "unknown",
+            )
+
+
+@contextmanager
+def collect_voice_transcription_failures() -> Iterator[VoiceTranscriptionFailureReporter]:
+    existing = _ACTIVE_VOICE_FAILURE_REPORTER.get()
+    if existing is not None:
+        yield existing
+        return
+
+    reporter = VoiceTranscriptionFailureReporter()
+    token = _ACTIVE_VOICE_FAILURE_REPORTER.set(reporter)
+    try:
+        yield reporter
+    finally:
+        try:
+            reporter.flush()
+        finally:
+            _ACTIVE_VOICE_FAILURE_REPORTER.reset(token)
+
+
 def preprocess_export(
+    source_path: str | Path,
+    config: Config | None = None,
+    ocr_engine: OcrEngine | None = None,
+    image_mode: ImageMode = "ocr_inline",
+) -> ProcessedChatExport:
+    with collect_voice_transcription_failures():
+        return _preprocess_export(
+            source_path,
+            config=config,
+            ocr_engine=ocr_engine,
+            image_mode=image_mode,
+        )
+
+
+def _preprocess_export(
     source_path: str | Path,
     config: Config | None = None,
     ocr_engine: OcrEngine | None = None,
@@ -41,6 +141,7 @@ def preprocess_export(
         messages,
         cfg.preprocessing,
         pat_keep_names=cfg.preprocessing.group_context_window.anchor_keywords,
+        source_path=path,
     )
 
     session_type = str(data.get("session", {}).get("type") or "")
@@ -123,6 +224,7 @@ def clean_messages(
     messages: list[Message],
     settings: PreprocessingConfig,
     pat_keep_names: Sequence[str] | None = None,
+    source_path: str | Path | None = None,
 ) -> list[Message]:
     cleaned: list[Message] = []
     actual_self_display_names = _self_display_names(messages, [])
@@ -154,7 +256,7 @@ def clean_messages(
         if _has_transcription_failure(current):
             current["transcribe_failed"] = True
             if settings.voice_fail_log_only:
-                LOGGER.warning("Voice transcription failed in message %s.", current.get("localId"))
+                _report_voice_transcription_failure(current, source_path=source_path)
 
         cleaned.append(current)
     return cleaned
@@ -196,6 +298,40 @@ def _is_emoji_ref(value: str) -> bool:
 def _has_transcription_failure(message: Message) -> bool:
     haystack = f"{message.get('content') or ''}\n{message.get('source') or ''}"
     return "转文字失败" in haystack
+
+
+def _report_voice_transcription_failure(message: Message, *, source_path: str | Path | None) -> None:
+    failure = _voice_transcription_failure(message, source_path=source_path)
+    reporter = _ACTIVE_VOICE_FAILURE_REPORTER.get()
+    if reporter is None:
+        LOGGER.warning("Voice transcription failed in message %s.", failure.message_ref)
+        return
+    reporter.add(failure)
+
+
+def _voice_transcription_failure(message: Message, *, source_path: str | Path | None) -> VoiceTranscriptionFailure:
+    source_id = ""
+    if source_path is not None:
+        source_id = str(Path(source_path).resolve())
+    haystack = f"{message.get('content') or ''}\n{message.get('source') or ''}"
+    reason_match = VOICE_FAILURE_REASON_RE.search(haystack)
+    reason = reason_match.group("reason").strip() if reason_match else ""
+    return VoiceTranscriptionFailure(
+        source_id=source_id,
+        local_id=str(message.get("localId") or ""),
+        create_time=str(message.get("createTime") or ""),
+        formatted_time=str(message.get("formattedTime") or ""),
+        platform_message_id=str(message.get("platformMessageId") or ""),
+        reason=reason,
+    )
+
+
+def _voice_failure_sort_key(failure: VoiceTranscriptionFailure) -> tuple[str, int, str, str, str]:
+    try:
+        local_id_int = int(failure.local_id)
+    except ValueError:
+        local_id_int = 0
+    return (failure.source_id, local_id_int, failure.local_id, failure.create_time, failure.platform_message_id)
 
 
 def _is_chatroom_top_protocol(message: Message) -> bool:

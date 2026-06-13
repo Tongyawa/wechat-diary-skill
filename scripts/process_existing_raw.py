@@ -20,6 +20,7 @@ if str(ROOT) not in sys.path:
 from wechat_diary_core.archiving import archive, archive_chats_for
 from wechat_diary_core.config import Config, load_config
 from wechat_diary_core.preprocessing import archive_moments_for
+from wechat_diary_core.preprocessing import collect_voice_transcription_failures
 from wechat_diary_core.workspace import merge_tree
 
 
@@ -156,54 +157,55 @@ def process_existing_raw(
     else:
         print("voice_fallback skipped: no configured script.")
 
-    diary_files = _run_stage(
-        "archive_diary_processed",
-        lambda: active_deps.archive(source, config=cfg, clear_first=True),
-    )
+    with collect_voice_transcription_failures():
+        diary_files = _run_stage(
+            "archive_diary_processed",
+            lambda: active_deps.archive(source, config=cfg, clear_first=True),
+        )
 
-    self_moment_files: list[Path] = []
-    self_moments_usernames = list(cfg.daily_export.self_moments_usernames)
-    if self_moments_usernames:
-        self_moment_files = _run_stage(
-            "archive_self_moments",
-            lambda: active_deps.archive_moments_for(
-                self_moments_usernames,
-                raw_path=source,
-                config=cfg,
-                subroot="朋友圈_自己",
-                clear_first=True,
-            ),
-        )
-        _ensure_day_file_if_needed(cfg.paths.processed / "朋友圈_自己", resolved_day, self_moment_files)
+        self_moment_files: list[Path] = []
+        self_moments_usernames = list(cfg.daily_export.self_moments_usernames)
+        if self_moments_usernames:
+            self_moment_files = _run_stage(
+                "archive_self_moments",
+                lambda: active_deps.archive_moments_for(
+                    self_moments_usernames,
+                    raw_path=source,
+                    config=cfg,
+                    subroot="朋友圈_自己",
+                    clear_first=True,
+                ),
+            )
+            _ensure_day_file_if_needed(cfg.paths.processed / "朋友圈_自己", resolved_day, self_moment_files)
 
-    target_usernames = list(cfg.daily_export.target_usernames)
-    subroot = _normalize_subroot(cfg.daily_export.target_processed_subroot)
-    sidecar_chat_files: list[Path] = []
-    sidecar_moment_files: list[Path] = []
-    if target_usernames:
-        sidecar_chat_files = _run_stage(
-            "archive_target_chats",
-            lambda: active_deps.archive_chats_for(
-                target_usernames,
-                raw_path=source,
-                config=cfg,
-                subroot=f"{subroot}/chats",
-                image_mode="preserve_paths",
-                clear_first=True,
-            ),
-        )
-        _ensure_day_file_if_needed(cfg.paths.processed / subroot / "chats", resolved_day, sidecar_chat_files)
-        sidecar_moment_files = _run_stage(
-            "archive_target_moments",
-            lambda: active_deps.archive_moments_for(
-                target_usernames,
-                raw_path=source,
-                config=cfg,
-                subroot=f"{subroot}/moments",
-                clear_first=True,
-            ),
-        )
-        _ensure_day_file_if_needed(cfg.paths.processed / subroot / "moments", resolved_day, sidecar_moment_files)
+        target_usernames = list(cfg.daily_export.target_usernames)
+        subroot = _normalize_subroot(cfg.daily_export.target_processed_subroot)
+        sidecar_chat_files: list[Path] = []
+        sidecar_moment_files: list[Path] = []
+        if target_usernames:
+            sidecar_chat_files = _run_stage(
+                "archive_target_chats",
+                lambda: active_deps.archive_chats_for(
+                    target_usernames,
+                    raw_path=source,
+                    config=cfg,
+                    subroot=f"{subroot}/chats",
+                    image_mode="preserve_paths",
+                    clear_first=True,
+                ),
+            )
+            _ensure_day_file_if_needed(cfg.paths.processed / subroot / "chats", resolved_day, sidecar_chat_files)
+            sidecar_moment_files = _run_stage(
+                "archive_target_moments",
+                lambda: active_deps.archive_moments_for(
+                    target_usernames,
+                    raw_path=source,
+                    config=cfg,
+                    subroot=f"{subroot}/moments",
+                    clear_first=True,
+                ),
+            )
+            _ensure_day_file_if_needed(cfg.paths.processed / subroot / "moments", resolved_day, sidecar_moment_files)
 
     return ExistingRawProcessResult(
         raw_root=source,

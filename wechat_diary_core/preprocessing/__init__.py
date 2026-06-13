@@ -4,6 +4,7 @@ from pathlib import Path
 
 from ..config import Config, load_config
 from .cleaner import ProcessedChatExport, discover_chat_exports, preprocess_export
+from .cleaner import collect_voice_transcription_failures
 from .exceptions import InvalidExportError, PreprocessingError
 from .image_ocr import ImageMode, OcrEngine
 from .moments import (
@@ -23,10 +24,11 @@ def run(
 ) -> list[ProcessedChatExport]:
     cfg = config or load_config()
     exports: list[ProcessedChatExport] = []
-    for source_path in discover_chat_exports(raw_path):
-        processed = preprocess_export(source_path, config=cfg, ocr_engine=ocr_engine, image_mode=image_mode)
-        if processed.data.get("messages"):
-            exports.append(processed)
+    with collect_voice_transcription_failures():
+        for source_path in discover_chat_exports(raw_path):
+            processed = preprocess_export(source_path, config=cfg, ocr_engine=ocr_engine, image_mode=image_mode)
+            if processed.data.get("messages"):
+                exports.append(processed)
     return exports
 
 
@@ -38,6 +40,7 @@ __all__ = [
     "PreprocessingError",
     "ProcessedChatExport",
     "archive_moments_for",
+    "collect_voice_transcription_failures",
     "discover_chat_exports",
     "discover_moments_exports",
     "load_moments_export",
