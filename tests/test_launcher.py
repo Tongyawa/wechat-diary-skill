@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -14,6 +15,7 @@ from wechat_diary_core.weflow_automation.launcher import (
     build_launch_args,
     cdp_endpoint_url,
     ensure_weflow_running,
+    launch_weflow,
     restart_weflow,
     stop_weflow_processes,
 )
@@ -56,6 +58,55 @@ electron_accessibility_flag = "--force-renderer-accessibility"
             cfg = load_config(config_path)
 
         self.assertEqual(build_launch_args(cfg.automation), [str(exe), "--force-renderer-accessibility"])
+
+    def test_launch_weflow_redirects_engine_output_into_log_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            exe = Path(tmp) / "WeFlow.exe"
+            exe.write_text("", encoding="utf-8")
+            config_path = Path(tmp) / "config.toml"
+            config_path.write_text(
+                f"""
+[automation]
+driver = "cdp"
+weflow_exe = "{exe.as_posix()}"
+""".strip(),
+                encoding="utf-8",
+            )
+            cfg = load_config(config_path)
+            log_path = Path(tmp) / "runlog" / "weflow.log"
+
+            with patch("wechat_diary_core.weflow_automation.launcher.subprocess.Popen") as popen:
+                launch_weflow(cfg.automation, log_path=log_path)
+
+            kwargs = popen.call_args.kwargs
+            # WeFlow's chatter must never inherit the console.
+            self.assertNotIn(kwargs.get("stdout"), (None,))
+            self.assertEqual(kwargs.get("stderr"), subprocess.STDOUT)
+            self.assertEqual(kwargs.get("stdin"), subprocess.DEVNULL)
+            self.assertTrue(log_path.parent.exists())
+
+    def test_launch_weflow_discards_engine_output_without_log(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            exe = Path(tmp) / "WeFlow.exe"
+            exe.write_text("", encoding="utf-8")
+            config_path = Path(tmp) / "config.toml"
+            config_path.write_text(
+                f"""
+[automation]
+driver = "cdp"
+weflow_exe = "{exe.as_posix()}"
+""".strip(),
+                encoding="utf-8",
+            )
+            cfg = load_config(config_path)
+
+            with patch("wechat_diary_core.weflow_automation.launcher.subprocess.Popen") as popen:
+                launch_weflow(cfg.automation)
+
+            kwargs = popen.call_args.kwargs
+            self.assertEqual(kwargs.get("stdout"), subprocess.DEVNULL)
+            self.assertEqual(kwargs.get("stderr"), subprocess.DEVNULL)
+            self.assertEqual(kwargs.get("stdin"), subprocess.DEVNULL)
 
     def test_stop_weflow_processes_uses_taskkill_when_running(self) -> None:
         with (

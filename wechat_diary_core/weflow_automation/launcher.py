@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import Any
 import ctypes
@@ -64,7 +65,7 @@ def ensure_weflow_running(config: Config | None = None) -> WeFlowSession:
             "Close WeFlow completely and retry so automation does not start a second instance."
         )
     if automation.driver == "cdp" or not process_running:
-        process = launch_weflow(automation)
+        process = launch_weflow(automation, log_path=weflow_log_path(cfg))
         process_started = True
         process_id = process.pid
 
@@ -115,7 +116,7 @@ def stop_weflow_processes(timeout: float = 30, interval: float = 0.5) -> bool:
     return not is_weflow_process_running()
 
 
-def launch_weflow(automation: AutomationConfig) -> subprocess.Popen[Any]:
+def launch_weflow(automation: AutomationConfig, *, log_path: Path | None = None) -> subprocess.Popen[Any]:
     if not automation.weflow_exe.exists():
         raise WeFlowExecutableNotFound(str(automation.weflow_exe))
 
@@ -124,7 +125,39 @@ def launch_weflow(automation: AutomationConfig) -> subprocess.Popen[Any]:
     kwargs: dict[str, Any] = {"close_fds": True}
     if flags:
         kwargs["creationflags"] = flags
-    return subprocess.Popen(args, **kwargs)
+
+    # WeFlow's Electron engine writes verbose logs (per-session export
+    # failures, WCDB chatter, updater 404s, stack traces) straight to whatever
+    # console it inherits — which bypasses the daily-export pipe filter and
+    # floods the user's terminal. Redirect the child's stdio off the console:
+    # into a runlog file when we have one, otherwise discard. stdin is always
+    # detached so WeFlow can never block on console input.
+    kwargs["stdin"] = subprocess.DEVNULL
+    log_handle = None
+    if log_path is not None:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_handle = open(log_path, "ab")
+        kwargs["stdout"] = log_handle
+        kwargs["stderr"] = subprocess.STDOUT
+    else:
+        kwargs["stdout"] = subprocess.DEVNULL
+        kwargs["stderr"] = subprocess.DEVNULL
+
+    try:
+        return subprocess.Popen(args, **kwargs)
+    finally:
+        # The child inherited its own copy of the handle; drop the parent's so
+        # the file isn't held open for the runner's whole lifetime.
+        if log_handle is not None:
+            log_handle.close()
+
+
+def weflow_log_path(cfg: Config) -> Path | None:
+    """Daily runlog file that absorbs WeFlow's own console output."""
+    insights = getattr(getattr(cfg, "paths", None), "insights", None)
+    if insights is None:
+        return None
+    return Path(insights) / ".runlog" / f"weflow-{date.today():%Y-%m-%d}.log"
 
 
 def build_launch_args(automation: AutomationConfig) -> list[str]:

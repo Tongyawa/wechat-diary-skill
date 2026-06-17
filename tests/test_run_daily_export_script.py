@@ -138,6 +138,8 @@ class DailyExportScriptTests(unittest.TestCase):
         self.assertIn("^导出 .+ 失败:.*没有消息", script)
         self.assertIn("InitExportCursorHeap", script)
         self.assertIn("[stage] $EmptySessionSkips 个空会话跳过", script)
+        # python runs unbuffered so stage progress streams live instead of dumping at exit
+        self.assertIn('"python" -u', script)
 
     def test_ensure_local_config_allows_empty_target_defaults(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

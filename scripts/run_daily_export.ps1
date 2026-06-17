@@ -1,4 +1,4 @@
-param(
+﻿param(
   [switch]$NoPause
 )
 
@@ -77,7 +77,7 @@ function ShouldShowDailyExportLine {
 }
 
 $ScriptPath = Join-Path $Root "scripts\run_daily_export.py"
-$CommandLine = '"python" "{0}" 2>&1' -f $ScriptPath
+$CommandLine = '"python" -u "{0}" 2>&1' -f $ScriptPath
 
 cmd /d /c $CommandLine | ForEach-Object {
   $Line = [string]$_
