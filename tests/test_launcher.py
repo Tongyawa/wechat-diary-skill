@@ -11,14 +11,41 @@ from wechat_diary_core.weflow_automation.launcher import (
     WeFlowInstanceConflict,
     WeFlowLaunchTimeout,
     WeFlowSession,
+    WeFlowWindow,
     assert_single_weflow_instance,
     build_launch_args,
     cdp_endpoint_url,
     ensure_weflow_running,
+    find_weflow_windows,
     launch_weflow,
     restart_weflow,
     stop_weflow_processes,
 )
+
+
+class FakeUser32:
+    def __init__(self, windows: list[tuple[int, str, int, bool]]) -> None:
+        self.windows = {hwnd: (title, pid, visible) for hwnd, title, pid, visible in windows}
+
+    def EnumWindows(self, callback, lparam) -> bool:
+        for hwnd in self.windows:
+            if not callback(hwnd, lparam):
+                break
+        return True
+
+    def IsWindowVisible(self, hwnd: int) -> bool:
+        return self.windows[hwnd][2]
+
+    def GetWindowTextLengthW(self, hwnd: int) -> int:
+        return len(self.windows[hwnd][0])
+
+    def GetWindowTextW(self, hwnd: int, buffer, _max_count: int) -> int:
+        buffer.value = self.windows[hwnd][0]
+        return len(buffer.value)
+
+    def GetWindowThreadProcessId(self, hwnd: int, pid_ref) -> int:
+        pid_ref._obj.value = self.windows[hwnd][1]
+        return 1
 
 
 class LauncherTests(unittest.TestCase):
@@ -171,7 +198,31 @@ weflow_exe = "{exe.as_posix()}"
 
         ensure.assert_not_called()
 
-    def test_assert_single_weflow_instance_rejects_multiple_visible_windows(self) -> None:
+    def test_find_weflow_windows_ignores_non_weflow_processes_with_matching_titles(self) -> None:
+        fake_user32 = FakeUser32(
+            [
+                (1, "WeFlow-raw-exports", 100, True),
+                (2, "WeFlow", 200, True),
+            ]
+        )
+
+        def image_name(pid: int) -> str | None:
+            return {100: "explorer.exe", 200: "WeFlow.exe"}.get(pid)
+
+        with (
+            patch("wechat_diary_core.weflow_automation.launcher.ctypes.windll", create=True) as windll,
+            patch(
+                "wechat_diary_core.weflow_automation.launcher.ctypes.WINFUNCTYPE",
+                create=True,
+                side_effect=lambda *_args: (lambda callback: callback),
+            ),
+        ):
+            windll.user32 = fake_user32
+            windows = find_weflow_windows(process_image_name_func=image_name)
+
+        self.assertEqual(windows, (WeFlowWindow(pid=200, image_name="WeFlow.exe", title="WeFlow"),))
+
+    def test_assert_single_weflow_instance_rejects_multiple_visible_weflow_processes(self) -> None:
         session = WeFlowSession(
             driver="cdp",
             cdp_endpoint="http://127.0.0.1:9222",
@@ -181,9 +232,19 @@ weflow_exe = "{exe.as_posix()}"
             window_process_ids=(100,),
         )
 
-        with patch("wechat_diary_core.weflow_automation.launcher.find_weflow_window_process_ids", return_value={100, 200}):
-            with self.assertRaises(WeFlowInstanceConflict):
+        windows = (
+            WeFlowWindow(pid=100, image_name="WeFlow.exe", title="WeFlow"),
+            WeFlowWindow(pid=200, image_name="WeFlow.exe", title="WeFlow"),
+        )
+        with patch("wechat_diary_core.weflow_automation.launcher.find_weflow_windows", return_value=windows):
+            with self.assertRaises(WeFlowInstanceConflict) as captured:
                 assert_single_weflow_instance(session)
+
+        message = str(captured.exception)
+        self.assertIn("pid=100", message)
+        self.assertIn("pid=200", message)
+        self.assertIn("image=WeFlow.exe", message)
+        self.assertIn("title='WeFlow'", message)
 
 
 if __name__ == "__main__":

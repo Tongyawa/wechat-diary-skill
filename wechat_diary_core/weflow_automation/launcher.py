@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import csv
 from dataclasses import dataclass
 from datetime import date
+import io
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 import ctypes
 import subprocess
 import time
@@ -38,6 +40,13 @@ class WeFlowSession:
     window_process_ids: tuple[int, ...] = ()
 
 
+@dataclass(frozen=True)
+class WeFlowWindow:
+    pid: int
+    image_name: str
+    title: str
+
+
 def ensure_weflow_running(config: Config | None = None) -> WeFlowSession:
     cfg = config or load_config()
     automation = cfg.automation
@@ -45,8 +54,9 @@ def ensure_weflow_running(config: Config | None = None) -> WeFlowSession:
 
     if automation.driver == "cdp" and is_cdp_available(endpoint):
         normalized = normalize_weflow_window(automation.window_geometry)
-        window_pids = tuple(sorted(find_weflow_window_process_ids()))
-        _raise_if_multiple_windows(window_pids)
+        windows = find_weflow_windows()
+        _raise_if_multiple_windows(windows)
+        window_pids = _window_process_ids(windows)
         return WeFlowSession(
             "cdp",
             endpoint,
@@ -79,8 +89,9 @@ def ensure_weflow_running(config: Config | None = None) -> WeFlowSession:
             raise WeFlowLaunchTimeout("WeFlow process did not appear before timeout.")
 
     normalized = normalize_weflow_window(automation.window_geometry)
-    window_pids = tuple(sorted(find_weflow_window_process_ids()))
-    _raise_if_multiple_windows(window_pids)
+    windows = find_weflow_windows()
+    _raise_if_multiple_windows(windows)
+    window_pids = _window_process_ids(windows)
     return WeFlowSession(
         driver=automation.driver,
         cdp_endpoint=endpoint if automation.driver == "cdp" else None,
@@ -230,8 +241,9 @@ def normalize_weflow_window(geometry: WindowGeometry) -> bool:
 
 def assert_single_weflow_instance(session: WeFlowSession) -> None:
     """Fail loudly if another visible WeFlow window appears during automation."""
-    window_pids = tuple(sorted(find_weflow_window_process_ids()))
-    _raise_if_multiple_windows(window_pids)
+    windows = find_weflow_windows()
+    _raise_if_multiple_windows(windows)
+    window_pids = _window_process_ids(windows)
     baseline = set(getattr(session, "window_process_ids", ()) or ())
     if baseline and window_pids and set(window_pids) != baseline:
         raise WeFlowInstanceConflict(
@@ -241,11 +253,19 @@ def assert_single_weflow_instance(session: WeFlowSession) -> None:
 
 
 def find_weflow_window_process_ids() -> set[int]:
-    if not hasattr(ctypes, "windll"):
-        return set()
+    return {window.pid for window in find_weflow_windows()}
 
+
+def find_weflow_windows(
+    *,
+    process_image_name_func: Callable[[int], str | None] | None = None,
+) -> tuple[WeFlowWindow, ...]:
+    if not hasattr(ctypes, "windll"):
+        return ()
+
+    image_name_for_pid = process_image_name_func or process_image_name
     user32 = ctypes.windll.user32
-    matches: set[int] = set()
+    matches: list[WeFlowWindow] = []
 
     enum_proc_type = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
 
@@ -262,11 +282,38 @@ def find_weflow_window_process_ids() -> set[int]:
         pid = ctypes.c_ulong()
         user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
         if pid.value:
-            matches.add(int(pid.value))
+            owner_pid = int(pid.value)
+            image_name = image_name_for_pid(owner_pid)
+            if image_name and _is_weflow_process_image(image_name):
+                matches.append(
+                    WeFlowWindow(
+                        pid=owner_pid,
+                        image_name=_process_image_basename(image_name),
+                        title=buffer.value,
+                    )
+                )
         return True
 
     user32.EnumWindows(enum_proc_type(callback), 0)
-    return matches
+    return tuple(sorted(matches, key=lambda window: (window.pid, window.title)))
+
+
+def process_image_name(pid: int) -> str | None:
+    try:
+        result = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+    for row in csv.reader(io.StringIO(result.stdout)):
+        if len(row) >= 2 and row[1].strip() == str(pid):
+            return row[0].strip()
+    return None
 
 
 def _find_weflow_window() -> int | None:
@@ -295,6 +342,22 @@ def _find_weflow_window() -> int | None:
     return matches[0] if matches else None
 
 
-def _raise_if_multiple_windows(window_pids: tuple[int, ...]) -> None:
+def _raise_if_multiple_windows(windows: tuple[WeFlowWindow, ...]) -> None:
+    window_pids = _window_process_ids(windows)
     if len(window_pids) > 1:
-        raise WeFlowInstanceConflict(f"Multiple visible WeFlow windows detected: pids={list(window_pids)}")
+        details = ", ".join(
+            f"(pid={window.pid}, image={window.image_name}, title={window.title!r})" for window in windows
+        )
+        raise WeFlowInstanceConflict(f"Multiple visible WeFlow windows detected: {details}")
+
+
+def _window_process_ids(windows: tuple[WeFlowWindow, ...]) -> tuple[int, ...]:
+    return tuple(sorted({window.pid for window in windows}))
+
+
+def _is_weflow_process_image(image_name: str) -> bool:
+    return _process_image_basename(image_name).lower() == WEFLOW_PROCESS_NAME.lower()
+
+
+def _process_image_basename(image_name: str) -> str:
+    return image_name.replace("/", "\\").rsplit("\\", 1)[-1]

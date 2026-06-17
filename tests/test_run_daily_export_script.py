@@ -4,15 +4,17 @@ import io
 import json
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from scripts.run_daily_export import (
     DailyExportDeps,
     DailyExportStageError,
     ensure_local_config,
+    main,
     run_daily_export,
     wait_for_raw_exports_stable,
 )
@@ -296,6 +298,30 @@ weflow_exe = "{(root / 'WeFlow.exe').as_posix()}"
 
         self.assertEqual(captured.exception.stage, "stop_weflow")
         self.assertIn("Timed out waiting", str(captured.exception.cause))
+
+    def test_main_stops_weflow_after_stage_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = _write_config(root, target_users="")
+            stop_calls: list[int] = []
+
+            def fail_export(_cfg) -> None:
+                raise DailyExportStageError("export_all_chats", RuntimeError("boom"))
+
+            buffer = io.StringIO()
+            with (
+                patch("scripts.run_daily_export.run_daily_export", side_effect=fail_export),
+                patch(
+                    "scripts.run_daily_export.stop_weflow_processes",
+                    side_effect=lambda timeout: stop_calls.append(int(timeout)) or True,
+                ),
+                redirect_stderr(buffer),
+            ):
+                exit_code = main(["--config", str(config_path), "--no-config-prompt"])
+
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(stop_calls, [90])
+        self.assertIn("FAILED at stage: export_all_chats", buffer.getvalue())
 
     def test_runner_uses_target_usernames_when_voice_config_is_empty(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

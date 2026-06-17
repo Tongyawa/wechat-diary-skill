@@ -109,6 +109,8 @@ def main(argv: list[str] | None = None) -> int:
     if not config_path.is_absolute():
         config_path = ROOT / config_path
 
+    cfg: Config | None = None
+    export_started = False
     try:
         ensure_local_config(
             config_path=config_path,
@@ -116,6 +118,7 @@ def main(argv: list[str] | None = None) -> int:
             prompt=not args.no_config_prompt,
         )
         cfg = load_config(config_path)
+        export_started = True
         result = run_daily_export(cfg)
     except DailyExportStageError as exc:
         print(f"\nFAILED at stage: {exc.stage}", file=sys.stderr)
@@ -129,9 +132,12 @@ def main(argv: list[str] | None = None) -> int:
                 "The script will relaunch WeFlow with the CDP flag.",
                 file=sys.stderr,
             )
+        _cleanup_weflow_after_failure(cfg)
         return 1
     except Exception as exc:
         print(f"\nFAILED before export completed: {exc}", file=sys.stderr)
+        if export_started:
+            _cleanup_weflow_after_failure(cfg)
         return 1
 
     print("\nDaily export completed.")
@@ -506,6 +512,17 @@ def _stage_error_detail(cause: BaseException) -> str:
     if isinstance(cause, DriverCommandError):
         return cause.detail
     return ""
+
+
+def _cleanup_weflow_after_failure(cfg: Config | None) -> None:
+    timeout = cfg.automation.launch_timeout_sec if cfg is not None else 30
+    try:
+        stopped = stop_weflow_processes(timeout=timeout)
+    except Exception as exc:
+        print(f"[WARN] Failed to stop WeFlow after export failure: {exc}", file=sys.stderr)
+        return
+    if stopped is False:
+        print("[WARN] Timed out stopping WeFlow after export failure; close WeFlow manually before retrying.", file=sys.stderr)
 
 
 def _run_weflow_stage(
