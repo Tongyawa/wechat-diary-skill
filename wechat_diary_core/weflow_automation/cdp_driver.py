@@ -49,6 +49,7 @@ MODAL_CLOSE_NAMES = (
 )
 TASK_STATUS_KEYWORDS = ("已完成", "失败", "已取消", "进行中", "准备中", "排队中", "待处理")
 TASK_FAILURE_STATUSES = ("失败", "已取消")
+TASK_ACTIVE_STATUSES = ("进行中", "准备中", "排队中", "待处理")
 
 
 class CdpWebSocket:
@@ -372,6 +373,40 @@ class CdpDriver(Driver):
             time.sleep(poll_interval)
         raise ElementNotFound(
             f"Timed out waiting for new task row title~{title_contains!r} status~{status!r}. "
+            f"Last snapshot: {[(r.title, r.status) for r in last_rows]}"
+        )
+
+    def wait_for_task_center_idle(
+        self,
+        title_contains: str = "",
+        timeout: float = 1800,
+        poll_interval: float = 1.0,
+    ) -> list[TaskRow]:
+        """Wait until task-center rows stop reporting running/pending work.
+
+        Filesystem quietness only says the raw export tree has not changed for a
+        short window. This checks WeFlow's own task center before the runner
+        drives another UI workflow such as Moments export.
+        """
+        deadline = time.monotonic() + timeout
+        last_rows: list[TaskRow] = []
+        last_active: list[TaskRow] = []
+        while time.monotonic() < deadline:
+            last_rows = self.snapshot_task_rows()
+            last_active = [
+                row
+                for row in last_rows
+                if (not title_contains or title_contains in row.title)
+                and any(status in row.status for status in TASK_ACTIVE_STATUSES)
+            ]
+            if not last_active:
+                return last_rows
+            time.sleep(poll_interval)
+        title_hint = f" for title~{title_contains!r}" if title_contains else ""
+        raise ElementNotFound(
+            "Timed out waiting for task center to become idle"
+            f"{title_hint}. "
+            f"Active rows: {[(r.title, r.status) for r in last_active]}. "
             f"Last snapshot: {[(r.title, r.status) for r in last_rows]}"
         )
 

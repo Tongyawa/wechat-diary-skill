@@ -87,6 +87,15 @@ class Driver(Protocol):
         """Wait until a task row appears whose signature is not in baseline."""
         ...
 
+    def wait_for_task_center_idle(
+        self,
+        title_contains: str = "",
+        timeout: float = 1800,
+        poll_interval: float = 1.0,
+    ) -> list[Any]:
+        """Wait until visible task-center rows have no running/pending tasks."""
+        ...
+
     def screenshot(self) -> bytes: ...
 
 
@@ -107,6 +116,7 @@ CommandKind = Literal[
     "confirm_native_dialog",
     "capture_task_baseline",
     "wait_for_new_task_completion",
+    "wait_for_task_center_idle",
 ]
 
 
@@ -120,6 +130,16 @@ class DriverCommand:
     poll_interval: float | None = None
 
 
+class DriverCommandError(DriverError):
+    """Raised when a sequenced GUI command fails, preserving command context."""
+
+    def __init__(self, command: DriverCommand, cause: BaseException) -> None:
+        self.command = command
+        self.cause = cause
+        self.detail = f"{describe_driver_command(command)} failed: {cause}"
+        super().__init__(f"{describe_driver_command(command)} failed: {_short_error(cause)}")
+
+
 @dataclass
 class ExporterContext:
     """Mutable per-run state shared between sequenced driver commands."""
@@ -127,7 +147,47 @@ class ExporterContext:
     task_baselines: dict[str, set[str]] = field(default_factory=dict)
 
 
+def describe_driver_command(command: DriverCommand) -> str:
+    if command.kind == "click_after_anchor":
+        text = f"{command.kind} anchor {command.name!r} target {command.value or ''!r}"
+    elif command.kind == "wait_for_text_sequence":
+        text = f"{command.kind} {command.name!r} -> {command.value or ''!r}"
+    elif command.kind == "wait_for_new_task_completion":
+        text = f"{command.kind} baseline {command.name!r} title {command.value or ''!r}"
+    elif command.kind == "wait_for_task_center_idle":
+        suffix = f" title {command.name!r}" if command.name else ""
+        text = f"{command.kind}{suffix}"
+    elif command.name:
+        text = f"{command.kind} {command.name!r}"
+    else:
+        text = command.kind
+
+    if command.timeout is not None:
+        text = f"{text} timeout={command.timeout:g}s"
+    return text
+
+
+def _short_error(cause: BaseException, limit: int = 160) -> str:
+    text = str(cause) or cause.__class__.__name__
+    if len(text) <= limit:
+        return text
+    return f"{text[: limit - 3]}..."
+
+
 def run_driver_command(
+    driver: Driver,
+    command: DriverCommand,
+    context: ExporterContext | None = None,
+) -> None:
+    try:
+        _run_driver_command(driver, command, context=context)
+    except DriverCommandError:
+        raise
+    except Exception as exc:
+        raise DriverCommandError(command, exc) from exc
+
+
+def _run_driver_command(
     driver: Driver,
     command: DriverCommand,
     context: ExporterContext | None = None,
@@ -191,6 +251,13 @@ def run_driver_command(
         driver.wait_for_new_task_completion(
             baseline=baseline,
             title_contains=command.value or "",
+            timeout=command.timeout or 1800,
+            poll_interval=command.poll_interval or 1.0,
+        )
+        return
+    if command.kind == "wait_for_task_center_idle":
+        driver.wait_for_task_center_idle(
+            title_contains=command.name,
             timeout=command.timeout or 1800,
             poll_interval=command.poll_interval or 1.0,
         )

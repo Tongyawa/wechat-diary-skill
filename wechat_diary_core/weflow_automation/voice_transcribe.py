@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ..config import Config, load_config
-from .driver import Driver, DriverCommand, ExporterContext, TaskFailed, run_driver_command
+from .driver import Driver, DriverCommand, DriverCommandError, ExporterContext, TaskFailed, run_driver_command
 from .exporter import create_driver
 
 
@@ -67,9 +67,12 @@ def batch_transcribe_voices_for(
                 try:
                     for command in attempt_commands:
                         run_driver_command(active_driver, command, context=context)
-                except TaskFailed:
-                    if attempt >= attempt_limit:
+                except (TaskFailed, DriverCommandError) as exc:
+                    task_failed = _task_failed_from(exc)
+                    if task_failed is None:
                         raise
+                    if attempt >= attempt_limit:
+                        raise task_failed from exc
                     print(
                         "Voice transcribe task failed; retrying "
                         f"attempt {attempt + 1}/{attempt_limit}."
@@ -86,6 +89,14 @@ def batch_transcribe_voices_for(
         if own_driver and callable(close):
             close()
     return runs
+
+
+def _task_failed_from(exc: BaseException) -> TaskFailed | None:
+    if isinstance(exc, TaskFailed):
+        return exc
+    if isinstance(exc, DriverCommandError) and isinstance(exc.cause, TaskFailed):
+        return exc.cause
+    return None
 
 
 def _voice_transcribe_commands(

@@ -24,8 +24,8 @@ from wechat_diary_core.config import Config, load_config
 from wechat_diary_core.preprocessing import archive_moments_for
 from wechat_diary_core.preprocessing import collect_voice_transcription_failures
 from wechat_diary_core.weflow_automation.cdp_driver import CdpDriver
-from wechat_diary_core.weflow_automation.driver import DriverUnavailable, ElementNotFound
-from wechat_diary_core.weflow_automation.exporter import export_all_chats, export_moments_for
+from wechat_diary_core.weflow_automation.driver import DriverCommandError, DriverUnavailable, ElementNotFound
+from wechat_diary_core.weflow_automation.exporter import export_all_chats, export_moments_for, wait_for_export_tasks_idle
 from wechat_diary_core.weflow_automation.launcher import (
     WeFlowSession,
     assert_single_weflow_instance,
@@ -69,6 +69,7 @@ class DailyExportDeps:
     run_voice_fallback_script: Callable[..., Any] = None  # type: ignore[assignment]
     export_all_chats: Callable[..., Any] = export_all_chats
     export_moments_for: Callable[..., Any] = export_moments_for
+    wait_for_export_tasks_idle: Callable[..., Any] = wait_for_export_tasks_idle
     archive: Callable[..., Any] = archive
     archive_chats_for: Callable[..., Any] = archive_chats_for
     archive_moments_for: Callable[..., Any] = archive_moments_for
@@ -119,6 +120,9 @@ def main(argv: list[str] | None = None) -> int:
     except DailyExportStageError as exc:
         print(f"\nFAILED at stage: {exc.stage}", file=sys.stderr)
         print(f"Reason: {exc.cause}", file=sys.stderr)
+        detail = _stage_error_detail(exc.cause)
+        if detail:
+            print(f"DETAIL: {detail}", file=sys.stderr)
         if isinstance(exc.cause, DriverUnavailable):
             print(
                 "Next step: close WeFlow completely, then run Start-DailyExport.bat again. "
@@ -284,6 +288,13 @@ def run_daily_export(
         "wait_raw_exports_stable",
         lambda: active_deps.wait_for_raw_exports_stable(cfg.paths.raw, min_files=1),
     )
+    if (target_usernames or self_moments_usernames) and endpoint:
+        _run_weflow_stage(
+            "wait_weflow_tasks_idle_before_moments",
+            lambda: active_deps.wait_for_export_tasks_idle(config=cfg, title_contains="自动化导出"),
+            deps=active_deps,
+            session=session,
+        )
     if target_usernames:
         _run_weflow_stage(
             "export_target_moments",
@@ -489,6 +500,12 @@ def _run_stage(stage: str, action: Callable[[], Any]) -> Any:
         raise DailyExportStageError(stage, exc) from exc
     print(f"[{datetime.now():%H:%M:%S}] {stage} done.")
     return result
+
+
+def _stage_error_detail(cause: BaseException) -> str:
+    if isinstance(cause, DriverCommandError):
+        return cause.detail
+    return ""
 
 
 def _run_weflow_stage(

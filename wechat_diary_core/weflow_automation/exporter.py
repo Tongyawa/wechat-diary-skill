@@ -67,6 +67,26 @@ def export_moments_for(
     return ExportRun(kind="moments", date=day, output_dir=destination, commands=commands, rotation=None)
 
 
+def wait_for_export_tasks_idle(
+    config: Config | None = None,
+    driver: Driver | None = None,
+    *,
+    title_contains: str = "",
+) -> list[DriverCommand]:
+    """Wait for WeFlow's task center to have no active export tasks.
+
+    This is intentionally separate from raw-tree stability: the filesystem
+    check protects readers from half-written files, while this protects the
+    next GUI workflow from WeFlow's background task consuming the UI thread.
+    """
+    cfg = config or load_config()
+    completion_timeout = max(1800.0, cfg.automation.poll_export_interval_sec * 30)
+    poll_interval = max(1.0, cfg.automation.poll_export_interval_sec)
+    commands = _task_center_idle_commands(title_contains, completion_timeout, poll_interval)
+    _run_export(commands, cfg, driver)
+    return commands
+
+
 def create_driver(config: Config | None = None) -> Driver:
     cfg = config or load_config()
     session = ensure_weflow_running(cfg)
@@ -121,6 +141,26 @@ def _all_chats_commands(config: Config) -> list[DriverCommand]:
             "wait_for_new_task_completion",
             "all_chats",
             value="自动化导出",
+            timeout=completion_timeout,
+            poll_interval=poll_interval,
+        ),
+        DriverCommand("close_current_modal", timeout=5),
+        DriverCommand("click", "首页"),
+    ]
+
+
+def _task_center_idle_commands(
+    title_contains: str,
+    completion_timeout: float,
+    poll_interval: float,
+) -> list[DriverCommand]:
+    return [
+        DriverCommand("close_any_modal", timeout=5),
+        DriverCommand("wait_for_enabled", "任务中心", timeout=30),
+        DriverCommand("click", "任务中心"),
+        DriverCommand(
+            "wait_for_task_center_idle",
+            title_contains,
             timeout=completion_timeout,
             poll_interval=poll_interval,
         ),

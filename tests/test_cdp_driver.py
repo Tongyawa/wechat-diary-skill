@@ -221,6 +221,48 @@ class CdpDriverTests(unittest.TestCase):
                 poll_interval=0.01,
             )
 
+    def test_wait_for_task_center_idle_waits_out_active_rows(self) -> None:
+        connection = FakeConnection(
+            values=[
+                [
+                    {"title": "自动化导出 新", "status": "进行中", "signature": "自动化导出 新 进行中"},
+                    {"title": "语音批量转写 旧", "status": "已完成", "signature": "语音批量转写 旧 已完成"},
+                ],
+                [
+                    {"title": "自动化导出 新", "status": "已完成", "signature": "自动化导出 新 已完成"},
+                    {"title": "语音批量转写 旧", "status": "已完成", "signature": "语音批量转写 旧 已完成"},
+                ],
+            ]
+        )
+        driver = CdpDriver(connection)  # type: ignore[arg-type]
+
+        rows = driver.wait_for_task_center_idle(
+            title_contains="自动化导出",
+            timeout=5,
+            poll_interval=0.01,
+        )
+
+        self.assertEqual(rows[0].status, "已完成")
+
+    def test_wait_for_task_center_idle_ignores_other_active_titles_when_filtered(self) -> None:
+        connection = FakeConnection(
+            values=[
+                [
+                    {"title": "语音批量转写 新", "status": "进行中", "signature": "语音批量转写 新 进行中"},
+                    {"title": "自动化导出 旧", "status": "已完成", "signature": "自动化导出 旧 已完成"},
+                ],
+            ]
+        )
+        driver = CdpDriver(connection)  # type: ignore[arg-type]
+
+        rows = driver.wait_for_task_center_idle(
+            title_contains="自动化导出",
+            timeout=0.05,
+            poll_interval=0.01,
+        )
+
+        self.assertEqual(len(rows), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

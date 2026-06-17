@@ -7,7 +7,8 @@ from typing import Any
 from unittest.mock import patch
 
 from wechat_diary_core.config import load_config
-from wechat_diary_core.weflow_automation.exporter import export_all_chats, export_moments_for
+from wechat_diary_core.weflow_automation.driver import DriverCommandError
+from wechat_diary_core.weflow_automation.exporter import export_all_chats, export_moments_for, wait_for_export_tasks_idle
 
 
 class FakeDriver:
@@ -73,6 +74,15 @@ class FakeDriver:
 
         return TaskRow(title=title_contains, status=status, signature="fake")
 
+    def wait_for_task_center_idle(
+        self,
+        title_contains: str = "",
+        timeout: float = 1800,
+        poll_interval: float = 1.0,
+    ):
+        self.calls.append(("wait_for_task_center_idle", title_contains, str(int(timeout))))
+        return []
+
     def screenshot(self) -> bytes:
         return b""
 
@@ -127,6 +137,26 @@ class ExporterTests(unittest.TestCase):
                 ("click", "首页"),
             ],
         )
+
+    def test_wait_for_export_tasks_idle_checks_task_center_running_rows(self) -> None:
+        cfg, tmp = test_config()
+        self.addCleanup(tmp.cleanup)
+        driver = FakeDriver()
+
+        commands = wait_for_export_tasks_idle(config=cfg, driver=driver, title_contains="自动化导出")  # type: ignore[arg-type]
+
+        self.assertEqual(
+            [(call[0], call[1]) for call in driver.calls],
+            [
+                ("close_any_modal", ""),
+                ("wait_for_enabled", "任务中心"),
+                ("click", "任务中心"),
+                ("wait_for_task_center_idle", "自动化导出"),
+                ("close_current_modal", ""),
+                ("click", "首页"),
+            ],
+        )
+        self.assertEqual((commands[3].kind, commands[3].name), ("wait_for_task_center_idle", "自动化导出"))
 
     def test_export_moments_for_keeps_target_list_outside_core_logic(self) -> None:
         cfg, tmp = test_config()
@@ -183,6 +213,22 @@ class ExporterTests(unittest.TestCase):
             ],
         )
         confirm.assert_called_once_with(title="选择导出目录", confirm_name="选择文件夹", timeout=30)
+
+    def test_export_moments_failure_reports_failed_driver_command(self) -> None:
+        cfg, tmp = test_config()
+        self.addCleanup(tmp.cleanup)
+
+        class FailingDriver(FakeDriver):
+            def wait_for(self, name: str, timeout: float = 60) -> None:
+                if name == "朋友圈":
+                    raise TimeoutError("timed out")
+                super().wait_for(name, timeout=timeout)
+
+        with self.assertRaises(DriverCommandError) as captured:
+            export_moments_for(["wxid_a"], "2026-05-13", config=cfg, driver=FailingDriver())  # type: ignore[arg-type]
+
+        self.assertIn("wait_for '朋友圈' timeout=30s failed: timed out", str(captured.exception))
+        self.assertIn("wait_for '朋友圈' timeout=30s failed: timed out", captured.exception.detail)
 
 
 if __name__ == "__main__":

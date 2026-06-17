@@ -1,5 +1,5 @@
-from .driver import Driver, DriverCommand, DriverError, DriverUnavailable, ElementNotFound
-from .exporter import export_all_chats, export_moments_for
+from .driver import Driver, DriverCommand, DriverCommandError, DriverError, DriverUnavailable, ElementNotFound
+from .exporter import export_all_chats, export_moments_for, wait_for_export_tasks_idle
 from .launcher import WeFlowLaunchTimeout, WeFlowSession, ensure_weflow_running
 from .native_dialog import NativeDialogError, NativeDialogFocusError, NativeDialogTimeout, confirm_native_dialog
 from .voice_transcribe import BatchTranscribeRun, batch_transcribe_voices_for
@@ -8,6 +8,7 @@ __all__ = [
     "BatchTranscribeRun",
     "Driver",
     "DriverCommand",
+    "DriverCommandError",
     "DriverError",
     "DriverUnavailable",
     "ElementNotFound",
@@ -21,4 +22,5 @@ __all__ = [
     "ensure_weflow_running",
     "export_all_chats",
     "export_moments_for",
+    "wait_for_export_tasks_idle",
 ]

@@ -315,6 +315,9 @@ weflow_exe = "{(root / 'WeFlow.exe').as_posix()}"
                 run_voice_fallback_script=lambda script_path, config: calls.append(("fallback", script_path)),
                 export_all_chats=lambda date, config, cleanup: calls.append(("all_chats", cleanup)),
                 export_moments_for=lambda usernames, date, config: calls.append(("moments", tuple(usernames))),
+                wait_for_export_tasks_idle=lambda config, title_contains: calls.append(
+                    ("wait_tasks_idle", title_contains)
+                ),
                 archive=lambda raw_path, config, clear_first: calls.append(("archive", clear_first)) or [root / "diary.md"],
                 archive_chats_for=lambda usernames, config, subroot, image_mode, clear_first: calls.append(
                     ("sidecar_chats", tuple(usernames), subroot, image_mode, clear_first)
@@ -339,6 +342,7 @@ weflow_exe = "{(root / 'WeFlow.exe').as_posix()}"
                 "voice",
                 "all_chats",
                 "wait_raw",
+                "wait_tasks_idle",
                 "moments",
                 "wait_raw",
                 "archive",
@@ -348,6 +352,7 @@ weflow_exe = "{(root / 'WeFlow.exe').as_posix()}"
         )
         self.assertIn(("voice", ("Target",)), calls)
         self.assertIn(("all_chats", "skip"), calls)
+        self.assertIn(("wait_tasks_idle", "自动化导出"), calls)
         self.assertIn(("sidecar_chats", ("Target",), "_sidecar/chats", "preserve_paths", True), calls)
         self.assertIn(("sidecar_moments", ("Target",), "_sidecar/moments", True), calls)
 
