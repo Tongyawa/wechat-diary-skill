@@ -20,6 +20,7 @@ $LogPath = Join-Path $LogDir "$(Get-Date -Format yyyy-MM-dd)-daily-export.log"
 Write-Host "Running daily export from $Root"
 Write-Host "Log: $LogPath"
 
+$EmptySessionSkips = 0
 # Console whitelist: stages, results, warnings, errors and the first-run
 # wizard prompts. Everything (WeFlow/WCDB chatter included) still lands in
 # the runlog file above.
@@ -30,7 +31,12 @@ function ShouldShowDailyExportLine {
     return $true
   }
 
-  if ($Line -match '^(DETAIL:|\[weflow\]|.*QueryMessageBatch|.*fetch_message_batch|.*WCDB日志)') {
+  if ($Line -match '^导出 .+ 失败:.*没有消息') {
+    $script:EmptySessionSkips += 1
+    return $false
+  }
+
+  if ($Line -match '^(DETAIL:|\[weflow\]|导出 .+ 失败:|.*InitExportCursorHeap|.*QueryMessageBatch|.*fetch_message_batch|.*WCDB日志)') {
     return $false
   }
 
@@ -81,6 +87,10 @@ cmd /d /c $CommandLine | ForEach-Object {
   }
 }
 $ExitCode = $LASTEXITCODE
+
+if ($EmptySessionSkips -gt 0) {
+  Write-Host "[stage] $EmptySessionSkips 个空会话跳过（详见 runlog）"
+}
 
 if ($ExitCode -eq 0) {
   Write-Host "Daily export finished successfully."

@@ -23,6 +23,10 @@ class WeFlowExecutableNotFound(FileNotFoundError):
     """Raised when the configured WeFlow executable path does not exist."""
 
 
+class WeFlowInstanceConflict(RuntimeError):
+    """Raised when automation detects more than one visible WeFlow instance."""
+
+
 @dataclass(frozen=True)
 class WeFlowSession:
     driver: str
@@ -30,6 +34,7 @@ class WeFlowSession:
     process_started: bool
     process_id: int | None
     window_normalized: bool
+    window_process_ids: tuple[int, ...] = ()
 
 
 def ensure_weflow_running(config: Config | None = None) -> WeFlowSession:
@@ -39,11 +44,26 @@ def ensure_weflow_running(config: Config | None = None) -> WeFlowSession:
 
     if automation.driver == "cdp" and is_cdp_available(endpoint):
         normalized = normalize_weflow_window(automation.window_geometry)
-        return WeFlowSession("cdp", endpoint, process_started=False, process_id=None, window_normalized=normalized)
+        window_pids = tuple(sorted(find_weflow_window_process_ids()))
+        _raise_if_multiple_windows(window_pids)
+        return WeFlowSession(
+            "cdp",
+            endpoint,
+            process_started=False,
+            process_id=None,
+            window_normalized=normalized,
+            window_process_ids=window_pids,
+        )
 
     process_started = False
     process_id: int | None = None
-    if automation.driver == "cdp" or not is_weflow_process_running():
+    process_running = is_weflow_process_running()
+    if automation.driver == "cdp" and process_running:
+        raise WeFlowLaunchTimeout(
+            f"WeFlow is already running, but CDP is unavailable at {endpoint}. "
+            "Close WeFlow completely and retry so automation does not start a second instance."
+        )
+    if automation.driver == "cdp" or not process_running:
         process = launch_weflow(automation)
         process_started = True
         process_id = process.pid
@@ -58,18 +78,22 @@ def ensure_weflow_running(config: Config | None = None) -> WeFlowSession:
             raise WeFlowLaunchTimeout("WeFlow process did not appear before timeout.")
 
     normalized = normalize_weflow_window(automation.window_geometry)
+    window_pids = tuple(sorted(find_weflow_window_process_ids()))
+    _raise_if_multiple_windows(window_pids)
     return WeFlowSession(
         driver=automation.driver,
         cdp_endpoint=endpoint if automation.driver == "cdp" else None,
         process_started=process_started,
         process_id=process_id,
         window_normalized=normalized,
+        window_process_ids=window_pids,
     )
 
 
 def restart_weflow(config: Config | None = None) -> WeFlowSession:
     cfg = config or load_config()
-    stop_weflow_processes(timeout=cfg.automation.launch_timeout_sec)
+    if not stop_weflow_processes(timeout=cfg.automation.launch_timeout_sec):
+        raise WeFlowLaunchTimeout("Timed out waiting for existing WeFlow processes to exit before restart.")
     return ensure_weflow_running(cfg)
 
 
@@ -171,6 +195,47 @@ def normalize_weflow_window(geometry: WindowGeometry) -> bool:
     return bool(ctypes.windll.user32.MoveWindow(hwnd, x, y, width, height, True))
 
 
+def assert_single_weflow_instance(session: WeFlowSession) -> None:
+    """Fail loudly if another visible WeFlow window appears during automation."""
+    window_pids = tuple(sorted(find_weflow_window_process_ids()))
+    _raise_if_multiple_windows(window_pids)
+    baseline = set(getattr(session, "window_process_ids", ()) or ())
+    if baseline and window_pids and set(window_pids) != baseline:
+        raise WeFlowInstanceConflict(
+            "Visible WeFlow window ownership changed during automation "
+            f"(baseline={sorted(baseline)}, current={list(window_pids)})."
+        )
+
+
+def find_weflow_window_process_ids() -> set[int]:
+    if not hasattr(ctypes, "windll"):
+        return set()
+
+    user32 = ctypes.windll.user32
+    matches: set[int] = set()
+
+    enum_proc_type = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+
+    def callback(hwnd: int, _lparam: int) -> bool:
+        if not user32.IsWindowVisible(hwnd):
+            return True
+        title_length = user32.GetWindowTextLengthW(hwnd)
+        if title_length <= 0:
+            return True
+        buffer = ctypes.create_unicode_buffer(title_length + 1)
+        user32.GetWindowTextW(hwnd, buffer, title_length + 1)
+        if "WeFlow" not in buffer.value:
+            return True
+        pid = ctypes.c_ulong()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if pid.value:
+            matches.add(int(pid.value))
+        return True
+
+    user32.EnumWindows(enum_proc_type(callback), 0)
+    return matches
+
+
 def _find_weflow_window() -> int | None:
     if not hasattr(ctypes, "windll"):
         return None
@@ -195,3 +260,8 @@ def _find_weflow_window() -> int | None:
 
     user32.EnumWindows(enum_proc_type(callback), 0)
     return matches[0] if matches else None
+
+
+def _raise_if_multiple_windows(window_pids: tuple[int, ...]) -> None:
+    if len(window_pids) > 1:
+        raise WeFlowInstanceConflict(f"Multiple visible WeFlow windows detected: pids={list(window_pids)}")

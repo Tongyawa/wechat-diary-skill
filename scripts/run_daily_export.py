@@ -26,7 +26,12 @@ from wechat_diary_core.preprocessing import collect_voice_transcription_failures
 from wechat_diary_core.weflow_automation.cdp_driver import CdpDriver
 from wechat_diary_core.weflow_automation.driver import DriverUnavailable, ElementNotFound
 from wechat_diary_core.weflow_automation.exporter import export_all_chats, export_moments_for
-from wechat_diary_core.weflow_automation.launcher import ensure_weflow_running, stop_weflow_processes
+from wechat_diary_core.weflow_automation.launcher import (
+    WeFlowSession,
+    assert_single_weflow_instance,
+    ensure_weflow_running,
+    stop_weflow_processes,
+)
 from wechat_diary_core.weflow_automation.voice_transcribe import batch_transcribe_voices_for
 from wechat_diary_core.workspace import rotate_export_workspace
 
@@ -59,6 +64,7 @@ class DailyExportDeps:
     wait_for_ready_page: Callable[..., Any] = None  # type: ignore[assignment]
     wait_for_raw_exports_stable: Callable[..., Any] = None  # type: ignore[assignment]
     rotate_export_workspace: Callable[..., Any] = rotate_export_workspace
+    assert_single_weflow_instance: Callable[..., Any] = assert_single_weflow_instance
     batch_transcribe_voices_for: Callable[..., Any] = batch_transcribe_voices_for
     run_voice_fallback_script: Callable[..., Any] = None  # type: ignore[assignment]
     export_all_chats: Callable[..., Any] = export_all_chats
@@ -239,7 +245,7 @@ def run_daily_export(
     if cfg.daily_export.restart_weflow:
         _run_stage(
             "stop_weflow",
-            lambda: active_deps.stop_weflow_processes(timeout=cfg.automation.launch_timeout_sec),
+            lambda: _stop_weflow_or_raise(active_deps, timeout=cfg.automation.launch_timeout_sec),
         )
 
     rotation = _run_stage(
@@ -255,28 +261,35 @@ def run_daily_export(
     endpoint = getattr(session, "cdp_endpoint", None)
     if endpoint:
         _run_stage("wait_weflow_ready", lambda: active_deps.wait_for_ready_page(endpoint))
+    _assert_single_weflow_instance(active_deps, session, "start_weflow")
 
     voice_usernames = list(cfg.user.voice_transcribe_usernames) or target_usernames
     if voice_usernames:
-        _run_stage(
+        _run_weflow_stage(
             "voice_transcribe",
             lambda: active_deps.batch_transcribe_voices_for(voice_usernames, config=cfg),
+            deps=active_deps,
+            session=session,
         )
     else:
         print("voice_transcribe skipped: no configured contacts.")
 
-    _run_stage(
+    _run_weflow_stage(
         "export_all_chats",
         lambda: active_deps.export_all_chats(date=export_day, config=cfg, cleanup="skip"),
+        deps=active_deps,
+        session=session,
     )
     _run_stage(
         "wait_raw_exports_stable",
         lambda: active_deps.wait_for_raw_exports_stable(cfg.paths.raw, min_files=1),
     )
     if target_usernames:
-        _run_stage(
+        _run_weflow_stage(
             "export_target_moments",
             lambda: active_deps.export_moments_for(target_usernames, date=export_day, config=cfg),
+            deps=active_deps,
+            session=session,
         )
         _run_stage(
             "wait_raw_exports_stable_after_moments",
@@ -285,9 +298,11 @@ def run_daily_export(
     else:
         print("export_target_moments skipped: no target sidecar contacts.")
     if self_moments_usernames:
-        _run_stage(
+        _run_weflow_stage(
             "export_self_moments",
             lambda: active_deps.export_moments_for(self_moments_usernames, date=export_day, config=cfg),
+            deps=active_deps,
+            session=session,
         )
         _run_stage(
             "wait_raw_exports_stable_after_self_moments",
@@ -474,6 +489,36 @@ def _run_stage(stage: str, action: Callable[[], Any]) -> Any:
         raise DailyExportStageError(stage, exc) from exc
     print(f"[{datetime.now():%H:%M:%S}] {stage} done.")
     return result
+
+
+def _run_weflow_stage(
+    stage: str,
+    action: Callable[[], Any],
+    *,
+    deps: DailyExportDeps,
+    session: Any,
+) -> Any:
+    _assert_single_weflow_instance(deps, session, f"{stage}:before")
+    result = _run_stage(stage, action)
+    _assert_single_weflow_instance(deps, session, f"{stage}:after")
+    return result
+
+
+def _stop_weflow_or_raise(deps: DailyExportDeps, *, timeout: float) -> None:
+    stopped = deps.stop_weflow_processes(timeout=timeout)
+    if stopped is False:
+        raise RuntimeError("Timed out waiting for existing WeFlow processes to exit.")
+
+
+def _assert_single_weflow_instance(deps: DailyExportDeps, session: Any, stage: str) -> None:
+    # Unit tests use lightweight session fakes. Production launcher returns
+    # WeFlowSession, where visible-window ownership can be checked.
+    if not isinstance(session, WeFlowSession):
+        return
+    try:
+        deps.assert_single_weflow_instance(session)
+    except Exception as exc:
+        raise DailyExportStageError(f"{stage}_weflow_instance_guard", exc) from exc
 
 
 def _loads_toml(text: str, path: Path) -> dict[str, Any]:

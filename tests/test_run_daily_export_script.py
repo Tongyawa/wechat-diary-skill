@@ -9,7 +9,13 @@ from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
 
-from scripts.run_daily_export import DailyExportDeps, ensure_local_config, run_daily_export, wait_for_raw_exports_stable
+from scripts.run_daily_export import (
+    DailyExportDeps,
+    DailyExportStageError,
+    ensure_local_config,
+    run_daily_export,
+    wait_for_raw_exports_stable,
+)
 from wechat_diary_core.archiving import archive, archive_chats_for
 from wechat_diary_core.config import load_config
 
@@ -127,6 +133,11 @@ class DailyExportScriptTests(unittest.TestCase):
         self.assertIn("'^\\[WARN\\]'", script)
         self.assertIn("Archive root:", script)
         self.assertIn("self moments wxid:", script)
+        # WeFlow per-session noise stays in the runlog, while empty sessions are aggregated.
+        self.assertIn("$EmptySessionSkips", script)
+        self.assertIn("^导出 .+ 失败:.*没有消息", script)
+        self.assertIn("InitExportCursorHeap", script)
+        self.assertIn("[stage] $EmptySessionSkips 个空会话跳过", script)
 
     def test_ensure_local_config_allows_empty_target_defaults(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -270,6 +281,19 @@ weflow_exe = "{(root / 'WeFlow.exe').as_posix()}"
         self.assertEqual(result.self_moment_files, [])
         self.assertEqual(result.sidecar_chat_files, [])
         self.assertEqual(result.sidecar_moment_files, [])
+
+    def test_runner_fails_when_weflow_cannot_be_stopped_before_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = load_config(_write_config(root, target_users=""))
+            deps = _quiet_deps(root)
+            deps.stop_weflow_processes = lambda timeout: False
+
+            with self.assertRaises(DailyExportStageError) as captured:
+                run_daily_export(cfg, deps=deps, day=date(2026, 5, 16))
+
+        self.assertEqual(captured.exception.stage, "stop_weflow")
+        self.assertIn("Timed out waiting", str(captured.exception.cause))
 
     def test_runner_uses_target_usernames_when_voice_config_is_empty(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
