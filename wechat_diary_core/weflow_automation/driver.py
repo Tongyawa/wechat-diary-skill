@@ -46,6 +46,10 @@ class Driver(Protocol):
 
     def wait_for_text_sequence(self, first: str, second: str, timeout: float = 60) -> None: ...
 
+    def wait_for_moments_contact_ready(self, username: str, timeout: float = 60) -> None:
+        """Wait until a Moments contact search has at least one selectable result row."""
+        ...
+
     def ensure_selected(self, name: str, timeout: float = 60) -> None: ...
 
     def ensure_checked(self, name: str, timeout: float = 60) -> None: ...
@@ -108,6 +112,7 @@ CommandKind = Literal[
     "wait_for_absent",
     "wait_for_enabled",
     "wait_for_text_sequence",
+    "wait_for_moments_contact_ready",
     "ensure_selected",
     "ensure_checked",
     "ensure_action_available",
@@ -152,6 +157,8 @@ def describe_driver_command(command: DriverCommand) -> str:
         text = f"{command.kind} anchor {command.name!r} target {command.value or ''!r}"
     elif command.kind == "wait_for_text_sequence":
         text = f"{command.kind} {command.name!r} -> {command.value or ''!r}"
+    elif command.kind == "wait_for_moments_contact_ready":
+        text = f"{command.kind} username {command.name!r}"
     elif command.kind == "wait_for_new_task_completion":
         text = f"{command.kind} baseline {command.name!r} title {command.value or ''!r}"
     elif command.kind == "wait_for_task_center_idle":
@@ -215,6 +222,9 @@ def _run_driver_command(
         return
     if command.kind == "wait_for_text_sequence":
         driver.wait_for_text_sequence(command.name, command.value or "", timeout=command.timeout or 60)
+        return
+    if command.kind == "wait_for_moments_contact_ready":
+        driver.wait_for_moments_contact_ready(command.name, timeout=command.timeout or 60)
         return
     if command.kind == "ensure_selected":
         driver.ensure_selected(command.name, timeout=command.timeout or 60)

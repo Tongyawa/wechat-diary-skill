@@ -11,6 +11,7 @@ from wechat_diary_core.weflow_automation.cdp_driver import (
     _close_modal_script,
     select_page_target,
 )
+from wechat_diary_core.weflow_automation.driver import ElementNotFound
 
 
 class FakeConnection:
@@ -155,6 +156,25 @@ class CdpDriverTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0].title, "自动化导出 2026-05-15")
         self.assertEqual(rows[0].status, "已完成")
+
+    def test_wait_for_moments_contact_ready_returns_on_selectable_result(self) -> None:
+        connection = FakeConnection(values=[{"ok": True, "count": 1, "text": "选择", "tag": "BUTTON"}])
+        driver = CdpDriver(connection)  # type: ignore[arg-type]
+
+        driver.wait_for_moments_contact_ready("wxid_a", timeout=0.1)
+
+        methods = [method for method, _ in connection.calls]
+        self.assertEqual(methods.count("Runtime.evaluate"), 1)
+
+    def test_wait_for_moments_contact_ready_reports_zero_results(self) -> None:
+        connection = FakeConnection(values=[{"ok": False, "count": 0, "reason": "zero results"}])
+        driver = CdpDriver(connection)  # type: ignore[arg-type]
+
+        with self.assertRaises(ElementNotFound) as captured:
+            driver.wait_for_moments_contact_ready("wxid_missing", timeout=0.01)
+
+        self.assertIn("wxid 'wxid_missing' 在朋友圈联系人列表无匹配", str(captured.exception))
+        self.assertIn("搜索结果共 0 条", str(captured.exception))
 
     def test_wait_for_new_task_completion_skips_baseline_and_returns_new_done(self) -> None:
         connection = FakeConnection(

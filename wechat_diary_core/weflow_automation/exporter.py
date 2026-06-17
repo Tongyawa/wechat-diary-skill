@@ -183,7 +183,7 @@ def _moments_commands(usernames: list[str], config: Config) -> list[DriverComman
         if _looks_like_wxid(username):
             commands.extend(
                 [
-                    DriverCommand("wait_for", "条", timeout=30),
+                    DriverCommand("wait_for_moments_contact_ready", username, timeout=30),
                     DriverCommand("click_after_anchor", "全选", value="选择", timeout=30),
                 ]
             )

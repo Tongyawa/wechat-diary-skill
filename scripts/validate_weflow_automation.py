@@ -116,8 +116,12 @@ def _moments_picker(endpoint: str, contact: str) -> int:
         driver.wait_for("查找联系人", timeout=10)
         driver.click_by_name("查找联系人")
         driver.set_text("查找联系人", contact)
-        driver.wait_for_text_sequence(contact, "条", timeout=10)
-        driver.ensure_selected(contact, timeout=10)
+        if _looks_like_wxid(contact):
+            driver.wait_for_moments_contact_ready(contact, timeout=10)
+            driver.click_after_anchor("全选", "选择", timeout=10)
+        else:
+            driver.wait_for_text_sequence(contact, "条", timeout=10)
+            driver.ensure_selected(contact, timeout=10)
         driver.ensure_action_available("下载所选", "全选", timeout=10)
         driver.click_by_name("下载所选")
         driver.wait_for("导出格式", timeout=10)
@@ -202,6 +206,10 @@ def _voice_transcribe_acceptance(cfg: Config, contact: str) -> int:
         print(f"- {run.username}: {len(run.commands)} driver commands executed")
     print("Manual checkpoint: verify the task center shows a completed '语音批量转写({contact})' row.")
     return 0
+
+
+def _looks_like_wxid(value: str) -> bool:
+    return value.strip().startswith(("wxid_", "gh_"))
 
 
 def _moments_export_acceptance(cfg: Config, contact: str) -> int:

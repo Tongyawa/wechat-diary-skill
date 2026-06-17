@@ -262,6 +262,30 @@ class CdpDriver(Driver):
             time.sleep(0.5)
         raise ElementNotFound(f"Timed out waiting for text sequence {first!r} -> {second!r}: {last_result}")
 
+    def wait_for_moments_contact_ready(self, username: str, timeout: float = 60) -> None:
+        deadline = time.monotonic() + timeout
+        last_result: Any = None
+        zero_seen_at: float | None = None
+        zero_grace = min(1.0, max(0.0, timeout / 2))
+        while time.monotonic() < deadline:
+            last_result = self._evaluate(_moments_contact_ready_script(username))
+            if isinstance(last_result, dict) and last_result.get("ok"):
+                return
+            count = last_result.get("count") if isinstance(last_result, dict) else None
+            if count == 0:
+                now = time.monotonic()
+                zero_seen_at = zero_seen_at or now
+                if now - zero_seen_at >= zero_grace:
+                    raise ElementNotFound(_moments_contact_not_found_message(username, last_result))
+            else:
+                zero_seen_at = None
+            time.sleep(0.5)
+        if isinstance(last_result, dict) and last_result.get("count") == 0:
+            raise ElementNotFound(_moments_contact_not_found_message(username, last_result))
+        raise ElementNotFound(
+            f"Timed out waiting for selectable Moments contact row for wxid {username!r}: {last_result}"
+        )
+
     def ensure_selected(self, name: str, timeout: float = 60) -> None:
         selected_name = f"取消选择 {name}"
         selected = self._evaluate(_wait_script(selected_name))
@@ -619,6 +643,98 @@ def _click_after_anchor_script(anchor: str, target: str) -> str:
   return {{ ok: true, text: textOf(clickable), tag: clickable.tagName }};
 }})()
 """
+
+
+def _moments_contact_ready_script(username: str) -> str:
+    return f"""
+{_dom_helpers()}
+(() => {{
+  const username = {json.dumps(username, ensure_ascii=False)};
+  const anchor = "全选";
+  const target = "选择";
+  const roots = activeSearchRoots();
+  const root = roots[0] || document;
+  const textSource = root === document ? document.body : root;
+  const rawText = (textSource?.innerText || textSource?.textContent || "").replace(/\\s+/g, " ").trim();
+  const countMatch = rawText.match(/共\\s*(\\d+)\\s*条/);
+  const count = countMatch ? Number(countMatch[1]) : null;
+  const sampleText = rawText.slice(0, 240);
+  if (count === 0) {{
+    return {{ ok: false, reason: "zero results", username, count, anchor, target, text: sampleText }};
+  }}
+  const candidates = Array.from(root.querySelectorAll("button,a,div,span,li,[role='button'],[tabindex]"))
+    .filter(visible);
+  const anchorNode = candidates
+    .filter((node) => isMatch(node, anchor))
+    .sort((left, right) => {{
+      const leftRank = elementRank(left, anchor);
+      const rightRank = elementRank(right, anchor);
+      const leftRect = left.getBoundingClientRect();
+      const rightRect = right.getBoundingClientRect();
+      return leftRank[0] - rightRank[0]
+        || leftRank[1] - rightRank[1]
+        || leftRank[2] - rightRank[2]
+        || leftRect.top - rightRect.top;
+    }})[0] || null;
+  if (!anchorNode) {{
+    return {{
+      ok: false,
+      reason: count === 0 ? "zero results" : "anchor not found",
+      username,
+      count,
+      anchor,
+      target,
+      text: sampleText
+    }};
+  }}
+  const anchorRect = anchorNode.getBoundingClientRect();
+  const ordered = candidates
+    .filter((node) => isMatch(node, target))
+    .filter((node) => {{
+      const position = anchorNode.compareDocumentPosition(node);
+      const after = !!(position & Node.DOCUMENT_POSITION_FOLLOWING);
+      const rect = node.getBoundingClientRect();
+      const below = rect.top >= anchorRect.top - 8;
+      return after || below;
+    }})
+    .sort((left, right) => {{
+      const leftRank = elementRank(left, target);
+      const rightRank = elementRank(right, target);
+      const leftRect = left.getBoundingClientRect();
+      const rightRect = right.getBoundingClientRect();
+      return leftRank[0] - rightRank[0]
+        || leftRank[1] - rightRank[1]
+        || leftRank[2] - rightRank[2]
+        || leftRect.top - rightRect.top;
+    }});
+  if (ordered.length === 0) {{
+    return {{
+      ok: false,
+      reason: count === 0 ? "zero results" : "no selectable contact row",
+      username,
+      count,
+      anchor,
+      target,
+      text: sampleText
+    }};
+  }}
+  const clickable = clickableAncestor(ordered[0]);
+  if (!enabled(clickable)) {{
+    return {{
+      ok: false,
+      reason: "select target disabled",
+      username,
+      count,
+      text: textOf(clickable)
+    }};
+  }}
+  return {{ ok: true, username, count, text: textOf(clickable), tag: clickable.tagName }};
+}})()
+"""
+
+
+def _moments_contact_not_found_message(username: str, last_result: Any) -> str:
+    return f"wxid {username!r} 在朋友圈联系人列表无匹配（搜索结果共 0 条）: {last_result}"
 
 
 def _task_rows_script() -> str:

@@ -7,7 +7,7 @@ from typing import Any
 from unittest.mock import patch
 
 from wechat_diary_core.config import load_config
-from wechat_diary_core.weflow_automation.driver import DriverCommandError
+from wechat_diary_core.weflow_automation.driver import DriverCommandError, ElementNotFound
 from wechat_diary_core.weflow_automation.exporter import export_all_chats, export_moments_for, wait_for_export_tasks_idle
 
 
@@ -39,6 +39,9 @@ class FakeDriver:
 
     def wait_for_text_sequence(self, first: str, second: str, timeout: float = 60) -> None:
         self.calls.append(("wait_for_text_sequence", f"{first}->{second}", str(int(timeout))))
+
+    def wait_for_moments_contact_ready(self, username: str, timeout: float = 60) -> None:
+        self.calls.append(("wait_for_moments_contact_ready", username, str(int(timeout))))
 
     def ensure_selected(self, name: str, timeout: float = 60) -> None:
         self.calls.append(("ensure_selected", name, str(int(timeout))))
@@ -175,14 +178,16 @@ class ExporterTests(unittest.TestCase):
         self.assertEqual((result.commands[5].kind, result.commands[5].name), ("click", "查找联系人"))
         self.assertIn(("set_text", "查找联系人", "wxid_a"), driver.calls)
         self.assertIn(("set_text", "查找联系人", "wxid_b"), driver.calls)
-        self.assertGreaterEqual(driver.calls.count(("wait_for", "条", "30")), 2)
+        self.assertNotIn(("wait_for", "条", "30"), driver.calls)
+        self.assertGreaterEqual(driver.calls.count(("wait_for_moments_contact_ready", "wxid_a", "30")), 1)
+        self.assertGreaterEqual(driver.calls.count(("wait_for_moments_contact_ready", "wxid_b", "30")), 1)
         self.assertGreaterEqual(driver.calls.count(("click_after_anchor", "全选", "选择")), 2)
         self.assertIn(("ensure_action_available", "下载所选", "全选"), driver.calls)
         self.assertEqual(
             [(command.kind, command.name) for command in result.commands[-29:]],
             [
                 ("set_text", "查找联系人"),
-                ("wait_for", "条"),
+                ("wait_for_moments_contact_ready", "wxid_b"),
                 ("click_after_anchor", "全选"),
                 ("ensure_action_available", "下载所选"),
                 ("click", "下载所选"),
@@ -229,6 +234,23 @@ class ExporterTests(unittest.TestCase):
 
         self.assertIn("wait_for '朋友圈' timeout=30s failed: timed out", str(captured.exception))
         self.assertIn("wait_for '朋友圈' timeout=30s failed: timed out", captured.exception.detail)
+
+    def test_export_moments_wxid_contact_ready_failure_reports_username(self) -> None:
+        cfg, tmp = test_config()
+        self.addCleanup(tmp.cleanup)
+
+        class FailingDriver(FakeDriver):
+            def wait_for_moments_contact_ready(self, username: str, timeout: float = 60) -> None:
+                raise ElementNotFound(f"wxid {username!r} 在朋友圈联系人列表无匹配（搜索结果共 0 条）")
+
+        with self.assertRaises(DriverCommandError) as captured:
+            export_moments_for(["wxid_missing"], "2026-05-13", config=cfg, driver=FailingDriver())  # type: ignore[arg-type]
+
+        self.assertIn(
+            "wait_for_moments_contact_ready username 'wxid_missing' timeout=30s failed",
+            str(captured.exception),
+        )
+        self.assertIn("在朋友圈联系人列表无匹配", captured.exception.detail)
 
 
 if __name__ == "__main__":
