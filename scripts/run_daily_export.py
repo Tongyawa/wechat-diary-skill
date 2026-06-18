@@ -143,7 +143,8 @@ def main(argv: list[str] | None = None) -> int:
             _cleanup_weflow_after_failure(cfg)
         return 1
 
-    print("\nDaily export completed.")
+    completed_with_warnings = bool(result.partial_failures)
+    print("\nDaily export completed with warnings." if completed_with_warnings else "\nDaily export completed.")
     print(f"Day: {result.day}")
     print(f"Archive root: {result.rotation_target or 'none'}")
     print(f"Diary processed files: {len(result.diary_files)}")
@@ -153,13 +154,14 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Sidecar moments files: {len(result.sidecar_moment_files)}")
     for path in result.diary_files + result.self_moment_files + result.sidecar_chat_files + result.sidecar_moment_files:
         print(f"- {path}")
-    if result.partial_failures:
+    if completed_with_warnings:
         print(
             "[WARN] 本轮以下可选阶段失败、已跳过: "
             + ", ".join(result.partial_failures)
             + "。聊天 diary 已正常产出；这些朋友圈可在修复/WeFlow 空闲后单独补跑。",
             file=sys.stderr,
         )
+        return 1
     return 0
 
 

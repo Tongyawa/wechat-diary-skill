@@ -21,6 +21,7 @@ Write-Host "Running daily export from $Root"
 Write-Host "Log: $LogPath"
 
 $EmptySessionSkips = 0
+$CompletedWithWarnings = $false
 # Console whitelist: stages, results, warnings, errors and the first-run
 # wizard prompts. Everything (WeFlow/WCDB chatter included) still lands in
 # the runlog file above.
@@ -64,7 +65,7 @@ function ShouldShowDailyExportLine {
     return $true
   }
 
-  if ($Line -match '^(Daily export completed\.|Day:|Archive root:|Diary processed files:|Self moments files:|Sidecar chat files:|Sidecar moments files:)') {
+  if ($Line -match '^(Daily export completed( with warnings)?\.|Day:|Archive root:|Diary processed files:|Self moments files:|Sidecar chat files:|Sidecar moments files:)') {
     return $true
   }
 
@@ -82,6 +83,9 @@ $CommandLine = '"python" -u "{0}" 2>&1' -f $ScriptPath
 cmd /d /c $CommandLine | ForEach-Object {
   $Line = [string]$_
   Add-Content -LiteralPath $LogPath -Encoding UTF8 -Value $Line
+  if ($Line -match '^Daily export completed with warnings\.') {
+    $script:CompletedWithWarnings = $true
+  }
   if (ShouldShowDailyExportLine $Line) {
     Write-Host $Line
   }
@@ -94,6 +98,8 @@ if ($EmptySessionSkips -gt 0) {
 
 if ($ExitCode -eq 0) {
   Write-Host "Daily export finished successfully."
+} elseif ($CompletedWithWarnings) {
+  Write-Host "Daily export 完成但有警告：部分可选阶段失败（详见上方 [WARN] 与 runlog: $LogPath）。聊天 diary 已照常产出。"
 } else {
   Write-Host "Daily export failed. Check the full log: $LogPath"
 }

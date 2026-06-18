@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 from scripts.run_daily_export import (
     DailyExportDeps,
+    DailyExportResult,
     DailyExportStageError,
     ensure_local_config,
     main,
@@ -142,6 +143,10 @@ class DailyExportScriptTests(unittest.TestCase):
         self.assertIn("[stage] $EmptySessionSkips 个空会话跳过", script)
         # python runs unbuffered so stage progress streams live instead of dumping at exit
         self.assertIn('"python" -u', script)
+        # partial failure is a distinct third state: "完成但有警告" + exit 1, not "failed"
+        self.assertIn("CompletedWithWarnings", script)
+        self.assertIn("完成但有警告", script)
+        self.assertIn("Daily export completed( with warnings)?", script)
 
     def test_ensure_local_config_allows_empty_target_defaults(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -322,6 +327,33 @@ weflow_exe = "{(root / 'WeFlow.exe').as_posix()}"
         self.assertEqual(exit_code, 1)
         self.assertEqual(stop_calls, [90])
         self.assertIn("FAILED at stage: export_all_chats", buffer.getvalue())
+
+    def test_main_returns_1_with_warnings_on_partial_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = _write_config(root, target_users="")
+            partial_result = DailyExportResult(
+                day="2026-05-16",
+                rotation_target=None,
+                diary_files=[root / "diary.md"],
+                self_moment_files=[],
+                sidecar_chat_files=[],
+                sidecar_moment_files=[],
+                partial_failures=["export_self_moments"],
+            )
+
+            out, err = io.StringIO(), io.StringIO()
+            with (
+                patch("scripts.run_daily_export.run_daily_export", return_value=partial_result),
+                redirect_stdout(out),
+                redirect_stderr(err),
+            ):
+                exit_code = main(["--config", str(config_path), "--no-config-prompt"])
+
+        # partial = third state: non-zero exit + a distinct "with warnings" line.
+        self.assertEqual(exit_code, 1)
+        self.assertIn("Daily export completed with warnings.", out.getvalue())
+        self.assertIn("export_self_moments", err.getvalue())
 
     def test_runner_uses_target_usernames_when_voice_config_is_empty(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
