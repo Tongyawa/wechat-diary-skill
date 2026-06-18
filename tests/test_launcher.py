@@ -12,6 +12,7 @@ from wechat_diary_core.weflow_automation.launcher import (
     WeFlowLaunchTimeout,
     WeFlowSession,
     WeFlowWindow,
+    _find_weflow_window,
     assert_single_weflow_instance,
     build_launch_args,
     cdp_endpoint_url,
@@ -221,6 +222,33 @@ weflow_exe = "{exe.as_posix()}"
             windows = find_weflow_windows(process_image_name_func=image_name)
 
         self.assertEqual(windows, (WeFlowWindow(pid=200, image_name="WeFlow.exe", title="WeFlow"),))
+
+    def test_find_weflow_window_skips_non_weflow_titled_windows(self) -> None:
+        # normalize_weflow_window MoveWindow's whatever this returns; a title
+        # match alone would pick an Explorer "WeFlow-raw-exports" window and
+        # resize the user's file browser. Must return the real WeFlow.exe hwnd.
+        fake_user32 = FakeUser32(
+            [
+                (1, "WeFlow-raw-exports", 100, True),
+                (2, "WeFlow", 200, True),
+            ]
+        )
+
+        def image_name(pid: int) -> str | None:
+            return {100: "explorer.exe", 200: "WeFlow.exe"}.get(pid)
+
+        with (
+            patch("wechat_diary_core.weflow_automation.launcher.ctypes.windll", create=True) as windll,
+            patch(
+                "wechat_diary_core.weflow_automation.launcher.ctypes.WINFUNCTYPE",
+                create=True,
+                side_effect=lambda *_args: (lambda callback: callback),
+            ),
+        ):
+            windll.user32 = fake_user32
+            hwnd = _find_weflow_window(process_image_name_func=image_name)
+
+        self.assertEqual(hwnd, 2)
 
     def test_assert_single_weflow_instance_rejects_multiple_visible_weflow_processes(self) -> None:
         session = WeFlowSession(

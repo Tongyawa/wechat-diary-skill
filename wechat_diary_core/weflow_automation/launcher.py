@@ -316,10 +316,14 @@ def process_image_name(pid: int) -> str | None:
     return None
 
 
-def _find_weflow_window() -> int | None:
+def _find_weflow_window(
+    *,
+    process_image_name_func: Callable[[int], str | None] | None = None,
+) -> int | None:
     if not hasattr(ctypes, "windll"):
         return None
 
+    image_name_for_pid = process_image_name_func or process_image_name
     user32 = ctypes.windll.user32
     matches: list[int] = []
 
@@ -333,7 +337,19 @@ def _find_weflow_window() -> int | None:
             return True
         buffer = ctypes.create_unicode_buffer(title_length + 1)
         user32.GetWindowTextW(hwnd, buffer, title_length + 1)
-        if "WeFlow" in buffer.value:
+        if "WeFlow" not in buffer.value:
+            return True
+        # A title match alone collides with Explorer/editor windows browsing
+        # this project's own WeFlow-* folders; normalizing (MoveWindow) one of
+        # those would resize the user's file browser. Only accept the window
+        # whose owner process is actually WeFlow.exe (same guard as
+        # find_weflow_windows).
+        pid = ctypes.c_ulong()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if not pid.value:
+            return True
+        image_name = image_name_for_pid(int(pid.value))
+        if image_name and _is_weflow_process_image(image_name):
             matches.append(hwnd)
             return False
         return True
