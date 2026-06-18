@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -9,7 +10,14 @@ from typing import Iterable
 from ..config import Config, load_config
 from ..workspace import CleanupMode, RotationResult, rotate_export_workspace
 from .cdp_driver import CdpDriver
-from .driver import Driver, DriverCommand, DriverUnavailable, ExporterContext, run_driver_command
+from .driver import (
+    Driver,
+    DriverCommand,
+    DriverUnavailable,
+    ExporterContext,
+    describe_driver_command,
+    run_driver_command,
+)
 from .launcher import ensure_weflow_running
 
 
@@ -130,11 +138,50 @@ def _run_export(commands: Iterable[DriverCommand], config: Config, driver: Drive
     context = ExporterContext()
     try:
         for command in commands:
-            run_driver_command(active_driver, command, context=context)
+            try:
+                run_driver_command(active_driver, command, context=context)
+            except Exception:
+                # Dump the live dialog's interactive elements before the driver
+                # closes, so a GUI step failure (e.g. moments date-range 确认 not
+                # enabling) is diagnosable from the runlog instead of guesswork.
+                _dump_failure_diagnostics(active_driver, command)
+                raise
     finally:
         close = getattr(active_driver, "close", None)
         if own_driver and callable(close):
             close()
+
+
+def _dump_failure_diagnostics(driver: Driver, command: DriverCommand) -> None:
+    """Best-effort: log visible interactive elements after a failed command.
+
+    Lines are prefixed ``[weflow]`` so the PowerShell wrapper keeps them out of
+    the console but still writes them to the runlog. Never raises.
+    """
+    dump = getattr(driver, "visible_elements", None)
+    if not callable(dump):
+        return
+    try:
+        elements = dump()
+    except Exception as exc:  # diagnostics must never mask the real failure
+        print(f"[weflow] failure diagnostics unavailable: {exc}", file=sys.stderr)
+        return
+    print(f"[weflow] DUMP after failed command {describe_driver_command(command)}:", file=sys.stderr)
+    shown = 0
+    for element in elements:
+        if not isinstance(element, dict):
+            continue
+        text = str(element.get("text") or "").strip()
+        if not text:
+            continue
+        print(
+            f"[weflow]   tag={element.get('tag')} role={element.get('role')!r} "
+            f"enabled={element.get('enabled')} text={text!r}",
+            file=sys.stderr,
+        )
+        shown += 1
+    if shown == 0:
+        print("[weflow]   (no visible interactive elements captured)", file=sys.stderr)
 
 
 def _all_chats_commands(config: Config) -> list[DriverCommand]:

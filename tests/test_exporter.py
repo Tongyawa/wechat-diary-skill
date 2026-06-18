@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import io
 import tempfile
 import unittest
+from contextlib import redirect_stderr
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -251,6 +253,35 @@ class ExporterTests(unittest.TestCase):
             str(captured.exception),
         )
         self.assertIn("在朋友圈联系人列表无匹配", captured.exception.detail)
+
+    def test_failed_command_dumps_visible_elements_to_diagnostics(self) -> None:
+        cfg, tmp = test_config()
+        self.addCleanup(tmp.cleanup)
+
+        class DumpDriver(FakeDriver):
+            def wait_for_enabled(self, name: str, timeout: float = 60) -> None:
+                if name == "确认":
+                    raise ElementNotFound("timed out")
+                super().wait_for_enabled(name, timeout=timeout)
+
+            def visible_elements(self, limit: int = 200):
+                return [
+                    {"tag": "BUTTON", "role": "", "text": "确认", "enabled": False},
+                    {"tag": "DIV", "role": "button", "text": "昨天", "enabled": True},
+                ]
+
+        buffer = io.StringIO()
+        with patch("wechat_diary_core.weflow_automation.driver.confirm_native_dialog"):
+            with redirect_stderr(buffer):
+                with self.assertRaises(DriverCommandError):
+                    export_moments_for(["wxid_a"], "2026-05-13", config=cfg, driver=DumpDriver())  # type: ignore[arg-type]
+        err = buffer.getvalue()
+
+        # The failing step (确认) and its disabled state must be captured for diagnosis.
+        self.assertIn("[weflow] DUMP after failed command", err)
+        self.assertIn("wait_for_enabled '确认'", err)
+        self.assertIn("enabled=False", err)
+        self.assertIn("确认", err)
 
 
 class ConnectCdpRetryTests(unittest.TestCase):
