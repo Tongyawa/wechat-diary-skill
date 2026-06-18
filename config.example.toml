@@ -30,6 +30,7 @@ driver = "cdp"
 weflow_exe = "C:/Path/To/WeFlow.exe"
 launch_timeout_sec = 90
 poll_export_interval_sec = 60             # task-center polling cadence (WeFlow exports take minutes)
+cdp_busy_timeout_sec = 300                # keep retrying :9222 while a busy WeFlow is briefly unresponsive (busy != dead)
 
 # Window normalization applied every session entry, regardless of driver.
 window_geometry = { width = 1280, height = 900 }

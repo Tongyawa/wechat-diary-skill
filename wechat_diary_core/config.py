@@ -23,6 +23,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "weflow_exe": "C:/Path/To/WeFlow.exe",
         "launch_timeout_sec": 90,
         "poll_export_interval_sec": 60,
+        # How long to keep retrying the CDP endpoint when WeFlow's process is
+        # alive but momentarily unresponsive (heavy background export / the
+        # InsightService silent-contact scan pegs the main process so :9222
+        # stops answering). Generous on purpose: WeFlow is busy, not dead.
+        "cdp_busy_timeout_sec": 300,
         "window_geometry": {"width": 1280, "height": 900},
         "electron_accessibility_flag": "--force-renderer-accessibility",
         "electron_cdp_port": 9222,
@@ -101,6 +106,7 @@ class AutomationConfig:
     weflow_exe: Path
     launch_timeout_sec: float
     poll_export_interval_sec: float
+    cdp_busy_timeout_sec: float
     window_geometry: WindowGeometry
     electron_accessibility_flag: str
     electron_cdp_port: int
@@ -214,6 +220,7 @@ def _build_config(raw: dict[str, Any], base_dir: Path) -> Config:
             weflow_exe=_resolve_path(base_dir, automation["weflow_exe"]),
             launch_timeout_sec=float(automation["launch_timeout_sec"]),
             poll_export_interval_sec=float(automation["poll_export_interval_sec"]),
+            cdp_busy_timeout_sec=float(automation["cdp_busy_timeout_sec"]),
             window_geometry=WindowGeometry(
                 width=int(geometry["width"]),
                 height=int(geometry["height"]),

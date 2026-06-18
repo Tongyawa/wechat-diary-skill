@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -93,7 +94,7 @@ def create_driver(config: Config | None = None) -> Driver:
     if cfg.automation.driver == "cdp":
         if not session.cdp_endpoint:
             raise DriverUnavailable("CDP endpoint was not available after launching WeFlow.")
-        return CdpDriver.connect(session.cdp_endpoint)
+        return _connect_cdp_with_retry(session.cdp_endpoint, cfg.automation.cdp_busy_timeout_sec)
     if cfg.automation.driver == "uia":
         from .uia_driver import UiaDriver
 
@@ -103,6 +104,24 @@ def create_driver(config: Config | None = None) -> Driver:
 
         return TemplateDriver()
     raise DriverUnavailable(f"Unsupported driver: {cfg.automation.driver}")
+
+
+def _connect_cdp_with_retry(endpoint: str, timeout: float, *, poll_interval: float = 1.0) -> CdpDriver:
+    """Connect to CDP, retrying while WeFlow is briefly unresponsive.
+
+    ``CdpDriver.connect`` -> ``fetch_cdp_targets`` can time out (raising
+    ``DriverUnavailable``) when WeFlow's main process is pegged by background
+    work even though it is alive and will recover. Retry over a generous window
+    instead of failing on the first timeout; always makes at least one attempt.
+    """
+    deadline = time.monotonic() + max(0.0, timeout)
+    while True:
+        try:
+            return CdpDriver.connect(endpoint)
+        except DriverUnavailable:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(poll_interval)
 
 
 def _run_export(commands: Iterable[DriverCommand], config: Config, driver: Driver | None = None) -> None:

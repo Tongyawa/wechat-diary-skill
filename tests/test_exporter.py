@@ -253,5 +253,30 @@ class ExporterTests(unittest.TestCase):
         self.assertIn("在朋友圈联系人列表无匹配", captured.exception.detail)
 
 
+class ConnectCdpRetryTests(unittest.TestCase):
+    def test_retries_cdp_connect_while_weflow_busy_then_succeeds(self) -> None:
+        from wechat_diary_core.weflow_automation import exporter
+        from wechat_diary_core.weflow_automation.driver import DriverUnavailable
+
+        sentinel = object()
+        attempts = [DriverUnavailable("busy"), DriverUnavailable("busy"), sentinel]
+        with patch.object(exporter.CdpDriver, "connect", side_effect=attempts) as connect:
+            result = exporter._connect_cdp_with_retry("http://127.0.0.1:9222", timeout=5, poll_interval=0)
+
+        self.assertIs(result, sentinel)
+        self.assertEqual(connect.call_count, 3)
+
+    def test_gives_up_after_busy_timeout(self) -> None:
+        from wechat_diary_core.weflow_automation import exporter
+        from wechat_diary_core.weflow_automation.driver import DriverUnavailable
+
+        with patch.object(exporter.CdpDriver, "connect", side_effect=DriverUnavailable("busy")) as connect:
+            with self.assertRaises(DriverUnavailable):
+                exporter._connect_cdp_with_retry("http://127.0.0.1:9222", timeout=0, poll_interval=0)
+
+        # At least one attempt even with a zero-length window.
+        self.assertGreaterEqual(connect.call_count, 1)
+
+
 if __name__ == "__main__":
     unittest.main()

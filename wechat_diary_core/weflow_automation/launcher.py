@@ -53,26 +53,24 @@ def ensure_weflow_running(config: Config | None = None) -> WeFlowSession:
     endpoint = cdp_endpoint_url(automation.electron_cdp_port)
 
     if automation.driver == "cdp" and is_cdp_available(endpoint):
-        normalized = normalize_weflow_window(automation.window_geometry)
-        windows = find_weflow_windows()
-        _raise_if_multiple_windows(windows)
-        window_pids = _window_process_ids(windows)
-        return WeFlowSession(
-            "cdp",
-            endpoint,
-            process_started=False,
-            process_id=None,
-            window_normalized=normalized,
-            window_process_ids=window_pids,
-        )
+        return _running_cdp_session(automation, endpoint)
 
     process_started = False
     process_id: int | None = None
     process_running = is_weflow_process_running()
     if automation.driver == "cdp" and process_running:
+        # WeFlow's process is alive but the quick CDP probe failed. In a daily
+        # run this is almost always WeFlow being busy — heavy background export,
+        # or the InsightService silent-contact scan pegging the main process so
+        # the :9222 HTTP endpoint stops answering — NOT a second instance opened
+        # without the debugging flag. Wait patiently for CDP to recover before
+        # giving up: busy != dead (the engine keeps making progress).
+        if wait_for_cdp(endpoint, timeout=automation.cdp_busy_timeout_sec):
+            return _running_cdp_session(automation, endpoint)
         raise WeFlowLaunchTimeout(
-            f"WeFlow is already running, but CDP is unavailable at {endpoint}. "
-            "Close WeFlow completely and retry so automation does not start a second instance."
+            f"WeFlow is running but CDP stayed unavailable at {endpoint} after waiting "
+            f"{automation.cdp_busy_timeout_sec:g}s. If WeFlow was opened without the CDP flag, "
+            "close it completely and retry."
         )
     if automation.driver == "cdp" or not process_running:
         process = launch_weflow(automation, log_path=weflow_log_path(cfg))
@@ -97,6 +95,22 @@ def ensure_weflow_running(config: Config | None = None) -> WeFlowSession:
         cdp_endpoint=endpoint if automation.driver == "cdp" else None,
         process_started=process_started,
         process_id=process_id,
+        window_normalized=normalized,
+        window_process_ids=window_pids,
+    )
+
+
+def _running_cdp_session(automation: AutomationConfig, endpoint: str) -> WeFlowSession:
+    """Build a session for an already-running CDP WeFlow (no relaunch)."""
+    normalized = normalize_weflow_window(automation.window_geometry)
+    windows = find_weflow_windows()
+    _raise_if_multiple_windows(windows)
+    window_pids = _window_process_ids(windows)
+    return WeFlowSession(
+        "cdp",
+        endpoint,
+        process_started=False,
+        process_id=None,
         window_normalized=normalized,
         window_process_ids=window_pids,
     )

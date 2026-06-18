@@ -159,6 +159,7 @@ weflow_exe = "{exe.as_posix()}"
 driver = "cdp"
 weflow_exe = "{exe.as_posix()}"
 electron_cdp_port = 9333
+cdp_busy_timeout_sec = 0
 """.strip(),
                 encoding="utf-8",
             )
@@ -172,6 +173,44 @@ electron_cdp_port = 9333
                 with self.assertRaises(WeFlowLaunchTimeout):
                     ensure_weflow_running(cfg)
 
+        launch.assert_not_called()
+
+    def test_cdp_busy_then_recovers_returns_session_without_relaunch(self) -> None:
+        # WeFlow's process is alive but CDP is momentarily unresponsive (busy),
+        # then recovers within cdp_busy_timeout_sec. Must wait it out and reuse
+        # the running instance instead of declaring a second-instance failure.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            exe = root / "WeFlow.exe"
+            exe.write_text("", encoding="utf-8")
+            config_path = root / "config.toml"
+            config_path.write_text(
+                f"""
+[automation]
+driver = "cdp"
+weflow_exe = "{exe.as_posix()}"
+electron_cdp_port = 9333
+cdp_busy_timeout_sec = 5
+""".strip(),
+                encoding="utf-8",
+            )
+            cfg = load_config(config_path)
+
+            # 1st False = fast-path probe; 2nd False then True = busy-wait loop recovering.
+            with (
+                patch(
+                    "wechat_diary_core.weflow_automation.launcher.is_cdp_available",
+                    side_effect=[False, False, True],
+                ),
+                patch("wechat_diary_core.weflow_automation.launcher.is_weflow_process_running", return_value=True),
+                patch("wechat_diary_core.weflow_automation.launcher.launch_weflow") as launch,
+                patch("wechat_diary_core.weflow_automation.launcher.normalize_weflow_window", return_value=True),
+                patch("wechat_diary_core.weflow_automation.launcher.find_weflow_windows", return_value=()),
+            ):
+                session = ensure_weflow_running(cfg)
+
+        self.assertFalse(session.process_started)
+        self.assertEqual(session.cdp_endpoint, "http://127.0.0.1:9333")
         launch.assert_not_called()
 
     def test_restart_weflow_requires_all_old_processes_to_exit(self) -> None:
