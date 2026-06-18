@@ -308,6 +308,26 @@ class ConnectCdpRetryTests(unittest.TestCase):
         # At least one attempt even with a zero-length window.
         self.assertGreaterEqual(connect.call_count, 1)
 
+    def test_passes_busy_budget_as_per_evaluate_ws_timeout(self) -> None:
+        # The busy budget must also become the per-evaluate socket timeout so a
+        # transient renderer freeze waits itself out instead of failing a step.
+        from wechat_diary_core.weflow_automation import exporter
+
+        sentinel = object()
+        with patch.object(exporter.CdpDriver, "connect", return_value=sentinel) as connect:
+            exporter._connect_cdp_with_retry("http://127.0.0.1:9222", timeout=120, poll_interval=0)
+        self.assertEqual(connect.call_args.kwargs.get("ws_timeout"), 120)
+
+    def test_ws_timeout_floored_at_ten_seconds(self) -> None:
+        # A tiny configured busy budget must not shrink the evaluate timeout below
+        # the original 10s, or normal (responsive) polls could start timing out.
+        from wechat_diary_core.weflow_automation import exporter
+
+        sentinel = object()
+        with patch.object(exporter.CdpDriver, "connect", return_value=sentinel) as connect:
+            exporter._connect_cdp_with_retry("http://127.0.0.1:9222", timeout=0, poll_interval=0)
+        self.assertEqual(connect.call_args.kwargs.get("ws_timeout"), 10.0)
+
 
 if __name__ == "__main__":
     unittest.main()

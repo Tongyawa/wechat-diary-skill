@@ -284,5 +284,27 @@ class CdpDriverTests(unittest.TestCase):
         self.assertEqual(len(rows), 2)
 
 
+class CdpConnectWsTimeoutTests(unittest.TestCase):
+    def test_connect_forwards_ws_timeout_to_socket(self) -> None:
+        # A transient WeFlow renderer freeze must not abort a GUI step: the
+        # per-message socket timeout has to ride it out, so ws_timeout must reach
+        # the websocket layer rather than defaulting to the 10s floor.
+        from unittest.mock import patch
+
+        from wechat_diary_core.weflow_automation import cdp_driver
+
+        target = cdp_driver.CdpTarget(
+            id="home", title="WeFlow", url="#/home", websocket_url="ws://127.0.0.1/home"
+        )
+        with patch.object(cdp_driver, "fetch_cdp_targets", return_value=[]), patch.object(
+            cdp_driver, "select_page_target", return_value=target
+        ), patch.object(cdp_driver.CdpConnection, "connect") as connect:
+            connect.return_value = FakeConnection()
+
+            cdp_driver.CdpDriver.connect("http://127.0.0.1:9222", ws_timeout=180)
+
+        self.assertEqual(connect.call_args.kwargs.get("timeout"), 180)
+
+
 if __name__ == "__main__":
     unittest.main()

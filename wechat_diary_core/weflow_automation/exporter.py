@@ -117,15 +117,23 @@ def create_driver(config: Config | None = None) -> Driver:
 def _connect_cdp_with_retry(endpoint: str, timeout: float, *, poll_interval: float = 1.0) -> CdpDriver:
     """Connect to CDP, retrying while WeFlow is briefly unresponsive.
 
-    ``CdpDriver.connect`` -> ``fetch_cdp_targets`` can time out (raising
-    ``DriverUnavailable``) when WeFlow's main process is pegged by background
-    work even though it is alive and will recover. Retry over a generous window
-    instead of failing on the first timeout; always makes at least one attempt.
+    Two layers of the same "busy != dead" tolerance, both budgeted by
+    ``timeout`` (= ``automation.cdp_busy_timeout_sec``):
+
+    - *Connect layer*: ``CdpDriver.connect`` -> ``fetch_cdp_targets`` can raise
+      ``DriverUnavailable`` when WeFlow is pegged at connect time. Retry over the
+      window instead of failing on the first miss; always one attempt minimum.
+    - *Per-evaluate layer*: ``ws_timeout`` makes each subsequent
+      ``Runtime.evaluate`` wait out a transient renderer freeze rather than
+      aborting the GUI step with a 10s ``socket.timeout`` (the moments
+      date-range dialog failures). Floor of 10s keeps the prior behaviour when
+      the busy budget is configured very low.
     """
     deadline = time.monotonic() + max(0.0, timeout)
+    ws_timeout = max(10.0, timeout)
     while True:
         try:
-            return CdpDriver.connect(endpoint)
+            return CdpDriver.connect(endpoint, ws_timeout=ws_timeout)
         except DriverUnavailable:
             if time.monotonic() >= deadline:
                 raise

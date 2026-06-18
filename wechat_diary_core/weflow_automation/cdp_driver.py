@@ -179,11 +179,21 @@ class CdpDriver(Driver):
         self.connection.send("Page.bringToFront")
 
     @classmethod
-    def connect(cls, endpoint: str) -> "CdpDriver":
+    def connect(cls, endpoint: str, *, ws_timeout: float = 10) -> "CdpDriver":
+        """Connect to WeFlow's CDP page target.
+
+        ``ws_timeout`` is the per-message socket timeout: it bounds how long a
+        single ``Runtime.evaluate`` round-trip may block. WeFlow's renderer is
+        single-threaded, so when its JS thread is momentarily pegged (busy, not
+        dead) an evaluate can't reply until the thread frees up. A small timeout
+        here turns that transient freeze into a hard ``socket.timeout`` that
+        aborts the whole GUI step; a generous one simply waits the freeze out and
+        the queued evaluate replies the instant the renderer recovers.
+        """
         target = select_page_target(fetch_cdp_targets(endpoint))
         if target is None:
             raise DriverUnavailable("No usable WeFlow page target was exposed by CDP.")
-        return cls(CdpConnection.connect(target.websocket_url))
+        return cls(CdpConnection.connect(target.websocket_url, timeout=max(1.0, ws_timeout)))
 
     def click_by_name(self, name: str, retries: int = 3) -> None:
         last_result: Any = None

@@ -23,10 +23,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "weflow_exe": "C:/Path/To/WeFlow.exe",
         "launch_timeout_sec": 90,
         "poll_export_interval_sec": 60,
-        # How long to keep retrying the CDP endpoint when WeFlow's process is
-        # alive but momentarily unresponsive (heavy background export / the
-        # InsightService silent-contact scan pegs the main process so :9222
-        # stops answering). Generous on purpose: WeFlow is busy, not dead.
+        # How long to tolerate an alive-but-unresponsive WeFlow (heavy background
+        # export / the InsightService silent-contact scan pegs the single-threaded
+        # renderer). Used twice: (1) keep retrying :9222 at connect time, and
+        # (2) as the per-evaluate socket timeout so a transient renderer freeze
+        # waits itself out instead of aborting a GUI step with a 10s socket
+        # timeout (the moments date-range dialog failures). Generous on purpose:
+        # WeFlow is busy, not dead.
         "cdp_busy_timeout_sec": 300,
         "window_geometry": {"width": 1280, "height": 900},
         "electron_accessibility_flag": "--force-renderer-accessibility",
