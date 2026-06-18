@@ -423,6 +423,71 @@ weflow_exe = "{(root / 'WeFlow.exe').as_posix()}"
         self.assertIn(("archive_moments", ("Self",), "朋友圈_自己", True), calls)
         self.assertEqual(result.self_moment_files, [root / "self-moments.md"])
 
+    def test_self_moments_failure_does_not_abort_chat_diary(self) -> None:
+        # A sidecar moments failure (e.g. WeFlow busy / CDP slow) must not throw
+        # away the chat diary, which is the primary output. self fails, target +
+        # diary still complete; the failure is recorded and warned, not raised.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = load_config(_write_config(root, target_users='"Target"', self_users='"Self"'))
+            calls: list[tuple] = []
+
+            def export_moments(usernames, date, config):
+                calls.append(("moments", tuple(usernames)))
+                if tuple(usernames) == ("Self",):
+                    raise RuntimeError("CDP busy: timed out")
+
+            deps = DailyExportDeps(
+                stop_weflow_processes=lambda timeout: None,
+                rotate_export_workspace=lambda cfg, label, mode: SimpleNamespace(target=root / "run"),
+                ensure_weflow_running=lambda cfg: SimpleNamespace(cdp_endpoint="http://127.0.0.1:9222"),
+                wait_for_ready_page=lambda endpoint: None,
+                wait_for_raw_exports_stable=lambda raw_path, min_files: None,
+                batch_transcribe_voices_for=lambda usernames, config: None,
+                run_voice_fallback_script=lambda script_path, config: None,
+                export_all_chats=lambda date, config, cleanup: None,
+                export_moments_for=export_moments,
+                wait_for_export_tasks_idle=lambda config, title_contains: None,
+                archive=lambda raw_path, config, clear_first: calls.append(("archive",)) or [root / "diary.md"],
+                archive_chats_for=lambda usernames, config, subroot, image_mode, clear_first: calls.append(
+                    ("sidecar_chats",)
+                )
+                or [root / "chats.md"],
+                archive_moments_for=lambda usernames, config, subroot, clear_first: calls.append(
+                    ("archive_moments", tuple(usernames))
+                )
+                or [root / "m.md"],
+            )
+
+            buffer = io.StringIO()
+            with redirect_stderr(buffer):
+                result = run_daily_export(cfg, deps=deps, day=date(2026, 5, 16))
+            err = buffer.getvalue()
+
+        # primary diary still produced
+        self.assertIn(("archive",), calls)
+        self.assertEqual(result.diary_files, [root / "diary.md"])
+        # target moments succeeded -> archived; self failed -> archive skipped
+        self.assertIn(("archive_moments", ("Target",)), calls)
+        self.assertNotIn(("archive_moments", ("Self",)), calls)
+        self.assertEqual(result.self_moment_files, [])
+        # failure recorded + warned, not raised
+        self.assertIn("export_self_moments", result.partial_failures)
+        self.assertIn("[WARN]", err)
+
+    def test_clean_run_has_no_partial_failures(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = load_config(_write_config(root, target_users="", self_users='"Self"'))
+            deps = _quiet_deps(root)
+            deps.archive = lambda raw_path, config, clear_first: [root / "diary.md"]
+            deps.archive_moments_for = lambda usernames, config, subroot, clear_first: [root / "self.md"]
+
+            result = run_daily_export(cfg, deps=deps, day=date(2026, 5, 16))
+
+        self.assertEqual(result.partial_failures, [])
+        self.assertEqual(result.self_moment_files, [root / "self.md"])
+
     def test_runner_warns_loudly_when_self_moments_unconfigured(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

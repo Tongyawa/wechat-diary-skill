@@ -9,7 +9,7 @@ import subprocess
 import sys
 import time
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
@@ -47,6 +47,9 @@ class DailyExportResult:
     self_moment_files: list[Path]
     sidecar_chat_files: list[Path]
     sidecar_moment_files: list[Path]
+    # Non-critical (sidecar moments) stages that failed but did not abort the
+    # chat diary. Empty = clean run.
+    partial_failures: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -150,6 +153,13 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Sidecar moments files: {len(result.sidecar_moment_files)}")
     for path in result.diary_files + result.self_moment_files + result.sidecar_chat_files + result.sidecar_moment_files:
         print(f"- {path}")
+    if result.partial_failures:
+        print(
+            "[WARN] 本轮以下可选阶段失败、已跳过: "
+            + ", ".join(result.partial_failures)
+            + "。聊天 diary 已正常产出；这些朋友圈可在修复/WeFlow 空闲后单独补跑。",
+            file=sys.stderr,
+        )
     return 0
 
 
@@ -294,37 +304,51 @@ def run_daily_export(
         "wait_raw_exports_stable",
         lambda: active_deps.wait_for_raw_exports_stable(cfg.paths.raw, min_files=1),
     )
+    # Moments are sidecar/supplementary: a failure here (e.g. WeFlow still busy
+    # and CDP slow) must NOT abort the chat diary, which is the primary output.
+    # Isolate each moments export and gate its dependent archive step.
+    moments_failures: list[str] = []
+    moments_gate_ok = True
     if (target_usernames or self_moments_usernames) and endpoint:
-        _run_weflow_stage(
+        moments_gate_ok = _try_weflow_stage(
             "wait_weflow_tasks_idle_before_moments",
             lambda: active_deps.wait_for_export_tasks_idle(config=cfg, title_contains="自动化导出"),
             deps=active_deps,
             session=session,
+            failures=moments_failures,
         )
+
+    target_moments_ok = False
     if target_usernames:
-        _run_weflow_stage(
-            "export_target_moments",
-            lambda: active_deps.export_moments_for(target_usernames, date=export_day, config=cfg),
-            deps=active_deps,
-            session=session,
-        )
-        _run_stage(
-            "wait_raw_exports_stable_after_moments",
-            lambda: active_deps.wait_for_raw_exports_stable(cfg.paths.raw, min_files=1),
-        )
+        if moments_gate_ok:
+            target_moments_ok = _run_moments_stage(
+                "export_target_moments",
+                lambda: active_deps.export_moments_for(target_usernames, date=export_day, config=cfg),
+                "wait_raw_exports_stable_after_moments",
+                lambda: active_deps.wait_for_raw_exports_stable(cfg.paths.raw, min_files=1),
+                deps=active_deps,
+                session=session,
+                failures=moments_failures,
+            )
+        else:
+            print("export_target_moments skipped: moments idle-gate failed.")
     else:
         print("export_target_moments skipped: no target sidecar contacts.")
+
+    self_moments_ok = False
     if self_moments_usernames:
-        _run_weflow_stage(
-            "export_self_moments",
-            lambda: active_deps.export_moments_for(self_moments_usernames, date=export_day, config=cfg),
-            deps=active_deps,
-            session=session,
-        )
-        _run_stage(
-            "wait_raw_exports_stable_after_self_moments",
-            lambda: active_deps.wait_for_raw_exports_stable(cfg.paths.raw, min_files=1),
-        )
+        if moments_gate_ok:
+            self_moments_ok = _run_moments_stage(
+                "export_self_moments",
+                lambda: active_deps.export_moments_for(self_moments_usernames, date=export_day, config=cfg),
+                "wait_raw_exports_stable_after_self_moments",
+                lambda: active_deps.wait_for_raw_exports_stable(cfg.paths.raw, min_files=1),
+                deps=active_deps,
+                session=session,
+                failures=moments_failures,
+            )
+        else:
+            print("export_self_moments skipped: moments idle-gate failed.")
     else:
         print("export_self_moments skipped: no configured self moments contacts.")
 
@@ -342,7 +366,7 @@ def run_daily_export(
             lambda: active_deps.archive(cfg.paths.raw, config=cfg, clear_first=True),
         )
         self_moment_files = []
-        if self_moments_usernames:
+        if self_moments_usernames and self_moments_ok:
             self_moment_files = _run_stage(
                 "archive_self_moments",
                 lambda: active_deps.archive_moments_for(
@@ -352,11 +376,15 @@ def run_daily_export(
                     clear_first=True,
                 ),
             )
+        elif self_moments_usernames:
+            print("archive_self_moments skipped: export_self_moments did not complete.")
 
         subroot = _normalize_subroot(cfg.daily_export.target_processed_subroot)
         sidecar_chat_files = []
         sidecar_moment_files = []
         if target_usernames:
+            # target chats come from export_all_chats (not the moments export),
+            # so they archive regardless of whether target moments succeeded.
             sidecar_chat_files = _run_stage(
                 "archive_target_chats",
                 lambda: active_deps.archive_chats_for(
@@ -367,21 +395,25 @@ def run_daily_export(
                     clear_first=True,
                 ),
             )
-            sidecar_moment_files = _run_stage(
-                "archive_target_moments",
-                lambda: active_deps.archive_moments_for(
-                    target_usernames,
-                    config=cfg,
-                    subroot=f"{subroot}/moments",
-                    clear_first=True,
-                ),
-            )
+            if target_moments_ok:
+                sidecar_moment_files = _run_stage(
+                    "archive_target_moments",
+                    lambda: active_deps.archive_moments_for(
+                        target_usernames,
+                        config=cfg,
+                        subroot=f"{subroot}/moments",
+                        clear_first=True,
+                    ),
+                )
+            else:
+                print("archive_target_moments skipped: export_target_moments did not complete.")
 
     return DailyExportResult(
         day=day_iso,
         rotation_target=getattr(rotation, "target", None),
         diary_files=list(diary_files),
         self_moment_files=list(self_moment_files),
+        partial_failures=list(moments_failures),
         sidecar_chat_files=list(sidecar_chat_files),
         sidecar_moment_files=list(sidecar_moment_files),
     )
@@ -536,6 +568,63 @@ def _run_weflow_stage(
     result = _run_stage(stage, action)
     _assert_single_weflow_instance(deps, session, f"{stage}:after")
     return result
+
+
+def _try_weflow_stage(
+    stage: str,
+    action: Callable[[], Any],
+    *,
+    deps: DailyExportDeps,
+    session: Any,
+    failures: list[str],
+) -> bool:
+    """Run a non-critical WeFlow stage; on failure record + warn and continue.
+
+    Moments exports are sidecar/supplementary — a failure here (e.g. WeFlow busy
+    and CDP slow) must not abort the chat diary, the primary output. Returns True
+    only on success so the caller can gate its dependent archive step.
+    """
+    try:
+        _run_weflow_stage(stage, action, deps=deps, session=session)
+        return True
+    except DailyExportStageError as exc:
+        failures.append(exc.stage)
+        print(
+            f"[WARN] 阶段 {exc.stage} 失败，已跳过（聊天 diary 不受影响）。原因: {exc.cause}",
+            file=sys.stderr,
+        )
+        detail = _stage_error_detail(exc.cause)
+        if detail:
+            print(f"[WARN] DETAIL: {detail}", file=sys.stderr)
+        return False
+
+
+def _run_moments_stage(
+    export_stage: str,
+    export_action: Callable[[], Any],
+    settle_stage: str,
+    settle_action: Callable[[], Any],
+    *,
+    deps: DailyExportDeps,
+    session: Any,
+    failures: list[str],
+) -> bool:
+    """Export a sidecar moments set with failure isolation.
+
+    Returns True only if the export itself succeeded (caller gates the archive
+    step on this). Once the export succeeds, the post-export settle wait is
+    best-effort: a slow settle must not throw away an export that completed.
+    """
+    if not _try_weflow_stage(export_stage, export_action, deps=deps, session=session, failures=failures):
+        return False
+    try:
+        _run_stage(settle_stage, settle_action)
+    except DailyExportStageError as exc:
+        print(
+            f"[WARN] {exc.stage} 未在限时内稳定（{export_stage} 已完成，继续处理）。原因: {exc.cause}",
+            file=sys.stderr,
+        )
+    return True
 
 
 def _stop_weflow_or_raise(deps: DailyExportDeps, *, timeout: float) -> None:
