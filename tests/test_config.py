@@ -27,6 +27,7 @@ raw = "raw"
         self.assertEqual(cfg.automation.driver, "uia")
         self.assertTrue(str(cfg.paths.raw).endswith("raw"))
         self.assertEqual(cfg.paths.processed.name, "WeFlow-processed-exports")
+        self.assertTrue(cfg.preprocessing.group_context_window.enabled)
         self.assertEqual(cfg.preprocessing.group_context_window.messages_before, 3)
         self.assertEqual(cfg.preprocessing.group_context_window.messages_after, 5)
         self.assertEqual(cfg.preprocessing.group_context_window.time_window_minutes, 15)
@@ -63,6 +64,21 @@ restart_weflow = false
         self.assertEqual(cfg.daily_export.target_processed_subroot, "_sidecar")
         self.assertEqual(cfg.daily_export.cleanup_mode, "delete")
         self.assertFalse(cfg.daily_export.restart_weflow)
+
+    def test_load_config_can_disable_group_context_filtering(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.toml"
+            config_path.write_text(
+                """
+[preprocessing.group_context_window]
+enabled = false
+""".strip(),
+                encoding="utf-8",
+            )
+
+            cfg = load_config(config_path)
+
+        self.assertFalse(cfg.preprocessing.group_context_window.enabled)
 
     def test_load_config_treats_explicit_empty_self_moments_as_configured(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

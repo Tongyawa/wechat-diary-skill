@@ -62,6 +62,7 @@ image_ocr_max_inline_chars = 80
 # messages, messages quoting the user, messages quoted by the user, and optional
 # literal alias/nickname hits from `anchor_keywords`.
 # Window = K-before + K-after messages, plus a time bound. Overlapping windows merge.
+enabled = true                            # false keeps the complete group-chat message stream
 messages_before = 3
 messages_after = 5
 time_window_minutes = 15                  # extra time-based bound; whichever is wider wins

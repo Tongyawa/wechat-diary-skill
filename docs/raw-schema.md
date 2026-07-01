@@ -53,7 +53,7 @@
 | `nickname` | string | 是 | 会话昵称；目标会话过滤候选。 | validator 报错；过去会少一个匹配候选。 |
 | `remark` | string | 是 | 会话备注；目标会话过滤候选，可为空字符串。 | validator 报错；过去会少一个匹配候选。 |
 | `displayName` | string | 是 | 会话显示名；目标会话过滤候选。 | validator 报错；过去会少一个匹配候选。 |
-| `type` | string | 是 | 会话类型，如 `私聊`、`群聊`；群聊会触发上下文窗口过滤。 | validator 报错；过去会跳过群聊上下文过滤。 |
+| `type` | string | 是 | 会话类型，如 `私聊`、`群聊`；群聊在 `group_context_window.enabled = true` 时触发上下文窗口过滤。 | validator 报错；过去会跳过群聊上下文过滤。 |
 | `username` | string | 否 | 旧样本或适配器可提供的别名；目标会话过滤候选。 | 少一个匹配候选。 |
 | `messageCount` | integer | 否 | 导出时消息数；preprocessing 后会重写为清洗后的消息数。 | 忽略，之后由 preprocessing 写回。 |
 | `avatar` / `lastTimestamp` | string/integer | 否 | WeFlow 元数据。当前下游不读取。 | 忽略。 |

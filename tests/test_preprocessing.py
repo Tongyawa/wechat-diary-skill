@@ -116,6 +116,55 @@ class PreprocessingTests(unittest.TestCase):
         self.assertNotIn('"A" 拍了拍 "B"', json.dumps(messages, ensure_ascii=False))
         self.assertEqual(messages[5]["content"], '"A" 拍了拍 "Self"')
 
+    def test_group_context_window_toggle_gates_unrelated_messages(self) -> None:
+        """默认开启时过滤掉窗口外的无关群聊消息；关闭开关后同一消息保留。
+
+        far_marker 位于自我锚点（localId 5）的计数窗口（messages_before=3）
+        与时间窗口（15 分钟）之外，因此只有开关状态能决定它去留——
+        这样才真正判别 group_context_window.enabled，而非落在锚点窗口内。
+        """
+        far_marker = "far-unrelated-marker"
+        messages = [
+            {"localId": 0, "createTime": 0, "formattedTime": "2026-05-13 00:00:00", "type": "文本消息", "content": far_marker, "source": "", "isSend": 0, "senderUsername": "x", "senderDisplayName": "X", "platformMessageId": "q0"},
+            {"localId": 1, "createTime": 100000, "formattedTime": "2026-05-14 03:46:40", "type": "文本消息", "content": "filler1", "source": "", "isSend": 0, "senderUsername": "a", "senderDisplayName": "A", "platformMessageId": "q1"},
+            {"localId": 2, "createTime": 100010, "formattedTime": "2026-05-14 03:46:50", "type": "文本消息", "content": "filler2", "source": "", "isSend": 0, "senderUsername": "b", "senderDisplayName": "B", "platformMessageId": "q2"},
+            {"localId": 3, "createTime": 100020, "formattedTime": "2026-05-14 03:47:00", "type": "文本消息", "content": "filler3", "source": "", "isSend": 0, "senderUsername": "c", "senderDisplayName": "C", "platformMessageId": "q3"},
+            {"localId": 4, "createTime": 100030, "formattedTime": "2026-05-14 03:47:10", "type": "文本消息", "content": "filler4", "source": "", "isSend": 0, "senderUsername": "d", "senderDisplayName": "D", "platformMessageId": "q4"},
+            {"localId": 5, "createTime": 100040, "formattedTime": "2026-05-14 03:47:20", "type": "文本消息", "content": "mine", "source": "", "isSend": 1, "senderUsername": "me", "senderDisplayName": "Self", "platformMessageId": "q5"},
+            {"localId": 6, "createTime": 100050, "formattedTime": "2026-05-14 03:47:30", "type": "文本消息", "content": "after", "source": "", "isSend": 0, "senderUsername": "a", "senderDisplayName": "A", "platformMessageId": "q6"},
+        ]
+
+        def far_marker_survives(enabled: bool) -> bool:
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                export_path = root / "Chat_20260514" / "Chat_20260514.json"
+                export_path.parent.mkdir(parents=True)
+                export_path.write_text(
+                    json.dumps(
+                        {
+                            "weflow": {},
+                            "session": {"wxid": "room", "nickname": "Group", "remark": "", "displayName": "Group", "type": "群聊", "messageCount": len(messages)},
+                            "messages": messages,
+                        },
+                        ensure_ascii=False,
+                    ),
+                    encoding="utf-8",
+                )
+                config_path = root / "config.toml"
+                config_path.write_text(
+                    f"[preprocessing.group_context_window]\nenabled = {'true' if enabled else 'false'}\n",
+                    encoding="utf-8",
+                )
+                cfg = load_config(config_path)
+                exports = run(root, config=cfg, ocr_engine=FakeOcrEngine())
+            blob = json.dumps([m.get("content") for m in exports[0].data["messages"]], ensure_ascii=False)
+            return far_marker in blob
+
+        # 默认开启：窗口外的无关消息被过滤
+        self.assertFalse(far_marker_survives(enabled=True))
+        # 显式关闭：窗口外的无关消息保留
+        self.assertTrue(far_marker_survives(enabled=False))
+
 
 if __name__ == "__main__":
     unittest.main()

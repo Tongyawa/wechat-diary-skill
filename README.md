@@ -129,6 +129,7 @@ python -m unittest discover -s tests
 
 - GUI 自动化依赖 WeFlow 当前界面和 Windows 桌面环境；Agent 触发真实导出时通常需要提权运行。
 - `WeFlow-*`、`config.toml`、最终 insights 产物都属于本地数据，不应提交进公开仓库。
-- 群聊会经过上下文窗口过滤，保留和用户相关的片段；私聊默认保留全量消息流。
+- 群聊默认经过上下文窗口过滤，保留和用户相关的片段；需要完整语料时可将
+  `preprocessing.group_context_window.enabled` 设为 `false`，此时群聊保留全量消息流。私聊始终保留全量消息流。
 - 图片可走本地 OCR，微信表情目录会跳过，语音转文字失败默认只记录警告。
 - 长期归档采用合并覆盖语义：相同相对路径下，新导出覆盖旧导出，用于避免重复运行产生重复文件。

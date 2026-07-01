@@ -48,6 +48,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "image_ocr_min_confidence": 0.55,
         "image_ocr_max_inline_chars": 80,
         "group_context_window": {
+            "enabled": True,
             "messages_before": 3,
             "messages_after": 5,
             "time_window_minutes": 15,
@@ -118,6 +119,7 @@ class AutomationConfig:
 
 @dataclass(frozen=True)
 class GroupContextWindowConfig:
+    enabled: bool
     messages_before: int
     messages_after: int
     time_window_minutes: int
@@ -246,6 +248,7 @@ def _build_config(raw: dict[str, Any], base_dir: Path) -> Config:
             image_ocr_min_confidence=float(preprocessing["image_ocr_min_confidence"]),
             image_ocr_max_inline_chars=int(preprocessing["image_ocr_max_inline_chars"]),
             group_context_window=GroupContextWindowConfig(
+                enabled=bool(group_window["enabled"]),
                 messages_before=int(group_window["messages_before"]),
                 messages_after=int(group_window["messages_after"]),
                 time_window_minutes=int(group_window["time_window_minutes"]),

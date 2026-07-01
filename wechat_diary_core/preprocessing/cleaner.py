@@ -146,8 +146,8 @@ def _preprocess_export(
     )
 
     session_type = str(data.get("session", {}).get("type") or "")
-    if session_type == "群聊":
-        window = cfg.preprocessing.group_context_window
+    window = cfg.preprocessing.group_context_window
+    if session_type == "群聊" and window.enabled:
         messages = filter_group_context_window(
             messages,
             messages_before=window.messages_before,
