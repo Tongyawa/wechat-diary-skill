@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import io
 import json
+import os
+import subprocess
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -133,7 +135,47 @@ class DailyExportScriptTests(unittest.TestCase):
         self.assertIn('Join-Path $WorkspaceRoot ".runlog"', process)
         self.assertNotIn('WeFlow-insights\\.runlog', daily)
         self.assertNotIn('WeFlow-insights\\.runlog', process)
+        self.assertIn('if "%ROOT:~-1%"=="\\" set "ROOT=%ROOT:~0,-1%"', batch)
+        self.assertIn('-File "%ROOT%\\scripts\\run_daily_export.ps1"', batch)
         self.assertIn('-Workspace "%ROOT%"', batch)
+
+    @unittest.skipUnless(os.name == "nt", "Start-DailyExport.bat is Windows-only")
+    def test_start_batch_passes_resolvable_workspace_without_trailing_quote(self) -> None:
+        batch_path = Path("Start-DailyExport.bat").resolve()
+        expected_workspace = batch_path.parent
+        expected_script = expected_workspace / "scripts" / "run_daily_export.ps1"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_bin = Path(tmp)
+            capture_path = fake_bin / "captured-args.txt"
+            # Intercept the unqualified `powershell` command so the real daily
+            # export cannot start. `%~5` and `%~7` are the -File and -Workspace
+            # values after cmd.exe has performed its actual quoting rules.
+            (fake_bin / "powershell.cmd").write_text(
+                "@echo off\r\n"
+                "> \"%CAPTURE%\" echo SCRIPT=%~5\r\n"
+                ">> \"%CAPTURE%\" echo WORKSPACE=%~7\r\n"
+                "exit /b 0\r\n",
+                encoding="utf-8",
+            )
+            env = os.environ.copy()
+            env["CAPTURE"] = str(capture_path)
+            env["PATH"] = str(fake_bin) + os.pathsep + env.get("PATH", "")
+
+            result = subprocess.run(
+                ["cmd", "/d", "/c", str(batch_path)],
+                cwd=expected_workspace,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            captured = capture_path.read_text(encoding="utf-8").splitlines()
+
+        self.assertEqual(captured, [f"SCRIPT={expected_script}", f"WORKSPACE={expected_workspace}"])
 
     def test_python_entrypoints_resolve_relative_config_from_workspace(self) -> None:
         for path in (
