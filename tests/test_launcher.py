@@ -21,6 +21,7 @@ from wechat_diary_core.weflow_automation.launcher import (
     launch_weflow,
     restart_weflow,
     stop_weflow_processes,
+    weflow_log_path,
 )
 
 
@@ -50,6 +51,27 @@ class FakeUser32:
 
 
 class LauncherTests(unittest.TestCase):
+    def test_weflow_log_path_is_anchored_to_workspace_not_insights(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp) / "workspace"
+            insights = Path(tmp) / "persistent" / "WeFlow-insights"
+            workspace.mkdir()
+            config_path = workspace / "config.toml"
+            config_path.write_text(
+                f'''
+[paths]
+insights = "{insights.as_posix()}"
+'''.strip(),
+                encoding="utf-8",
+            )
+            cfg = load_config(config_path)
+
+            log_path = weflow_log_path(cfg)
+
+        self.assertIsNotNone(log_path)
+        self.assertEqual(log_path.parent, workspace / ".runlog")
+        self.assertNotEqual(log_path.parent, insights / ".runlog")
+
     def test_build_cdp_launch_args(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             exe = Path(tmp) / "WeFlow.exe"

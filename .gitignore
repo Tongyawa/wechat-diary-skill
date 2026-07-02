@@ -31,6 +31,7 @@ CLAUDE.md
 .claude/scheduled_tasks.lock
 
 # ---- Raw / intermediate / output data ----
+.runlog/
 # Suffixed variants (WeFlow-raw-exports-20260607/, WeFlow-raw-exports-去年/ …)
 # are backfill snapshots and must stay out of git just like the live roots.
 WeFlow-raw-exports*/

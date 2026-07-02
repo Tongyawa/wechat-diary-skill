@@ -179,10 +179,10 @@ def launch_weflow(automation: AutomationConfig, *, log_path: Path | None = None)
 
 def weflow_log_path(cfg: Config) -> Path | None:
     """Daily runlog file that absorbs WeFlow's own console output."""
-    insights = getattr(getattr(cfg, "paths", None), "insights", None)
-    if insights is None:
+    workspace_root = getattr(cfg, "base_dir", None)
+    if workspace_root is None:
         return None
-    return Path(insights) / ".runlog" / f"weflow-{date.today():%Y-%m-%d}.log"
+    return Path(workspace_root) / ".runlog" / f"weflow-{date.today():%Y-%m-%d}.log"
 
 
 def build_launch_args(automation: AutomationConfig) -> list[str]:

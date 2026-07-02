@@ -2,14 +2,20 @@ param(
   [string]$RawRoot = "",
   [string]$Day = "",
   [string]$Config = "config.toml",
+  [string]$Workspace = "",
   [switch]$RequireDay,
   [switch]$SkipVoiceFallback,
   [switch]$NoPause
 )
 
 $ErrorActionPreference = "Stop"
-$Root = Resolve-Path (Join-Path $PSScriptRoot "..")
-Set-Location $Root
+$CodeRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$WorkspaceRoot = if ([string]::IsNullOrWhiteSpace($Workspace)) {
+  $CodeRoot
+} else {
+  (Resolve-Path -LiteralPath $Workspace).Path
+}
+Set-Location -LiteralPath $WorkspaceRoot
 
 chcp 65001 > $null
 $Utf8NoBom = New-Object System.Text.UTF8Encoding $false
@@ -18,14 +24,14 @@ $OutputEncoding = $Utf8NoBom
 $env:PYTHONUTF8 = "1"
 $env:PYTHONIOENCODING = "utf-8"
 
-$LogDir = Join-Path $Root "WeFlow-insights\.runlog"
+$LogDir = Join-Path $WorkspaceRoot ".runlog"
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 $LogPath = Join-Path $LogDir "$(Get-Date -Format yyyy-MM-dd)-process-existing-raw.log"
 
-Write-Host "Processing existing raw exports from $Root"
+Write-Host "Processing existing raw exports from $WorkspaceRoot"
 Write-Host "Log: $LogPath"
 
-$ScriptPath = Join-Path $Root "scripts\process_existing_raw.py"
+$ScriptPath = Join-Path $CodeRoot "scripts\process_existing_raw.py"
 $ArgsList = @("`"$ScriptPath`"", "--config", "`"$Config`"")
 if ($RawRoot) {
   $ArgsList += @("--raw-root", "`"$RawRoot`"")

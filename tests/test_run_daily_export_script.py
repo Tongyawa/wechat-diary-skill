@@ -118,6 +118,33 @@ def _write_voice_failure_raw(root: Path, *, message_ids: list[int] | None = None
 
 
 class DailyExportScriptTests(unittest.TestCase):
+    def test_wrappers_separate_code_root_from_workspace(self) -> None:
+        daily = Path("scripts/run_daily_export.ps1").read_text(encoding="utf-8-sig")
+        process = Path("scripts/process_existing_raw.ps1").read_text(encoding="utf-8-sig")
+        latest = Path("scripts/Open-LatestInsights.ps1").read_text(encoding="utf-8-sig")
+        by_date = Path("scripts/Open-InsightsByDate.ps1").read_text(encoding="utf-8-sig")
+        batch = Path("Start-DailyExport.bat").read_text(encoding="utf-8")
+
+        for script in (daily, process, latest, by_date):
+            self.assertIn('[string]$Workspace = ""', script)
+            self.assertIn("$CodeRoot", script)
+            self.assertIn("$WorkspaceRoot", script)
+        self.assertIn('Join-Path $WorkspaceRoot ".runlog"', daily)
+        self.assertIn('Join-Path $WorkspaceRoot ".runlog"', process)
+        self.assertNotIn('WeFlow-insights\\.runlog', daily)
+        self.assertNotIn('WeFlow-insights\\.runlog', process)
+        self.assertIn('-Workspace "%ROOT%"', batch)
+
+    def test_python_entrypoints_resolve_relative_config_from_workspace(self) -> None:
+        for path in (
+            Path("scripts/run_daily_export.py"),
+            Path("scripts/process_existing_raw.py"),
+            Path("scripts/archive_exports.py"),
+        ):
+            script = path.read_text(encoding="utf-8")
+            self.assertIn("Path.cwd() / config_path", script, path.as_posix())
+            self.assertNotIn("ROOT / config_path", script, path.as_posix())
+
     def test_powershell_wrapper_does_not_treat_native_stderr_as_fatal(self) -> None:
         script = Path("scripts/run_daily_export.ps1").read_text(encoding="utf-8")
 

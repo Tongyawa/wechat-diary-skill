@@ -1,11 +1,17 @@
 param(
   [string]$Date,
+  [string]$Workspace = "",
   [switch]$NoPause
 )
 
 $ErrorActionPreference = "Stop"
-$Root = Resolve-Path (Join-Path $PSScriptRoot "..")
-$InsightsRoot = Join-Path $Root "WeFlow-insights"
+$CodeRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$WorkspaceRoot = if ([string]::IsNullOrWhiteSpace($Workspace)) {
+  $CodeRoot
+} else {
+  (Resolve-Path -LiteralPath $Workspace).Path
+}
+$InsightsRoot = Join-Path $WorkspaceRoot "WeFlow-insights"
 
 function Open-InsightFiles {
   param([string[]]$Paths)

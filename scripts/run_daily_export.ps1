@@ -1,10 +1,16 @@
 ﻿param(
+  [string]$Workspace = "",
   [switch]$NoPause
 )
 
 $ErrorActionPreference = "Stop"
-$Root = Resolve-Path (Join-Path $PSScriptRoot "..")
-Set-Location $Root
+$CodeRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$WorkspaceRoot = if ([string]::IsNullOrWhiteSpace($Workspace)) {
+  $CodeRoot
+} else {
+  (Resolve-Path -LiteralPath $Workspace).Path
+}
+Set-Location -LiteralPath $WorkspaceRoot
 
 chcp 65001 > $null
 $Utf8NoBom = New-Object System.Text.UTF8Encoding $false
@@ -13,11 +19,11 @@ $OutputEncoding = $Utf8NoBom
 $env:PYTHONUTF8 = "1"
 $env:PYTHONIOENCODING = "utf-8"
 
-$LogDir = Join-Path $Root "WeFlow-insights\.runlog"
+$LogDir = Join-Path $WorkspaceRoot ".runlog"
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 $LogPath = Join-Path $LogDir "$(Get-Date -Format yyyy-MM-dd)-daily-export.log"
 
-Write-Host "Running daily export from $Root"
+Write-Host "Running daily export from $WorkspaceRoot"
 Write-Host "Log: $LogPath"
 
 $EmptySessionSkips = 0
@@ -77,7 +83,7 @@ function ShouldShowDailyExportLine {
   return $false
 }
 
-$ScriptPath = Join-Path $Root "scripts\run_daily_export.py"
+$ScriptPath = Join-Path $CodeRoot "scripts\run_daily_export.py"
 $CommandLine = '"python" -u "{0}" 2>&1' -f $ScriptPath
 
 cmd /d /c $CommandLine | ForEach-Object {

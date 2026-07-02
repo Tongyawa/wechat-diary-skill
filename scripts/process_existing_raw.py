@@ -82,7 +82,7 @@ def main(argv: list[str] | None = None) -> int:
 
     config_path = Path(args.config)
     if not config_path.is_absolute():
-        config_path = ROOT / config_path
+        config_path = (Path.cwd() / config_path).resolve()
 
     try:
         cfg = load_config(config_path)
