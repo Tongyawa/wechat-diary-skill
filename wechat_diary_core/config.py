@@ -173,6 +173,8 @@ class Config:
     daily_export: DailyExportConfig
     base_dir: Path
     raw: dict[str, Any]
+    # Values explicitly present in config.toml, before defaults are merged.
+    source: dict[str, Any]
 
 
 def load_config(config_path: str | Path | None = None) -> Config:
@@ -190,10 +192,10 @@ def load_config(config_path: str | Path | None = None) -> Config:
     if legacy_weflow_exe and not loaded.get("automation", {}).get("weflow_exe"):
         merged["automation"]["weflow_exe"] = legacy_weflow_exe
 
-    return _build_config(merged, base_dir)
+    return _build_config(merged, base_dir, source=loaded)
 
 
-def _build_config(raw: dict[str, Any], base_dir: Path) -> Config:
+def _build_config(raw: dict[str, Any], base_dir: Path, *, source: dict[str, Any]) -> Config:
     paths = raw["paths"]
     automation = raw["automation"]
     preprocessing = raw["preprocessing"]
@@ -274,6 +276,7 @@ def _build_config(raw: dict[str, Any], base_dir: Path) -> Config:
         ),
         base_dir=base_dir,
         raw=copy.deepcopy(raw),
+        source=copy.deepcopy(source),
     )
 
 

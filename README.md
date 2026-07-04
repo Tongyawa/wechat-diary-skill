@@ -70,6 +70,14 @@ WeFlow-insights/             # 日记、DoneList、灵感、画像、主线等�
 
 `config.toml` 不进 git，适合放本机路径、账号标识和其他私人配置。
 
+首次运行或环境变化后，可先执行只读体检：
+
+```powershell
+python scripts/doctor.py
+```
+
+doctor 会检查配置、WeFlow 路径、CDP、四个数据根和按配置启用的可选能力；它不会启动 WeFlow 或修改文件。自动化联动可使用 `python scripts/doctor.py --json` 获取结构化结果。
+
 ## 常用用法
 
 每日完整导出：

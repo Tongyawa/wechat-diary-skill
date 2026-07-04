@@ -40,6 +40,9 @@ raw = "raw"
         self.assertEqual(cfg.daily_export.cleanup_mode, "archive")
         self.assertTrue(cfg.daily_export.restart_weflow)
         self.assertEqual(cfg.paths.archived.name, "WeFlow-archived-exports")
+        self.assertEqual(cfg.source["automation"]["driver"], "uia")
+        self.assertEqual(cfg.source["paths"]["raw"], "raw")
+        self.assertNotIn("processed", cfg.source["paths"])
 
     def test_load_config_reads_daily_export_settings(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
