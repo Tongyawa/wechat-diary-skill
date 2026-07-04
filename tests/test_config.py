@@ -32,7 +32,7 @@ raw = "raw"
         self.assertEqual(cfg.preprocessing.group_context_window.messages_after, 5)
         self.assertEqual(cfg.preprocessing.group_context_window.time_window_minutes, 15)
         self.assertEqual(cfg.preprocessing.group_context_window.anchor_keywords, [])
-        self.assertEqual(cfg.skills.daily, ["wechat-diary"])
+        self.assertEqual(cfg.skills.daily, ["wechat-diary-skill"])
         self.assertEqual(cfg.daily_export.target_usernames, [])
         self.assertEqual(cfg.daily_export.self_moments_usernames, [])
         self.assertFalse(cfg.daily_export.self_moments_configured)

@@ -61,7 +61,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "extra_args": [],
     },
     "skills": {
-        "daily": ["wechat-diary"],
+        "daily": ["wechat-diary-skill"],
     },
     "daily_export": {
         "target_usernames": [],

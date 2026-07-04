@@ -39,9 +39,8 @@ WeFlow-processed-exports*/
 WeFlow-archived-exports*/
 WeFlow-insights*/
 
-# ---- Skills published in this repo are allowlisted; everything else stays local ----
-.claude/skills/*
-!.claude/skills/wechat-diary/
+# ---- Legacy nested skills stay local; the public skill now lives at repo root ----
+.claude/skills/
 
 # ---- Legacy / archival workspace ----
 其他/

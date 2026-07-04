@@ -1,8 +1,8 @@
 # WeChat Diary
 
-WeChat Diary 是一个本地微信日记工作流：通过 WeFlow 导出微信聊天记录，把原始导出清洗成更适合 Agent 阅读的 Markdown，再由 `wechat-diary` skill 生成日记、DoneList、灵感、额外观察，并增量维护长期自我画像和年度主线脉络。
+WeChat Diary 是一个本地微信日记工作流：通过 WeFlow 导出微信聊天记录，把原始导出清洗成更适合 Agent 阅读的 Markdown，再由 `wechat-diary-skill` 生成日记、DoneList、灵感、额外观察，并增量维护长期自我画像和年度主线脉络。
 
-这个 README 只是初稿。项目后续还会大改，当前说明以 `.claude/skills/wechat-diary/SKILL.md` 和现有目录结构为准。
+代码仓与数据工作区相互独立：本仓只放可分发代码和根级 `SKILL.md`；`config.toml`、`WeFlow-*` 数据和工作区入口保留在用户自己的工作区。
 
 ## 解决什么问题
 
@@ -15,7 +15,7 @@ WeChat Diary 是一个本地微信日记工作流：通过 WeFlow 导出微信�
 
 ## 当前主要产物
 
-默认 `wechat-diary` skill 会在 `WeFlow-insights/` 下生成：
+默认 `wechat-diary-skill` 会在配置指定的 insights 根下生成：
 
 - `Diary/<yyyy>/...md`：第一人称日记。
 - `DoneList/<yyyy>/...md`：当天完成事项。
@@ -28,14 +28,14 @@ WeChat Diary 是一个本地微信日记工作流：通过 WeFlow 导出微信�
 
 ```text
 .
-├── .claude/skills/wechat-diary/   # 公开 diary skill，定义二次加工契约
+├── SKILL.md                       # 根级 skill 入口与工作流
+├── references/                    # 按需加载的二次加工 Prompt
 ├── docs/                          # 工程文档
 ├── scripts/                       # 日常入口、补跑入口、归档和校验脚本
 ├── tests/                         # 单元测试
 ├── wechat_diary_core/             # 导出、清洗、归档、配置等核心代码
-├── config.example.toml            # 配置模板
 ├── requirements.txt               # Python 依赖
-└── Start-DailyExport.bat          # 双击式每日导出入口
+└── config.example.toml            # 工作区配置模板
 ```
 
 运行时还会用到这些 gitignored 数据目录，实际位置由 `config.toml [paths]` 决定：
@@ -49,65 +49,54 @@ WeFlow-insights/             # 日记、DoneList、灵感、画像、主线等�
 
 ## 初次配置
 
+先把本仓安装到 Skill 目录，再创建一个独立的数据工作区。下面用 `$SkillRoot` 和 `$Workspace` 区分二者：
+
 1. 安装 Python 依赖：
 
    ```powershell
-   python -m pip install -r requirements.txt
+   python -m pip install -r "$SkillRoot\requirements.txt"
    ```
 
 2. 复制配置模板：
 
    ```powershell
-   Copy-Item config.example.toml config.toml
+   New-Item -ItemType Directory -Force $Workspace
+   Copy-Item "$SkillRoot\config.example.toml" "$Workspace\config.toml"
    ```
 
-3. 编辑 `config.toml`，至少确认：
+3. 编辑 `$Workspace\config.toml`，至少确认：
 
    - `[automation].weflow_exe`：本机 WeFlow 可执行文件路径。
    - `[paths]`：raw、processed、archived、insights 的落点。
    - `[user].self_wxids`：自己的 wxid / 文件传输助手，用于识别收集箱。
-   - `[skills].daily`：默认包含 `wechat-diary`。
+   - `[skills].daily`：默认包含 `wechat-diary-skill`。
 
 `config.toml` 不进 git，适合放本机路径、账号标识和其他私人配置。
 
 首次运行或环境变化后，可先执行只读体检：
 
 ```powershell
-python scripts/doctor.py
+Push-Location $Workspace
+python "$SkillRoot\scripts\doctor.py"
+Pop-Location
 ```
 
-doctor 会检查配置、WeFlow 路径、CDP、四个数据根和按配置启用的可选能力；它不会启动 WeFlow 或修改文件。自动化联动可使用 `python scripts/doctor.py --json` 获取结构化结果。
+doctor 会检查配置、WeFlow 路径、CDP、四个数据根和按配置启用的可选能力；它不会启动 WeFlow 或修改文件。自动化联动可给同一命令追加 `--json` 获取结构化结果。
 
 ## 常用用法
 
-每日完整导出：
+每日完整导出由工作区薄壳调用本仓脚本；Agent 可直接运行：
 
 ```powershell
-.\Start-DailyExport.bat
-```
-
-Agent 或命令行环境更适合直接跑：
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_daily_export.ps1 -NoPause
+powershell -NoProfile -ExecutionPolicy Bypass -File "$SkillRoot\scripts\run_daily_export.ps1" -Workspace $Workspace -NoPause
 ```
 
 只处理已经存在的 WeFlow raw 导出，不重新启动 WeFlow：
 
 ```powershell
-python scripts/process_existing_raw.py --raw-root WeFlow-raw-exports --day 2026-06-15 --require-day
-```
-
-打开最近的 insights 产物：
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\Open-LatestInsights.ps1
-```
-
-按日期打开 insights 产物：
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\Open-InsightsByDate.ps1
+Push-Location $Workspace
+python "$SkillRoot\scripts\process_existing_raw.py" --raw-root WeFlow-raw-exports --day 2026-06-15 --require-day
+Pop-Location
 ```
 
 ## 二次加工怎么发生
@@ -118,10 +107,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\Open-InsightsByDate.
 
 ```toml
 [skills]
-daily = ["wechat-diary"]
+daily = ["wechat-diary-skill"]
 ```
 
-`wechat-diary` 会读取 `WeFlow-processed-exports/*/<date>.md`，跳过下划线开头的 sidecar 目录，然后按 `.claude/skills/wechat-diary/SKILL.md` 里的 Prompt 契约生成 Markdown 产物。
+`wechat-diary-skill` 会从工作区配置解析 processed/insights 根，跳过下划线开头的 sidecar 目录，然后按根级 `SKILL.md` 与 `references/prompt-daily.md` 的契约生成 Markdown 产物。
 
 ## 测试
 

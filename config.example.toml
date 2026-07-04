@@ -77,7 +77,7 @@ model = "claude-opus-4.6"
 extra_args = []                           # e.g. ["--permission-mode", "acceptEdits"]
 
 [skills]
-daily = ["wechat-diary"]
+daily = ["wechat-diary-skill"]
 
 [daily_export]
 # Contacts to export as an additional sidecar stream. Use wxid when possible;
