@@ -20,19 +20,12 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from wechat_diary_core.archiving import archive, archive_chats_for
+from wechat_diary_core.backends import ExporterBackend, create_backend
+from wechat_diary_core.backends.weflow.driver import DriverCommandError, DriverUnavailable
+from wechat_diary_core.backends.weflow.launcher import stop_weflow_processes
 from wechat_diary_core.config import Config, load_config
 from wechat_diary_core.preprocessing import archive_moments_for
 from wechat_diary_core.preprocessing import collect_voice_transcription_failures
-from wechat_diary_core.backends.weflow.cdp_driver import CdpDriver
-from wechat_diary_core.backends.weflow.driver import DriverCommandError, DriverUnavailable, ElementNotFound
-from wechat_diary_core.backends.weflow.exporter import export_all_chats, export_moments_for, wait_for_export_tasks_idle
-from wechat_diary_core.backends.weflow.launcher import (
-    WeFlowSession,
-    assert_single_weflow_instance,
-    ensure_weflow_running,
-    stop_weflow_processes,
-)
-from wechat_diary_core.backends.weflow.voice_transcribe import batch_transcribe_voices_for
 from wechat_diary_core.workspace import rotate_export_workspace
 
 
@@ -62,24 +55,16 @@ class RawTreeSnapshot:
 
 @dataclass
 class DailyExportDeps:
-    stop_weflow_processes: Callable[..., Any] = stop_weflow_processes
-    ensure_weflow_running: Callable[..., Any] = ensure_weflow_running
-    wait_for_ready_page: Callable[..., Any] = None  # type: ignore[assignment]
+    backend: ExporterBackend | None = None
+    backend_factory: Callable[[str, Config], ExporterBackend] = create_backend
     wait_for_raw_exports_stable: Callable[..., Any] = None  # type: ignore[assignment]
     rotate_export_workspace: Callable[..., Any] = rotate_export_workspace
-    assert_single_weflow_instance: Callable[..., Any] = assert_single_weflow_instance
-    batch_transcribe_voices_for: Callable[..., Any] = batch_transcribe_voices_for
     run_voice_fallback_script: Callable[..., Any] = None  # type: ignore[assignment]
-    export_all_chats: Callable[..., Any] = export_all_chats
-    export_moments_for: Callable[..., Any] = export_moments_for
-    wait_for_export_tasks_idle: Callable[..., Any] = wait_for_export_tasks_idle
     archive: Callable[..., Any] = archive
     archive_chats_for: Callable[..., Any] = archive_chats_for
     archive_moments_for: Callable[..., Any] = archive_moments_for
 
     def __post_init__(self) -> None:
-        if self.wait_for_ready_page is None:
-            self.wait_for_ready_page = wait_for_ready_page
         if self.wait_for_raw_exports_stable is None:
             self.wait_for_raw_exports_stable = wait_for_raw_exports_stable
         if self.run_voice_fallback_script is None:
@@ -241,6 +226,7 @@ def run_daily_export(
     day: date | None = None,
 ) -> DailyExportResult:
     active_deps = deps or DailyExportDeps()
+    backend = active_deps.backend or active_deps.backend_factory("weflow", cfg)
     export_day = day or (datetime.now().date() - timedelta(days=1))
     day_iso = export_day.isoformat()
     target_usernames = list(cfg.daily_export.target_usernames)
@@ -264,95 +250,71 @@ def run_daily_export(
             "填入自己的 wxid；确认不需要则设为 [] 显式关闭。"
         )
 
-    if cfg.daily_export.restart_weflow:
-        _run_stage(
-            "stop_weflow",
-            lambda: _stop_weflow_or_raise(active_deps, timeout=cfg.automation.launch_timeout_sec),
-        )
-
-    rotation = _run_stage(
-        "rotate_workspace",
-        lambda: active_deps.rotate_export_workspace(
-            cfg,
-            label="daily_export",
-            mode=cfg.daily_export.cleanup_mode,
-        ),
-    )
-
-    session = _run_stage("start_weflow", lambda: active_deps.ensure_weflow_running(cfg))
-    endpoint = getattr(session, "cdp_endpoint", None)
-    if endpoint:
-        _run_stage("wait_weflow_ready", lambda: active_deps.wait_for_ready_page(endpoint))
-    _assert_single_weflow_instance(active_deps, session, "start_weflow")
-
-    voice_usernames = list(cfg.user.voice_transcribe_usernames) or target_usernames
-    if voice_usernames:
-        _run_weflow_stage(
-            "voice_transcribe",
-            lambda: active_deps.batch_transcribe_voices_for(voice_usernames, config=cfg),
-            deps=active_deps,
-            session=session,
-        )
-    else:
-        print("voice_transcribe skipped: no configured contacts.")
-
-    _run_weflow_stage(
-        "export_all_chats",
-        lambda: active_deps.export_all_chats(date=export_day, config=cfg, cleanup="skip"),
-        deps=active_deps,
-        session=session,
-    )
-    _run_stage(
-        "wait_raw_exports_stable",
-        lambda: active_deps.wait_for_raw_exports_stable(cfg.paths.raw, min_files=1),
-    )
-    # Moments are sidecar/supplementary: a failure here (e.g. WeFlow still busy
-    # and CDP slow) must NOT abort the chat diary, which is the primary output.
-    # Isolate each moments export and gate its dependent archive step.
+    prepared = False
     moments_failures: list[str] = []
-    moments_gate_ok = True
-    if (target_usernames or self_moments_usernames) and endpoint:
-        moments_gate_ok = _try_weflow_stage(
-            "wait_weflow_tasks_idle_before_moments",
-            lambda: active_deps.wait_for_export_tasks_idle(config=cfg, title_contains="自动化导出"),
-            deps=active_deps,
-            session=session,
-            failures=moments_failures,
+    target_moments_ok = False
+    self_moments_ok = False
+    try:
+        # Prepare is deliberately before rotation: a backend that cannot become
+        # ready must not mutate the live raw/processed roots.
+        _run_stage("prepare_backend", backend.prepare)
+        prepared = True
+        rotation = _run_stage(
+            "rotate_workspace",
+            lambda: active_deps.rotate_export_workspace(
+                cfg,
+                label="daily_export",
+                mode=cfg.daily_export.cleanup_mode,
+            ),
         )
 
-    target_moments_ok = False
-    if target_usernames:
-        if moments_gate_ok:
+        voice_usernames = list(cfg.user.voice_transcribe_usernames) or target_usernames
+        if voice_usernames and "voice_transcribe" in backend.capabilities:
+            _run_stage("voice_transcribe", lambda: backend.transcribe_voices(voice_usernames))
+        elif voice_usernames:
+            print(
+                f"voice_transcribe skipped: backend '{backend.name}' does not support "
+                "a separate voice_transcribe stage."
+            )
+        else:
+            print("voice_transcribe skipped: no configured contacts.")
+
+        _run_stage("export_all_chats", lambda: backend.export_chats(export_day))
+        _run_stage(
+            "wait_raw_exports_stable",
+            lambda: active_deps.wait_for_raw_exports_stable(cfg.paths.raw, min_files=1),
+        )
+
+        # Moments are supplementary: isolate each failure so the primary chat
+        # diary and any successful stream can still complete.
+        if target_usernames and "moments" in backend.capabilities:
             target_moments_ok = _run_moments_stage(
                 "export_target_moments",
-                lambda: active_deps.export_moments_for(target_usernames, date=export_day, config=cfg),
+                lambda: backend.export_moments(target_usernames, export_day),
                 "wait_raw_exports_stable_after_moments",
                 lambda: active_deps.wait_for_raw_exports_stable(cfg.paths.raw, min_files=1),
-                deps=active_deps,
-                session=session,
                 failures=moments_failures,
             )
+        elif target_usernames:
+            print(f"export_target_moments skipped: backend '{backend.name}' does not support moments.")
         else:
-            print("export_target_moments skipped: moments idle-gate failed.")
-    else:
-        print("export_target_moments skipped: no target sidecar contacts.")
+            print("export_target_moments skipped: no target sidecar contacts.")
 
-    self_moments_ok = False
-    if self_moments_usernames:
-        if moments_gate_ok:
+        if self_moments_usernames and "moments" in backend.capabilities:
             self_moments_ok = _run_moments_stage(
                 "export_self_moments",
-                lambda: active_deps.export_moments_for(self_moments_usernames, date=export_day, config=cfg),
+                lambda: backend.export_moments(self_moments_usernames, export_day),
                 "wait_raw_exports_stable_after_self_moments",
                 lambda: active_deps.wait_for_raw_exports_stable(cfg.paths.raw, min_files=1),
-                deps=active_deps,
-                session=session,
                 failures=moments_failures,
             )
+        elif self_moments_usernames:
+            print(f"export_self_moments skipped: backend '{backend.name}' does not support moments.")
         else:
-            print("export_self_moments skipped: moments idle-gate failed.")
-    else:
-        print("export_self_moments skipped: no configured self moments contacts.")
+            print("export_self_moments skipped: no configured self moments contacts.")
+    finally:
+        if prepared:
+            _finish_backend(backend)
 
     if cfg.daily_export.voice_fallback_script:
         _run_stage(
@@ -419,24 +381,6 @@ def run_daily_export(
         sidecar_chat_files=list(sidecar_chat_files),
         sidecar_moment_files=list(sidecar_moment_files),
     )
-
-
-def wait_for_ready_page(endpoint: str, timeout: float = 60) -> None:
-    deadline = time.monotonic() + timeout
-    last_error: Exception | None = None
-    while time.monotonic() < deadline:
-        driver: CdpDriver | None = None
-        try:
-            driver = CdpDriver.connect(endpoint)
-            driver.wait_for("朋友圈", timeout=3)
-            return
-        except (DriverUnavailable, ElementNotFound, OSError) as exc:
-            last_error = exc
-            time.sleep(1)
-        finally:
-            if driver is not None:
-                driver.close()
-    raise DriverUnavailable(f"WeFlow page did not become ready after launch: {last_error}")
 
 
 def wait_for_raw_exports_stable(
@@ -559,35 +503,20 @@ def _cleanup_weflow_after_failure(cfg: Config | None) -> None:
         print("[WARN] Timed out stopping WeFlow after export failure; close WeFlow manually before retrying.", file=sys.stderr)
 
 
-def _run_weflow_stage(
+def _try_backend_stage(
     stage: str,
     action: Callable[[], Any],
     *,
-    deps: DailyExportDeps,
-    session: Any,
-) -> Any:
-    _assert_single_weflow_instance(deps, session, f"{stage}:before")
-    result = _run_stage(stage, action)
-    _assert_single_weflow_instance(deps, session, f"{stage}:after")
-    return result
-
-
-def _try_weflow_stage(
-    stage: str,
-    action: Callable[[], Any],
-    *,
-    deps: DailyExportDeps,
-    session: Any,
     failures: list[str],
 ) -> bool:
-    """Run a non-critical WeFlow stage; on failure record + warn and continue.
+    """Run a non-critical backend stage; record a failure and continue.
 
     Moments exports are sidecar/supplementary — a failure here (e.g. WeFlow busy
     and CDP slow) must not abort the chat diary, the primary output. Returns True
     only on success so the caller can gate its dependent archive step.
     """
     try:
-        _run_weflow_stage(stage, action, deps=deps, session=session)
+        _run_stage(stage, action)
         return True
     except DailyExportStageError as exc:
         failures.append(exc.stage)
@@ -607,8 +536,6 @@ def _run_moments_stage(
     settle_stage: str,
     settle_action: Callable[[], Any],
     *,
-    deps: DailyExportDeps,
-    session: Any,
     failures: list[str],
 ) -> bool:
     """Export a sidecar moments set with failure isolation.
@@ -617,7 +544,7 @@ def _run_moments_stage(
     step on this). Once the export succeeds, the post-export settle wait is
     best-effort: a slow settle must not throw away an export that completed.
     """
-    if not _try_weflow_stage(export_stage, export_action, deps=deps, session=session, failures=failures):
+    if not _try_backend_stage(export_stage, export_action, failures=failures):
         return False
     try:
         _run_stage(settle_stage, settle_action)
@@ -629,21 +556,19 @@ def _run_moments_stage(
     return True
 
 
-def _stop_weflow_or_raise(deps: DailyExportDeps, *, timeout: float) -> None:
-    stopped = deps.stop_weflow_processes(timeout=timeout)
-    if stopped is False:
-        raise RuntimeError("Timed out waiting for existing WeFlow processes to exit.")
+def _finish_backend(backend: ExporterBackend) -> None:
+    """Shut down backend-owned resources without masking a primary failure."""
 
-
-def _assert_single_weflow_instance(deps: DailyExportDeps, session: Any, stage: str) -> None:
-    # Unit tests use lightweight session fakes. Production launcher returns
-    # WeFlowSession, where visible-window ownership can be checked.
-    if not isinstance(session, WeFlowSession):
-        return
+    failure_in_flight = sys.exc_info()[0] is not None
     try:
-        deps.assert_single_weflow_instance(session)
-    except Exception as exc:
-        raise DailyExportStageError(f"{stage}_weflow_instance_guard", exc) from exc
+        _run_stage("shutdown_backend", backend.shutdown)
+    except DailyExportStageError as exc:
+        if not failure_in_flight:
+            raise
+        print(
+            f"[WARN] backend shutdown failed after an earlier error: {exc.cause}",
+            file=sys.stderr,
+        )
 
 
 def _loads_toml(text: str, path: Path) -> dict[str, Any]:

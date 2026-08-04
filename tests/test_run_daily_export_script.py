@@ -7,6 +7,7 @@ import subprocess
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
@@ -25,17 +26,52 @@ from wechat_diary_core.archiving import archive, archive_chats_for
 from wechat_diary_core.config import load_config
 
 
+@dataclass
+class FakeBackend:
+    """Configurable port fake used as the runner's executable specification."""
+
+    calls: list[tuple] = field(default_factory=list)
+    capabilities: frozenset[str] = frozenset({"moments", "voice_transcribe"})
+    name: str = "fake"
+    prepare_action: object | None = None
+    export_chats_action: object | None = None
+    export_moments_action: object | None = None
+    transcribe_action: object | None = None
+    shutdown_action: object | None = None
+
+    def prepare(self) -> None:
+        self.calls.append(("prepare_backend",))
+        if callable(self.prepare_action):
+            self.prepare_action()
+
+    def export_chats(self, export_date: date) -> None:
+        self.calls.append(("all_chats", export_date.isoformat()))
+        if callable(self.export_chats_action):
+            self.export_chats_action(export_date)
+
+    def export_moments(self, usernames: list[str], export_date: date) -> None:
+        self.calls.append(("moments", tuple(usernames)))
+        if callable(self.export_moments_action):
+            self.export_moments_action(usernames, export_date)
+
+    def transcribe_voices(self, usernames: list[str]) -> None:
+        self.calls.append(("voice", tuple(usernames)))
+        if callable(self.transcribe_action):
+            self.transcribe_action(usernames)
+
+    def shutdown(self) -> None:
+        self.calls.append(("shutdown_backend",))
+        if callable(self.shutdown_action):
+            self.shutdown_action()
+
+
 def _quiet_deps(root: Path) -> DailyExportDeps:
     """Stub deps that run every stage as a no-op for output-focused tests."""
     return DailyExportDeps(
-        stop_weflow_processes=lambda timeout: None,
+        backend=FakeBackend(),
         rotate_export_workspace=lambda cfg, label, mode: SimpleNamespace(target=None),
-        ensure_weflow_running=lambda cfg: SimpleNamespace(cdp_endpoint=None),
         wait_for_raw_exports_stable=lambda raw_path, min_files: None,
-        batch_transcribe_voices_for=lambda usernames, config: None,
         run_voice_fallback_script=lambda script_path, config: None,
-        export_all_chats=lambda date, config, cleanup: None,
-        export_moments_for=lambda usernames, date, config: None,
         archive=lambda raw_path, config, clear_first: [],
         archive_chats_for=lambda usernames, config, subroot, image_mode, clear_first: [],
         archive_moments_for=lambda usernames, config, subroot, clear_first: [],
@@ -333,17 +369,11 @@ weflow_exe = "{(root / 'WeFlow.exe').as_posix()}"
             cfg = load_config(_write_config(root, target_users=""))
             calls: list[tuple] = []
             deps = DailyExportDeps(
-                stop_weflow_processes=lambda timeout: calls.append(("stop_weflow", int(timeout))),
+                backend=FakeBackend(calls=calls),
                 rotate_export_workspace=lambda cfg, label, mode: calls.append(("rotate", label, mode))
                 or SimpleNamespace(target=root / "rotation" / "run"),
-                ensure_weflow_running=lambda cfg: calls.append(("start_weflow",))
-                or SimpleNamespace(cdp_endpoint="http://127.0.0.1:9222"),
-                wait_for_ready_page=lambda endpoint: calls.append(("wait_ready", endpoint)),
                 wait_for_raw_exports_stable=lambda raw_path, min_files: calls.append(("wait_raw", min_files)),
-                batch_transcribe_voices_for=lambda usernames, config: calls.append(("voice", tuple(usernames))),
                 run_voice_fallback_script=lambda script_path, config: calls.append(("fallback", script_path)),
-                export_all_chats=lambda date, config, cleanup: calls.append(("all_chats", cleanup)),
-                export_moments_for=lambda usernames, date, config: calls.append(("moments", tuple(usernames))),
                 archive=lambda raw_path, config, clear_first: calls.append(("archive", clear_first)) or [root / "diary.md"],
                 archive_chats_for=lambda usernames, config, subroot, image_mode, clear_first: calls.append(("sidecar_chats",)),
                 archive_moments_for=lambda usernames, config, subroot, clear_first: calls.append(("sidecar_moments",)),
@@ -354,24 +384,24 @@ weflow_exe = "{(root / 'WeFlow.exe').as_posix()}"
         self.assertEqual(result.day, "2026-05-16")
         self.assertEqual(
             [call[0] for call in calls],
-            ["stop_weflow", "rotate", "start_weflow", "wait_ready", "all_chats", "wait_raw", "archive"],
+            ["prepare_backend", "rotate", "all_chats", "wait_raw", "shutdown_backend", "archive"],
         )
         self.assertEqual(result.self_moment_files, [])
         self.assertEqual(result.sidecar_chat_files, [])
         self.assertEqual(result.sidecar_moment_files, [])
 
-    def test_runner_fails_when_weflow_cannot_be_stopped_before_restart(self) -> None:
+    def test_runner_reports_backend_prepare_failure_before_rotation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             cfg = load_config(_write_config(root, target_users=""))
             deps = _quiet_deps(root)
-            deps.stop_weflow_processes = lambda timeout: False
+            deps.backend = FakeBackend(prepare_action=lambda: (_ for _ in ()).throw(RuntimeError("not ready")))
 
             with self.assertRaises(DailyExportStageError) as captured:
                 run_daily_export(cfg, deps=deps, day=date(2026, 5, 16))
 
-        self.assertEqual(captured.exception.stage, "stop_weflow")
-        self.assertIn("Timed out waiting", str(captured.exception.cause))
+        self.assertEqual(captured.exception.stage, "prepare_backend")
+        self.assertIn("not ready", str(captured.exception.cause))
 
     def test_main_stops_weflow_after_stage_failure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -431,20 +461,11 @@ weflow_exe = "{(root / 'WeFlow.exe').as_posix()}"
             calls: list[tuple] = []
 
             deps = DailyExportDeps(
-                stop_weflow_processes=lambda timeout: calls.append(("stop_weflow", int(timeout))),
+                backend=FakeBackend(calls=calls),
                 rotate_export_workspace=lambda cfg, label, mode: calls.append(("rotate", label, mode))
                 or SimpleNamespace(target=root / "rotation" / "run"),
-                ensure_weflow_running=lambda cfg: calls.append(("start_weflow",))
-                or SimpleNamespace(cdp_endpoint="http://127.0.0.1:9222"),
-                wait_for_ready_page=lambda endpoint: calls.append(("wait_ready", endpoint)),
                 wait_for_raw_exports_stable=lambda raw_path, min_files: calls.append(("wait_raw", min_files)),
-                batch_transcribe_voices_for=lambda usernames, config: calls.append(("voice", tuple(usernames))),
                 run_voice_fallback_script=lambda script_path, config: calls.append(("fallback", script_path)),
-                export_all_chats=lambda date, config, cleanup: calls.append(("all_chats", cleanup)),
-                export_moments_for=lambda usernames, date, config: calls.append(("moments", tuple(usernames))),
-                wait_for_export_tasks_idle=lambda config, title_contains: calls.append(
-                    ("wait_tasks_idle", title_contains)
-                ),
                 archive=lambda raw_path, config, clear_first: calls.append(("archive", clear_first)) or [root / "diary.md"],
                 archive_chats_for=lambda usernames, config, subroot, image_mode, clear_first: calls.append(
                     ("sidecar_chats", tuple(usernames), subroot, image_mode, clear_first)
@@ -462,24 +483,21 @@ weflow_exe = "{(root / 'WeFlow.exe').as_posix()}"
         self.assertEqual(
             [call[0] for call in calls],
             [
-                "stop_weflow",
+                "prepare_backend",
                 "rotate",
-                "start_weflow",
-                "wait_ready",
                 "voice",
                 "all_chats",
                 "wait_raw",
-                "wait_tasks_idle",
                 "moments",
                 "wait_raw",
+                "shutdown_backend",
                 "archive",
                 "sidecar_chats",
                 "sidecar_moments",
             ],
         )
         self.assertIn(("voice", ("Target",)), calls)
-        self.assertIn(("all_chats", "skip"), calls)
-        self.assertIn(("wait_tasks_idle", "自动化导出"), calls)
+        self.assertIn(("all_chats", "2026-05-16"), calls)
         self.assertIn(("sidecar_chats", ("Target",), "_sidecar/chats", "preserve_paths", True), calls)
         self.assertIn(("sidecar_moments", ("Target",), "_sidecar/moments", True), calls)
 
@@ -490,14 +508,10 @@ weflow_exe = "{(root / 'WeFlow.exe').as_posix()}"
             calls: list[tuple] = []
 
             deps = DailyExportDeps(
-                stop_weflow_processes=lambda timeout: calls.append(("stop_weflow",)),
+                backend=FakeBackend(calls=calls),
                 rotate_export_workspace=lambda cfg, label, mode: SimpleNamespace(target=root / "rotation" / "run"),
-                ensure_weflow_running=lambda cfg: SimpleNamespace(cdp_endpoint=None),
                 wait_for_raw_exports_stable=lambda raw_path, min_files: calls.append(("wait_raw", min_files)),
-                batch_transcribe_voices_for=lambda usernames, config: calls.append(("voice", tuple(usernames))),
                 run_voice_fallback_script=lambda script_path, config: calls.append(("fallback", script_path)),
-                export_all_chats=lambda date, config, cleanup: calls.append(("all_chats", cleanup)),
-                export_moments_for=lambda usernames, date, config: calls.append(("moments", tuple(usernames))),
                 archive=lambda raw_path, config, clear_first: calls.append(("archive", clear_first)) or [root / "diary.md"],
                 archive_chats_for=lambda usernames, config, subroot, image_mode, clear_first: [],
                 archive_moments_for=lambda usernames, config, subroot, clear_first: calls.append(
@@ -511,11 +525,12 @@ weflow_exe = "{(root / 'WeFlow.exe').as_posix()}"
         self.assertEqual(
             [call[0] for call in calls],
             [
-                "stop_weflow",
+                "prepare_backend",
                 "all_chats",
                 "wait_raw",
                 "moments",
                 "wait_raw",
+                "shutdown_backend",
                 "archive",
                 "archive_moments",
             ],
@@ -533,22 +548,15 @@ weflow_exe = "{(root / 'WeFlow.exe').as_posix()}"
             cfg = load_config(_write_config(root, target_users='"Target"', self_users='"Self"'))
             calls: list[tuple] = []
 
-            def export_moments(usernames, date, config):
-                calls.append(("moments", tuple(usernames)))
+            def export_moments(usernames, export_date):
                 if tuple(usernames) == ("Self",):
                     raise RuntimeError("CDP busy: timed out")
 
             deps = DailyExportDeps(
-                stop_weflow_processes=lambda timeout: None,
+                backend=FakeBackend(calls=calls, export_moments_action=export_moments),
                 rotate_export_workspace=lambda cfg, label, mode: SimpleNamespace(target=root / "run"),
-                ensure_weflow_running=lambda cfg: SimpleNamespace(cdp_endpoint="http://127.0.0.1:9222"),
-                wait_for_ready_page=lambda endpoint: None,
                 wait_for_raw_exports_stable=lambda raw_path, min_files: None,
-                batch_transcribe_voices_for=lambda usernames, config: None,
                 run_voice_fallback_script=lambda script_path, config: None,
-                export_all_chats=lambda date, config, cleanup: None,
-                export_moments_for=export_moments,
-                wait_for_export_tasks_idle=lambda config, title_contains: None,
                 archive=lambda raw_path, config, clear_first: calls.append(("archive",)) or [root / "diary.md"],
                 archive_chats_for=lambda usernames, config, subroot, image_mode, clear_first: calls.append(
                     ("sidecar_chats",)
@@ -625,13 +633,9 @@ weflow_exe = "{(root / 'WeFlow.exe').as_posix()}"
             cfg = load_config(_write_config(root, voice_users='"VoiceOnly"'))
             calls: list[tuple] = []
             deps = DailyExportDeps(
-                stop_weflow_processes=lambda timeout: None,
+                backend=FakeBackend(calls=calls),
                 rotate_export_workspace=lambda cfg, label, mode: SimpleNamespace(target=None),
-                ensure_weflow_running=lambda cfg: SimpleNamespace(cdp_endpoint=None),
                 wait_for_raw_exports_stable=lambda raw_path, min_files: None,
-                batch_transcribe_voices_for=lambda usernames, config: calls.append(("voice", tuple(usernames))),
-                export_all_chats=lambda date, config, cleanup: None,
-                export_moments_for=lambda usernames, date, config: None,
                 archive=lambda raw_path, config, clear_first: [],
                 archive_chats_for=lambda usernames, config, subroot, image_mode, clear_first: [],
                 archive_moments_for=lambda usernames, config, subroot, clear_first: [],
@@ -639,7 +643,45 @@ weflow_exe = "{(root / 'WeFlow.exe').as_posix()}"
 
             run_daily_export(cfg, deps=deps, day=date(2026, 5, 16))
 
-        self.assertEqual(calls, [("voice", ("VoiceOnly",))])
+        self.assertIn(("voice", ("VoiceOnly",)), calls)
+
+    def test_runner_skips_unsupported_capabilities_but_keeps_chat_pipeline(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = load_config(
+                _write_config(root, target_users='"Target"', self_users='"Self"', voice_users='"Voice"')
+            )
+            calls: list[tuple] = []
+            deps = DailyExportDeps(
+                backend=FakeBackend(calls=calls, capabilities=frozenset()),
+                rotate_export_workspace=lambda cfg, label, mode: SimpleNamespace(target=None),
+                wait_for_raw_exports_stable=lambda raw_path, min_files: None,
+                archive=lambda raw_path, config, clear_first: calls.append(("archive",)) or [],
+                archive_chats_for=lambda usernames, config, subroot, image_mode, clear_first: calls.append(
+                    ("sidecar_chats",)
+                )
+                or [],
+                archive_moments_for=lambda usernames, config, subroot, clear_first: calls.append(
+                    ("archive_moments",)
+                )
+                or [],
+            )
+
+            output = io.StringIO()
+            with redirect_stdout(output):
+                result = run_daily_export(cfg, deps=deps, day=date(2026, 5, 16))
+
+        call_names = [call[0] for call in calls]
+        self.assertIn("all_chats", call_names)
+        self.assertIn("archive", call_names)
+        self.assertIn("sidecar_chats", call_names)
+        self.assertNotIn("voice", call_names)
+        self.assertNotIn("moments", call_names)
+        self.assertNotIn("archive_moments", call_names)
+        self.assertEqual(result.partial_failures, [])
+        self.assertIn("voice_transcribe skipped: backend 'fake'", output.getvalue())
+        self.assertIn("export_target_moments skipped: backend 'fake'", output.getvalue())
+        self.assertIn("export_self_moments skipped: backend 'fake'", output.getvalue())
 
     def test_runner_calls_voice_fallback_before_archiving(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -649,14 +691,10 @@ weflow_exe = "{(root / 'WeFlow.exe').as_posix()}"
             cfg = load_config(_write_config(root, voice_fallback_script=fallback.as_posix()))
             calls: list[tuple] = []
             deps = DailyExportDeps(
-                stop_weflow_processes=lambda timeout: calls.append(("stop_weflow",)),
+                backend=FakeBackend(calls=calls),
                 rotate_export_workspace=lambda cfg, label, mode: SimpleNamespace(target=None),
-                ensure_weflow_running=lambda cfg: SimpleNamespace(cdp_endpoint=None),
                 wait_for_raw_exports_stable=lambda raw_path, min_files: calls.append(("wait_raw",)),
-                batch_transcribe_voices_for=lambda usernames, config: calls.append(("voice", tuple(usernames))),
                 run_voice_fallback_script=lambda script_path, config: calls.append(("fallback", Path(script_path).name)),
-                export_all_chats=lambda date, config, cleanup: calls.append(("all_chats",)),
-                export_moments_for=lambda usernames, date, config: calls.append(("moments",)),
                 archive=lambda raw_path, config, clear_first: calls.append(("archive",)) or [],
                 archive_chats_for=lambda usernames, config, subroot, image_mode, clear_first: [],
                 archive_moments_for=lambda usernames, config, subroot, clear_first: [],
@@ -672,13 +710,9 @@ weflow_exe = "{(root / 'WeFlow.exe').as_posix()}"
             _write_voice_failure_raw(root)
             cfg = load_config(_write_config(root))
             deps = DailyExportDeps(
-                stop_weflow_processes=lambda timeout: None,
+                backend=FakeBackend(),
                 rotate_export_workspace=lambda cfg, label, mode: SimpleNamespace(target=None),
-                ensure_weflow_running=lambda cfg: SimpleNamespace(cdp_endpoint=None),
                 wait_for_raw_exports_stable=lambda raw_path, min_files: None,
-                batch_transcribe_voices_for=lambda usernames, config: None,
-                export_all_chats=lambda date, config, cleanup: None,
-                export_moments_for=lambda usernames, date, config: None,
                 archive=archive,
                 archive_chats_for=archive_chats_for,
                 archive_moments_for=lambda usernames, config, subroot, clear_first: [],
@@ -708,14 +742,10 @@ weflow_exe = "{(root / 'WeFlow.exe').as_posix()}"
                 export_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
 
             deps = DailyExportDeps(
-                stop_weflow_processes=lambda timeout: None,
+                backend=FakeBackend(),
                 rotate_export_workspace=lambda cfg, label, mode: SimpleNamespace(target=None),
-                ensure_weflow_running=lambda cfg: SimpleNamespace(cdp_endpoint=None),
                 wait_for_raw_exports_stable=lambda raw_path, min_files: None,
-                batch_transcribe_voices_for=lambda usernames, config: None,
                 run_voice_fallback_script=apply_fallback,
-                export_all_chats=lambda date, config, cleanup: None,
-                export_moments_for=lambda usernames, date, config: None,
                 archive=archive,
                 archive_chats_for=archive_chats_for,
                 archive_moments_for=lambda usernames, config, subroot, clear_first: [],
