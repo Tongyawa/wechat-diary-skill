@@ -9,8 +9,8 @@ from typing import Any
 from unittest.mock import patch
 
 from wechat_diary_core.config import load_config
-from wechat_diary_core.weflow_automation.driver import DriverCommandError, ElementNotFound
-from wechat_diary_core.weflow_automation.exporter import export_all_chats, export_moments_for, wait_for_export_tasks_idle
+from wechat_diary_core.backends.weflow.driver import DriverCommandError, ElementNotFound
+from wechat_diary_core.backends.weflow.exporter import export_all_chats, export_moments_for, wait_for_export_tasks_idle
 
 
 class FakeDriver:
@@ -75,7 +75,7 @@ class FakeDriver:
         poll_interval: float = 1.0,
     ):
         self.calls.append(("wait_for_new_task_completion", title_contains, str(int(timeout))))
-        from wechat_diary_core.weflow_automation.cdp_driver import TaskRow
+        from wechat_diary_core.backends.weflow.cdp_driver import TaskRow
 
         return TaskRow(title=title_contains, status=status, signature="fake")
 
@@ -168,7 +168,7 @@ class ExporterTests(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         driver = FakeDriver()
 
-        with patch("wechat_diary_core.weflow_automation.driver.confirm_native_dialog") as confirm:
+        with patch("wechat_diary_core.backends.weflow.driver.confirm_native_dialog") as confirm:
             result = export_moments_for(["wxid_a", "wxid_b"], "2026-05-13", config=cfg, driver=driver)  # type: ignore[arg-type]
 
         self.assertEqual(result.kind, "moments")
@@ -271,7 +271,7 @@ class ExporterTests(unittest.TestCase):
                 ]
 
         buffer = io.StringIO()
-        with patch("wechat_diary_core.weflow_automation.driver.confirm_native_dialog"):
+        with patch("wechat_diary_core.backends.weflow.driver.confirm_native_dialog"):
             with redirect_stderr(buffer):
                 with self.assertRaises(DriverCommandError):
                     export_moments_for(["wxid_a"], "2026-05-13", config=cfg, driver=DumpDriver())  # type: ignore[arg-type]
@@ -286,8 +286,8 @@ class ExporterTests(unittest.TestCase):
 
 class ConnectCdpRetryTests(unittest.TestCase):
     def test_retries_cdp_connect_while_weflow_busy_then_succeeds(self) -> None:
-        from wechat_diary_core.weflow_automation import exporter
-        from wechat_diary_core.weflow_automation.driver import DriverUnavailable
+        from wechat_diary_core.backends.weflow import exporter
+        from wechat_diary_core.backends.weflow.driver import DriverUnavailable
 
         sentinel = object()
         attempts = [DriverUnavailable("busy"), DriverUnavailable("busy"), sentinel]
@@ -298,8 +298,8 @@ class ConnectCdpRetryTests(unittest.TestCase):
         self.assertEqual(connect.call_count, 3)
 
     def test_gives_up_after_busy_timeout(self) -> None:
-        from wechat_diary_core.weflow_automation import exporter
-        from wechat_diary_core.weflow_automation.driver import DriverUnavailable
+        from wechat_diary_core.backends.weflow import exporter
+        from wechat_diary_core.backends.weflow.driver import DriverUnavailable
 
         with patch.object(exporter.CdpDriver, "connect", side_effect=DriverUnavailable("busy")) as connect:
             with self.assertRaises(DriverUnavailable):
@@ -311,7 +311,7 @@ class ConnectCdpRetryTests(unittest.TestCase):
     def test_passes_busy_budget_as_per_evaluate_ws_timeout(self) -> None:
         # The busy budget must also become the per-evaluate socket timeout so a
         # transient renderer freeze waits itself out instead of failing a step.
-        from wechat_diary_core.weflow_automation import exporter
+        from wechat_diary_core.backends.weflow import exporter
 
         sentinel = object()
         with patch.object(exporter.CdpDriver, "connect", return_value=sentinel) as connect:
@@ -321,7 +321,7 @@ class ConnectCdpRetryTests(unittest.TestCase):
     def test_ws_timeout_floored_at_ten_seconds(self) -> None:
         # A tiny configured busy budget must not shrink the evaluate timeout below
         # the original 10s, or normal (responsive) polls could start timing out.
-        from wechat_diary_core.weflow_automation import exporter
+        from wechat_diary_core.backends.weflow import exporter
 
         sentinel = object()
         with patch.object(exporter.CdpDriver, "connect", return_value=sentinel) as connect:

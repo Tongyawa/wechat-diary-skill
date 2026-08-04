@@ -3,8 +3,8 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
-from wechat_diary_core.weflow_automation.driver import DriverCommand, run_driver_command
-from wechat_diary_core.weflow_automation.native_dialog import (
+from wechat_diary_core.backends.weflow.driver import DriverCommand, run_driver_command
+from wechat_diary_core.backends.weflow.native_dialog import (
     NativeDialogCloseTimeout,
     NativeDialogFocusError,
     NativeDialogTimeout,
@@ -152,7 +152,7 @@ class NativeDialogTests(unittest.TestCase):
         self.assertNotIn("enter", controller.actions)
 
     def test_driver_command_dispatches_native_dialog_confirmation(self) -> None:
-        with patch("wechat_diary_core.weflow_automation.driver.confirm_native_dialog") as confirm:
+        with patch("wechat_diary_core.backends.weflow.driver.confirm_native_dialog") as confirm:
             run_driver_command(
                 FakeDriver(),
                 DriverCommand("confirm_native_dialog", "选择导出目录", value="选择文件夹", timeout=12),

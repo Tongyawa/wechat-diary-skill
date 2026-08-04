@@ -23,16 +23,16 @@ from wechat_diary_core.archiving import archive, archive_chats_for
 from wechat_diary_core.config import Config, load_config
 from wechat_diary_core.preprocessing import archive_moments_for
 from wechat_diary_core.preprocessing import collect_voice_transcription_failures
-from wechat_diary_core.weflow_automation.cdp_driver import CdpDriver
-from wechat_diary_core.weflow_automation.driver import DriverCommandError, DriverUnavailable, ElementNotFound
-from wechat_diary_core.weflow_automation.exporter import export_all_chats, export_moments_for, wait_for_export_tasks_idle
-from wechat_diary_core.weflow_automation.launcher import (
+from wechat_diary_core.backends.weflow.cdp_driver import CdpDriver
+from wechat_diary_core.backends.weflow.driver import DriverCommandError, DriverUnavailable, ElementNotFound
+from wechat_diary_core.backends.weflow.exporter import export_all_chats, export_moments_for, wait_for_export_tasks_idle
+from wechat_diary_core.backends.weflow.launcher import (
     WeFlowSession,
     assert_single_weflow_instance,
     ensure_weflow_running,
     stop_weflow_processes,
 )
-from wechat_diary_core.weflow_automation.voice_transcribe import batch_transcribe_voices_for
+from wechat_diary_core.backends.weflow.voice_transcribe import batch_transcribe_voices_for
 from wechat_diary_core.workspace import rotate_export_workspace
 
 

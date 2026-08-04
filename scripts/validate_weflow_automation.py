@@ -13,12 +13,12 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from wechat_diary_core.config import Config, load_config
-from wechat_diary_core.weflow_automation.cdp_driver import CdpDriver, fetch_cdp_targets, select_page_target
-from wechat_diary_core.weflow_automation.driver import DriverUnavailable, ElementNotFound
-from wechat_diary_core.weflow_automation.exporter import export_all_chats, export_moments_for
-from wechat_diary_core.weflow_automation.launcher import ensure_weflow_running, restart_weflow
-from wechat_diary_core.weflow_automation.native_dialog import Win32WindowController, confirm_native_dialog
-from wechat_diary_core.weflow_automation.voice_transcribe import batch_transcribe_voices_for
+from wechat_diary_core.backends.weflow.cdp_driver import CdpDriver, fetch_cdp_targets, select_page_target
+from wechat_diary_core.backends.weflow.driver import DriverUnavailable, ElementNotFound
+from wechat_diary_core.backends.weflow.exporter import export_all_chats, export_moments_for
+from wechat_diary_core.backends.weflow.launcher import ensure_weflow_running, restart_weflow
+from wechat_diary_core.backends.weflow.native_dialog import Win32WindowController, confirm_native_dialog
+from wechat_diary_core.backends.weflow.voice_transcribe import batch_transcribe_voices_for
 
 
 def main() -> int:

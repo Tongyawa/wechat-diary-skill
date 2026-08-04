@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ..config import Config, load_config
+from ...config import Config, load_config
 from .driver import Driver, DriverCommand, DriverCommandError, ExporterContext, TaskFailed, run_driver_command
 from .exporter import create_driver
 

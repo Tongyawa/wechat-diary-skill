@@ -5,9 +5,9 @@ import unittest
 from pathlib import Path
 
 from wechat_diary_core.config import load_config
-from wechat_diary_core.weflow_automation.cdp_driver import TaskRow
-from wechat_diary_core.weflow_automation.driver import TaskFailed
-from wechat_diary_core.weflow_automation.voice_transcribe import batch_transcribe_voices_for
+from wechat_diary_core.backends.weflow.cdp_driver import TaskRow
+from wechat_diary_core.backends.weflow.driver import TaskFailed
+from wechat_diary_core.backends.weflow.voice_transcribe import batch_transcribe_voices_for
 
 
 class FakeDriver:

@@ -16,7 +16,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from wechat_diary_core.config import Config, load_config
-from wechat_diary_core.weflow_automation.cdp_driver import fetch_cdp_targets
+from wechat_diary_core.backends.weflow.cdp_driver import fetch_cdp_targets
 
 
 STATUS_ICON = {"ready": "✅", "warning": "⚠️", "error": "❌"}

@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from wechat_diary_core.config import load_config
-from wechat_diary_core.weflow_automation.launcher import (
+from wechat_diary_core.backends.weflow.launcher import (
     WeFlowInstanceConflict,
     WeFlowLaunchTimeout,
     WeFlowSession,
@@ -125,7 +125,7 @@ weflow_exe = "{exe.as_posix()}"
             cfg = load_config(config_path)
             log_path = Path(tmp) / "runlog" / "weflow.log"
 
-            with patch("wechat_diary_core.weflow_automation.launcher.subprocess.Popen") as popen:
+            with patch("wechat_diary_core.backends.weflow.launcher.subprocess.Popen") as popen:
                 launch_weflow(cfg.automation, log_path=log_path)
 
             kwargs = popen.call_args.kwargs
@@ -150,7 +150,7 @@ weflow_exe = "{exe.as_posix()}"
             )
             cfg = load_config(config_path)
 
-            with patch("wechat_diary_core.weflow_automation.launcher.subprocess.Popen") as popen:
+            with patch("wechat_diary_core.backends.weflow.launcher.subprocess.Popen") as popen:
                 launch_weflow(cfg.automation)
 
             kwargs = popen.call_args.kwargs
@@ -160,8 +160,8 @@ weflow_exe = "{exe.as_posix()}"
 
     def test_stop_weflow_processes_uses_taskkill_when_running(self) -> None:
         with (
-            patch("wechat_diary_core.weflow_automation.launcher.is_weflow_process_running", side_effect=[True, False]),
-            patch("wechat_diary_core.weflow_automation.launcher.subprocess.run") as run,
+            patch("wechat_diary_core.backends.weflow.launcher.is_weflow_process_running", side_effect=[True, False]),
+            patch("wechat_diary_core.backends.weflow.launcher.subprocess.run") as run,
         ):
             self.assertTrue(stop_weflow_processes(timeout=0.1, interval=0.01))
 
@@ -188,9 +188,9 @@ cdp_busy_timeout_sec = 0
             cfg = load_config(config_path)
 
             with (
-                patch("wechat_diary_core.weflow_automation.launcher.is_cdp_available", return_value=False),
-                patch("wechat_diary_core.weflow_automation.launcher.is_weflow_process_running", return_value=True),
-                patch("wechat_diary_core.weflow_automation.launcher.launch_weflow") as launch,
+                patch("wechat_diary_core.backends.weflow.launcher.is_cdp_available", return_value=False),
+                patch("wechat_diary_core.backends.weflow.launcher.is_weflow_process_running", return_value=True),
+                patch("wechat_diary_core.backends.weflow.launcher.launch_weflow") as launch,
             ):
                 with self.assertRaises(WeFlowLaunchTimeout):
                     ensure_weflow_running(cfg)
@@ -221,13 +221,13 @@ cdp_busy_timeout_sec = 5
             # 1st False = fast-path probe; 2nd False then True = busy-wait loop recovering.
             with (
                 patch(
-                    "wechat_diary_core.weflow_automation.launcher.is_cdp_available",
+                    "wechat_diary_core.backends.weflow.launcher.is_cdp_available",
                     side_effect=[False, False, True],
                 ),
-                patch("wechat_diary_core.weflow_automation.launcher.is_weflow_process_running", return_value=True),
-                patch("wechat_diary_core.weflow_automation.launcher.launch_weflow") as launch,
-                patch("wechat_diary_core.weflow_automation.launcher.normalize_weflow_window", return_value=True),
-                patch("wechat_diary_core.weflow_automation.launcher.find_weflow_windows", return_value=()),
+                patch("wechat_diary_core.backends.weflow.launcher.is_weflow_process_running", return_value=True),
+                patch("wechat_diary_core.backends.weflow.launcher.launch_weflow") as launch,
+                patch("wechat_diary_core.backends.weflow.launcher.normalize_weflow_window", return_value=True),
+                patch("wechat_diary_core.backends.weflow.launcher.find_weflow_windows", return_value=()),
             ):
                 session = ensure_weflow_running(cfg)
 
@@ -252,8 +252,8 @@ weflow_exe = "{exe.as_posix()}"
             cfg = load_config(config_path)
 
             with (
-                patch("wechat_diary_core.weflow_automation.launcher.stop_weflow_processes", return_value=False),
-                patch("wechat_diary_core.weflow_automation.launcher.ensure_weflow_running") as ensure,
+                patch("wechat_diary_core.backends.weflow.launcher.stop_weflow_processes", return_value=False),
+                patch("wechat_diary_core.backends.weflow.launcher.ensure_weflow_running") as ensure,
             ):
                 with self.assertRaises(WeFlowLaunchTimeout):
                     restart_weflow(cfg)
@@ -272,9 +272,9 @@ weflow_exe = "{exe.as_posix()}"
             return {100: "explorer.exe", 200: "WeFlow.exe"}.get(pid)
 
         with (
-            patch("wechat_diary_core.weflow_automation.launcher.ctypes.windll", create=True) as windll,
+            patch("wechat_diary_core.backends.weflow.launcher.ctypes.windll", create=True) as windll,
             patch(
-                "wechat_diary_core.weflow_automation.launcher.ctypes.WINFUNCTYPE",
+                "wechat_diary_core.backends.weflow.launcher.ctypes.WINFUNCTYPE",
                 create=True,
                 side_effect=lambda *_args: (lambda callback: callback),
             ),
@@ -299,9 +299,9 @@ weflow_exe = "{exe.as_posix()}"
             return {100: "explorer.exe", 200: "WeFlow.exe"}.get(pid)
 
         with (
-            patch("wechat_diary_core.weflow_automation.launcher.ctypes.windll", create=True) as windll,
+            patch("wechat_diary_core.backends.weflow.launcher.ctypes.windll", create=True) as windll,
             patch(
-                "wechat_diary_core.weflow_automation.launcher.ctypes.WINFUNCTYPE",
+                "wechat_diary_core.backends.weflow.launcher.ctypes.WINFUNCTYPE",
                 create=True,
                 side_effect=lambda *_args: (lambda callback: callback),
             ),
@@ -325,7 +325,7 @@ weflow_exe = "{exe.as_posix()}"
             WeFlowWindow(pid=100, image_name="WeFlow.exe", title="WeFlow"),
             WeFlowWindow(pid=200, image_name="WeFlow.exe", title="WeFlow"),
         )
-        with patch("wechat_diary_core.weflow_automation.launcher.find_weflow_windows", return_value=windows):
+        with patch("wechat_diary_core.backends.weflow.launcher.find_weflow_windows", return_value=windows):
             with self.assertRaises(WeFlowInstanceConflict) as captured:
                 assert_single_weflow_instance(session)
 

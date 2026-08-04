@@ -12,7 +12,7 @@ import time
 import urllib.error
 import urllib.request
 
-from ..config import AutomationConfig, Config, WindowGeometry, load_config
+from ...config import AutomationConfig, Config, WindowGeometry, load_config
 
 
 WEFLOW_PROCESS_NAME = "WeFlow.exe"

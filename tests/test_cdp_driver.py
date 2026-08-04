@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 import unittest
 
-from wechat_diary_core.weflow_automation.cdp_driver import (
+from wechat_diary_core.backends.weflow.cdp_driver import (
     CdpDriver,
     POST_CLICK_DELAY_SEC,
     POST_TEXT_DELAY_SEC,
@@ -11,7 +11,7 @@ from wechat_diary_core.weflow_automation.cdp_driver import (
     _close_modal_script,
     select_page_target,
 )
-from wechat_diary_core.weflow_automation.driver import ElementNotFound
+from wechat_diary_core.backends.weflow.driver import ElementNotFound
 
 
 class FakeConnection:
@@ -121,7 +121,7 @@ class CdpDriverTests(unittest.TestCase):
         self.assertIn("element.click();", script)
 
     def test_checkbox_state_script_finds_label_checkbox(self) -> None:
-        from wechat_diary_core.weflow_automation.cdp_driver import _checkbox_state_script
+        from wechat_diary_core.backends.weflow.cdp_driver import _checkbox_state_script
 
         script = _checkbox_state_script("图片")
 
@@ -206,7 +206,7 @@ class CdpDriverTests(unittest.TestCase):
         self.assertEqual(result.status, "已完成")
 
     def test_wait_for_new_task_completion_raises_on_timeout(self) -> None:
-        from wechat_diary_core.weflow_automation.driver import ElementNotFound
+        from wechat_diary_core.backends.weflow.driver import ElementNotFound
 
         connection = FakeConnection(values=[[] for _ in range(200)])
         driver = CdpDriver(connection)  # type: ignore[arg-type]
@@ -221,7 +221,7 @@ class CdpDriverTests(unittest.TestCase):
             )
 
     def test_wait_for_new_task_completion_raises_on_failed_new_row(self) -> None:
-        from wechat_diary_core.weflow_automation.driver import TaskFailed
+        from wechat_diary_core.backends.weflow.driver import TaskFailed
 
         connection = FakeConnection(
             values=[
@@ -291,7 +291,7 @@ class CdpConnectWsTimeoutTests(unittest.TestCase):
         # the websocket layer rather than defaulting to the 10s floor.
         from unittest.mock import patch
 
-        from wechat_diary_core.weflow_automation import cdp_driver
+        from wechat_diary_core.backends.weflow import cdp_driver
 
         target = cdp_driver.CdpTarget(
             id="home", title="WeFlow", url="#/home", websocket_url="ws://127.0.0.1/home"
