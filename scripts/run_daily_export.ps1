@@ -67,6 +67,14 @@ function ShouldShowDailyExportLine {
     return $true
   }
 
+  if ($Line -match '^manual backend:') {
+    return $true
+  }
+
+  if ($Line -match '^config 建议迁移') {
+    return $true
+  }
+
   if ($Line -match '^(FAILED at stage|FAILED before export completed|Reason|Next step):') {
     return $true
   }

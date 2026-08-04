@@ -31,7 +31,13 @@ electron_cdp_port = 9333
         self.assertEqual(first.export_backend.weflow.electron_cdp_port, 9333)
         self.assertIs(first.automation, first.export_backend.weflow)
         self.assertEqual(second.automation.driver, "uia")
-        self.assertEqual(output.getvalue().count("config 建议迁移到 [export_backend.weflow]"), 1)
+        hint = output.getvalue()
+        self.assertEqual(hint.count("config 建议迁移到 [export_backend.weflow]"), 1)
+        self.assertIn(
+            "请将 config.toml 的 [automation] / [automation.template_fallback] 段名改成 "
+            "[export_backend.weflow] / [export_backend.weflow.template_fallback] 即可消除本提示。",
+            hint,
+        )
 
     def test_new_backend_config_takes_precedence_without_migration_hint(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

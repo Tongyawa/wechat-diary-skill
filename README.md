@@ -131,7 +131,3 @@ python -m unittest discover -s tests
   `preprocessing.group_context_window.enabled` 设为 `false`，此时群聊保留全量消息流。私聊始终保留全量消息流。
 - 图片可走本地 OCR，微信表情目录会跳过，语音转文字失败默认只记录警告。
 - 长期归档采用合并覆盖语义：相同相对路径下，新导出覆盖旧导出，用于避免重复运行产生重复文件。
-
----
-
-变更记录：2026-08-04 增加可替换导出后端与 manual 离线应急配置说明。〔Codex-5.6Sol-h〕

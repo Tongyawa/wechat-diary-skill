@@ -262,6 +262,7 @@ def run_daily_export(
             "prepare/rotate/export stages skipped."
         )
         rotation = None
+        _run_stage("validate_raw_root", lambda: _validate_manual_raw_root(cfg.paths.raw))
         _run_stage(
             "archive_existing_processed",
             lambda: active_deps.archive_existing_processed(
@@ -334,7 +335,7 @@ def run_daily_export(
                 print("export_self_moments skipped: no configured self moments contacts.")
         finally:
             if prepared:
-                _finish_backend(backend)
+                _finish_backend(backend, moments_failures)
 
     if cfg.daily_export.voice_fallback_script:
         _run_stage(
@@ -578,17 +579,30 @@ def _run_moments_stage(
     return True
 
 
-def _finish_backend(backend: ExporterBackend) -> None:
-    """Shut down backend-owned resources without masking a primary failure."""
+def _validate_manual_raw_root(raw_root: Path) -> None:
+    if not raw_root.exists():
+        raise FileNotFoundError(
+            f"Raw root does not exist: {raw_root}。请将 canonical raw 放进该路径后重试。"
+        )
+    if not raw_root.is_dir():
+        raise NotADirectoryError(
+            f"Raw root is not a directory: {raw_root}。请将 canonical raw 放进该路径后重试。"
+        )
+    if not any(raw_root.iterdir()):
+        raise FileNotFoundError(
+            f"Raw root is empty: {raw_root}。请将 canonical raw 放进该路径后重试。"
+        )
 
-    failure_in_flight = sys.exc_info()[0] is not None
+
+def _finish_backend(backend: ExporterBackend, partial_failures: list[str]) -> None:
+    """Shut down backend-owned resources without masking the export result."""
+
     try:
         _run_stage("shutdown_backend", backend.shutdown)
     except DailyExportStageError as exc:
-        if not failure_in_flight:
-            raise
+        partial_failures.append("shutdown_backend")
         print(
-            f"[WARN] backend shutdown failed after an earlier error: {exc.cause}",
+            f"[WARN] backend shutdown failed; export pipeline will continue: {exc.cause}",
             file=sys.stderr,
         )
 
@@ -605,7 +619,10 @@ def _needs_weflow_path(data: dict[str, Any]) -> bool:
     if backend == "manual":
         return False
     export_backend = data.get("export_backend") or {}
-    weflow = export_backend.get("weflow") or data.get("automation") or {}
+    weflow = {
+        **(data.get("automation") or {}),
+        **(export_backend.get("weflow") or {}),
+    }
     value = str(weflow.get("weflow_exe") or "").strip()
     return not value or value == "C:/Path/To/WeFlow.exe"
 

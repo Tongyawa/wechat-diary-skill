@@ -255,6 +255,14 @@ class DailyExportScriptTests(unittest.TestCase):
         self.assertIn("CompletedWithWarnings", script)
         self.assertIn("完成但有警告", script)
         self.assertIn("Daily export completed( with warnings)?", script)
+        self.assertIn("^manual backend:", script)
+        self.assertIn("^config 建议迁移", script)
+
+    def test_public_readme_has_no_model_signature_footer(self) -> None:
+        readme = Path("README.md").read_text(encoding="utf-8")
+
+        self.assertNotIn("变更记录：2026-08-04", readme)
+        self.assertNotRegex(readme, r"〔[^〕]+〕")
 
     def test_ensure_local_config_allows_empty_target_defaults(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -390,6 +398,77 @@ self_moments_usernames = []
             cfg = load_config(config_path)
 
         self.assertEqual(cfg.export_backend.backend, "manual")
+
+    def test_ensure_local_config_merges_legacy_weflow_path_with_new_section(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = root / "config.toml"
+            config_path.write_text(
+                f"""
+[automation]
+weflow_exe = "{(root / 'WeFlow.exe').as_posix()}"
+
+[export_backend]
+backend = "weflow"
+
+[export_backend.weflow]
+driver = "uia"
+""".strip(),
+                encoding="utf-8",
+            )
+
+            ensure_local_config(
+                config_path=config_path,
+                example_path=Path("config.example.toml"),
+                prompt=False,
+                input_func=lambda _prompt: (_ for _ in ()).throw(AssertionError("must not prompt")),
+            )
+            self.assertTrue(config_path.exists())
+
+    def test_manual_backend_rejects_missing_raw_before_archiving_processed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = load_config(_write_config(root, target_users="", backend="manual"))
+            processed_file = cfg.paths.processed / "live.md"
+            processed_file.parent.mkdir(parents=True)
+            processed_file.write_text("live", encoding="utf-8")
+            archive_calls: list[tuple] = []
+            deps = DailyExportDeps(
+                backend=FakeBackend(name="manual"),
+                archive_existing_processed=lambda *args: archive_calls.append(args),
+            )
+
+            with self.assertRaises(DailyExportStageError) as captured:
+                run_daily_export(cfg, deps=deps, day=date(2026, 5, 16))
+
+            self.assertEqual(captured.exception.stage, "validate_raw_root")
+            self.assertIn("Raw root does not exist:", str(captured.exception.cause))
+            self.assertIn("canonical raw", str(captured.exception.cause))
+            self.assertEqual(archive_calls, [])
+            self.assertTrue(processed_file.exists())
+
+    def test_manual_backend_rejects_empty_raw_before_archiving_processed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = load_config(_write_config(root, target_users="", backend="manual"))
+            cfg.paths.raw.mkdir(parents=True)
+            processed_file = cfg.paths.processed / "live.md"
+            processed_file.parent.mkdir(parents=True)
+            processed_file.write_text("live", encoding="utf-8")
+            archive_calls: list[tuple] = []
+            deps = DailyExportDeps(
+                backend=FakeBackend(name="manual"),
+                archive_existing_processed=lambda *args: archive_calls.append(args),
+            )
+
+            with self.assertRaises(DailyExportStageError) as captured:
+                run_daily_export(cfg, deps=deps, day=date(2026, 5, 16))
+
+            self.assertEqual(captured.exception.stage, "validate_raw_root")
+            self.assertIn("Raw root is empty:", str(captured.exception.cause))
+            self.assertIn("canonical raw", str(captured.exception.cause))
+            self.assertEqual(archive_calls, [])
+            self.assertTrue(processed_file.exists())
 
     def test_runner_skips_target_steps_when_target_is_empty(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -680,6 +759,31 @@ self_moments_usernames = []
 
         self.assertEqual(result.partial_failures, [])
         self.assertEqual(result.self_moment_files, [root / "self.md"])
+
+    def test_shutdown_failure_warns_but_continues_archive_pipeline(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = load_config(_write_config(root, target_users=""))
+            calls: list[tuple] = []
+
+            def fail_shutdown() -> None:
+                raise RuntimeError("cleanup unavailable")
+
+            deps = DailyExportDeps(
+                backend=FakeBackend(calls=calls, shutdown_action=fail_shutdown),
+                rotate_export_workspace=lambda cfg, label, mode: SimpleNamespace(target=None),
+                wait_for_raw_exports_stable=lambda raw_path, min_files: None,
+                archive=lambda raw_path, config, clear_first: calls.append(("archive",)) or [],
+                archive_chats_for=lambda usernames, config, subroot, image_mode, clear_first: [],
+                archive_moments_for=lambda usernames, config, subroot, clear_first: [],
+            )
+
+            with redirect_stderr(io.StringIO()) as err:
+                result = run_daily_export(cfg, deps=deps, day=date(2026, 5, 16))
+
+        self.assertIn(("archive",), calls)
+        self.assertIn("shutdown_backend", result.partial_failures)
+        self.assertIn("cleanup unavailable", err.getvalue())
 
     def test_runner_warns_loudly_when_self_moments_unconfigured(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

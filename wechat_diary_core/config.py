@@ -325,7 +325,9 @@ def _normalize_export_backend(loaded: dict[str, Any], path: Path) -> dict[str, A
     resolved = path.resolve()
     if resolved not in _MIGRATION_HINTED_PATHS:
         print(
-            "config 建议迁移到 [export_backend.weflow]；当前 [automation] 仍兼容。",
+            "config 建议迁移到 [export_backend.weflow]；当前 [automation] 仍兼容。"
+            "请将 config.toml 的 [automation] / [automation.template_fallback] 段名改成 "
+            "[export_backend.weflow] / [export_backend.weflow.template_fallback] 即可消除本提示。",
             file=sys.stderr,
         )
         _MIGRATION_HINTED_PATHS.add(resolved)
