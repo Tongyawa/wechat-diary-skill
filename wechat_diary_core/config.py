@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 import copy
+import sys
 import tomllib
 
 
@@ -18,26 +19,29 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "archived": "WeFlow-archived-exports",
         "insights": "WeFlow-insights",
     },
-    "automation": {
-        "driver": "cdp",
-        "weflow_exe": "C:/Path/To/WeFlow.exe",
-        "launch_timeout_sec": 90,
-        "poll_export_interval_sec": 60,
-        # How long to tolerate an alive-but-unresponsive WeFlow (heavy background
-        # export / the InsightService silent-contact scan pegs the single-threaded
-        # renderer). Used twice: (1) keep retrying :9222 at connect time, and
-        # (2) as the per-evaluate socket timeout so a transient renderer freeze
-        # waits itself out instead of aborting a GUI step with a 10s socket
-        # timeout (the moments date-range dialog failures). Generous on purpose:
-        # WeFlow is busy, not dead.
-        "cdp_busy_timeout_sec": 300,
-        "window_geometry": {"width": 1280, "height": 900},
-        "electron_accessibility_flag": "--force-renderer-accessibility",
-        "electron_cdp_port": 9222,
-        "template_fallback": {
-            "zoom_reset_shortcut": "ctrl+0",
-            "multi_scale": [0.85, 0.9, 0.95, 1.0, 1.05],
-            "retry": 3,
+    "export_backend": {
+        "backend": "weflow",
+        "weflow": {
+            "driver": "cdp",
+            "weflow_exe": "C:/Path/To/WeFlow.exe",
+            "launch_timeout_sec": 90,
+            "poll_export_interval_sec": 60,
+            # How long to tolerate an alive-but-unresponsive WeFlow (heavy background
+            # export / the InsightService silent-contact scan pegs the single-threaded
+            # renderer). Used twice: (1) keep retrying :9222 at connect time, and
+            # (2) as the per-evaluate socket timeout so a transient renderer freeze
+            # waits itself out instead of aborting a GUI step with a 10s socket
+            # timeout (the moments date-range dialog failures). Generous on purpose:
+            # WeFlow is busy, not dead.
+            "cdp_busy_timeout_sec": 300,
+            "window_geometry": {"width": 1280, "height": 900},
+            "electron_accessibility_flag": "--force-renderer-accessibility",
+            "electron_cdp_port": 9222,
+            "template_fallback": {
+                "zoom_reset_shortcut": "ctrl+0",
+                "multi_scale": [0.85, 0.9, 0.95, 1.0, 1.05],
+                "retry": 3,
+            },
         },
     },
     "preprocessing": {
@@ -73,6 +77,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "restart_weflow": True,
     },
 }
+
+
+_MIGRATION_HINTED_PATHS: set[Path] = set()
 
 
 @dataclass(frozen=True)
@@ -115,6 +122,12 @@ class AutomationConfig:
     electron_accessibility_flag: str
     electron_cdp_port: int
     template_fallback: TemplateFallbackConfig
+
+
+@dataclass(frozen=True)
+class ExportBackendConfig:
+    backend: str
+    weflow: AutomationConfig
 
 
 @dataclass(frozen=True)
@@ -166,6 +179,9 @@ class DailyExportConfig:
 class Config:
     user: UserConfig
     paths: PathsConfig
+    export_backend: ExportBackendConfig
+    # Compatibility alias for callers not yet migrated to
+    # ``config.export_backend.weflow``.
     automation: AutomationConfig
     preprocessing: PreprocessingConfig
     agent: AgentConfig
@@ -186,18 +202,21 @@ def load_config(config_path: str | Path | None = None) -> Config:
         with path.open("rb") as fh:
             loaded = tomllib.load(fh)
 
-    merged = _deep_merge(DEFAULT_CONFIG, loaded)
+    normalized = _normalize_export_backend(loaded, path)
+    merged = _deep_merge(DEFAULT_CONFIG, normalized)
 
     legacy_weflow_exe = merged.get("paths", {}).pop("weflow_exe", None)
-    if legacy_weflow_exe and not loaded.get("automation", {}).get("weflow_exe"):
-        merged["automation"]["weflow_exe"] = legacy_weflow_exe
+    explicit_weflow = (normalized.get("export_backend") or {}).get("weflow") or {}
+    if legacy_weflow_exe and not explicit_weflow.get("weflow_exe"):
+        merged["export_backend"]["weflow"]["weflow_exe"] = legacy_weflow_exe
 
     return _build_config(merged, base_dir, source=loaded)
 
 
 def _build_config(raw: dict[str, Any], base_dir: Path, *, source: dict[str, Any]) -> Config:
     paths = raw["paths"]
-    automation = raw["automation"]
+    export_backend = raw["export_backend"]
+    automation = export_backend["weflow"]
     preprocessing = raw["preprocessing"]
     group_window = preprocessing["group_context_window"]
     template = automation["template_fallback"]
@@ -211,6 +230,31 @@ def _build_config(raw: dict[str, Any], base_dir: Path, *, source: dict[str, Any]
     if cleanup_mode not in {"archive", "delete", "skip"}:
         raise ValueError(f"Unsupported daily_export cleanup_mode: {cleanup_mode}")
 
+    backend_name = str(export_backend.get("backend") or "weflow").strip().lower()
+    if not backend_name:
+        raise ValueError("export_backend.backend must not be empty")
+
+    automation_config = AutomationConfig(
+        driver=driver,
+        weflow_exe=_resolve_path(base_dir, automation["weflow_exe"]),
+        launch_timeout_sec=float(automation["launch_timeout_sec"]),
+        poll_export_interval_sec=float(automation["poll_export_interval_sec"]),
+        cdp_busy_timeout_sec=float(automation["cdp_busy_timeout_sec"]),
+        window_geometry=WindowGeometry(
+            width=int(geometry["width"]),
+            height=int(geometry["height"]),
+            x=_optional_int(geometry.get("x")),
+            y=_optional_int(geometry.get("y")),
+        ),
+        electron_accessibility_flag=str(automation["electron_accessibility_flag"]),
+        electron_cdp_port=int(automation["electron_cdp_port"]),
+        template_fallback=TemplateFallbackConfig(
+            zoom_reset_shortcut=str(template["zoom_reset_shortcut"]),
+            multi_scale=[float(value) for value in template["multi_scale"]],
+            retry=int(template["retry"]),
+        ),
+    )
+
     return Config(
         user=UserConfig(
             self_wxids=list(raw["user"]["self_wxids"]),
@@ -222,26 +266,8 @@ def _build_config(raw: dict[str, Any], base_dir: Path, *, source: dict[str, Any]
             archived=_resolve_path(base_dir, paths["archived"]),
             insights=_resolve_path(base_dir, paths["insights"]),
         ),
-        automation=AutomationConfig(
-            driver=driver,
-            weflow_exe=_resolve_path(base_dir, automation["weflow_exe"]),
-            launch_timeout_sec=float(automation["launch_timeout_sec"]),
-            poll_export_interval_sec=float(automation["poll_export_interval_sec"]),
-            cdp_busy_timeout_sec=float(automation["cdp_busy_timeout_sec"]),
-            window_geometry=WindowGeometry(
-                width=int(geometry["width"]),
-                height=int(geometry["height"]),
-                x=_optional_int(geometry.get("x")),
-                y=_optional_int(geometry.get("y")),
-            ),
-            electron_accessibility_flag=str(automation["electron_accessibility_flag"]),
-            electron_cdp_port=int(automation["electron_cdp_port"]),
-            template_fallback=TemplateFallbackConfig(
-                zoom_reset_shortcut=str(template["zoom_reset_shortcut"]),
-                multi_scale=[float(value) for value in template["multi_scale"]],
-                retry=int(template["retry"]),
-            ),
-        ),
+        export_backend=ExportBackendConfig(backend=backend_name, weflow=automation_config),
+        automation=automation_config,
         preprocessing=PreprocessingConfig(
             skip_emoji_dir=bool(preprocessing["skip_emoji_dir"]),
             voice_fail_log_only=bool(preprocessing["voice_fail_log_only"]),
@@ -278,6 +304,32 @@ def _build_config(raw: dict[str, Any], base_dir: Path, *, source: dict[str, Any]
         raw=copy.deepcopy(raw),
         source=copy.deepcopy(source),
     )
+
+
+def _normalize_export_backend(loaded: dict[str, Any], path: Path) -> dict[str, Any]:
+    """Map legacy ``[automation]`` values into the new backend namespace."""
+
+    normalized = copy.deepcopy(loaded)
+    legacy = loaded.get("automation")
+    if not isinstance(legacy, dict):
+        return normalized
+
+    export_backend = normalized.setdefault("export_backend", {})
+    explicit_weflow = export_backend.get("weflow")
+    if isinstance(explicit_weflow, dict):
+        export_backend["weflow"] = _deep_merge(legacy, explicit_weflow)
+    else:
+        export_backend["weflow"] = copy.deepcopy(legacy)
+    normalized.pop("automation", None)
+
+    resolved = path.resolve()
+    if resolved not in _MIGRATION_HINTED_PATHS:
+        print(
+            "config 建议迁移到 [export_backend.weflow]；当前 [automation] 仍兼容。",
+            file=sys.stderr,
+        )
+        _MIGRATION_HINTED_PATHS.add(resolved)
+    return normalized
 
 
 def _deep_merge(defaults: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:

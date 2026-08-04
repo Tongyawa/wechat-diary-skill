@@ -66,7 +66,8 @@ WeFlow-insights/             # 日记、DoneList、灵感、画像、主线等�
 
 3. 编辑 `$Workspace\config.toml`，至少确认：
 
-   - `[automation].weflow_exe`：本机 WeFlow 可执行文件路径。
+   - `[export_backend].backend`：默认 `weflow`；已有 canonical raw、只想离线处理时可设为 `manual`。
+   - `[export_backend.weflow].weflow_exe`：legacy WeFlow GUI 后端的可执行文件路径。旧 `[automation]` 配置仍兼容，运行时会提示迁移。
    - `[paths]`：raw、processed、archived、insights 的落点。
    - `[user].self_wxids`：自己的 wxid / 文件传输助手，用于识别收集箱。
    - `[skills].daily`：默认包含 `wechat-diary-skill`。
@@ -130,3 +131,7 @@ python -m unittest discover -s tests
   `preprocessing.group_context_window.enabled` 设为 `false`，此时群聊保留全量消息流。私聊始终保留全量消息流。
 - 图片可走本地 OCR，微信表情目录会跳过，语音转文字失败默认只记录警告。
 - 长期归档采用合并覆盖语义：相同相对路径下，新导出覆盖旧导出，用于避免重复运行产生重复文件。
+
+---
+
+变更记录：2026-08-04 增加可替换导出后端与 manual 离线应急配置说明。〔Codex-5.6Sol-h〕

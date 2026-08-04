@@ -21,9 +21,7 @@ from wechat_diary_core.backends.weflow.cdp_driver import fetch_cdp_targets
 
 STATUS_ICON = {"ready": "✅", "warning": "⚠️", "error": "❌"}
 STATUS_LABEL = {"ready": "就绪", "warning": "注意", "error": "缺失"}
-REQUIRED_CONFIG_KEYS = (
-    "automation.weflow_exe",
-    "automation.electron_cdp_port",
+REQUIRED_PATH_KEYS = (
     "paths.raw",
     "paths.processed",
     "paths.archived",
@@ -104,15 +102,25 @@ def run_doctor(config_path: str | Path = "config.toml", *, deps: ProbeDependenci
         )
 
     checks = [_check_config(cfg, path)]
-    checks.append(_check_weflow_executable(cfg))
-    checks.append(_check_cdp(cfg, active.fetch_cdp_targets))
+    if cfg.export_backend.backend == "manual":
+        checks.extend(_manual_backend_checks())
+    else:
+        checks.append(_check_weflow_executable(cfg))
+        checks.append(_check_cdp(cfg, active.fetch_cdp_targets))
     checks.extend(_check_data_roots(cfg, active.can_write))
     checks.extend(_check_optional_dependencies(cfg, active.find_spec))
     return DoctorReport(checks)
 
 
 def _check_config(cfg: Config, config_path: Path) -> CheckResult:
-    missing = [key for key in REQUIRED_CONFIG_KEYS if not _has_config_key(cfg.source, key)]
+    missing = [key for key in REQUIRED_PATH_KEYS if not _has_config_key(cfg.source, key)]
+    if cfg.export_backend.backend == "weflow":
+        for key in ("weflow_exe", "electron_cdp_port"):
+            if not (
+                _has_config_key(cfg.source, f"export_backend.weflow.{key}")
+                or _has_config_key(cfg.source, f"automation.{key}")
+            ):
+                missing.append(f"export_backend.weflow.{key}")
     if missing:
         return CheckResult(
             id="config",
@@ -159,7 +167,7 @@ def _check_weflow_executable(cfg: Config) -> CheckResult:
         name="WeFlow 可执行文件",
         status="error",
         message=f"文件不存在：{executable}",
-        action="修改 config.toml 的 automation.weflow_exe，使其指向实际的 WeFlow.exe。",
+        action="修改 config.toml 的 export_backend.weflow.weflow_exe，使其指向实际的 WeFlow.exe。",
         details={"path": str(executable)},
     )
 
@@ -174,7 +182,7 @@ def _check_cdp(cfg: Config, probe: Callable[[str], list[dict[str, Any]]]) -> Che
             name="CDP 调试端口",
             status="error",
             message=f"端口值无效：{port}",
-            action="把 config.toml 的 automation.electron_cdp_port 改为 1–65535 之间的端口。",
+            action="把 config.toml 的 export_backend.weflow.electron_cdp_port 改为 1–65535 之间的端口。",
             details={"endpoint": endpoint},
         )
     try:
@@ -207,6 +215,25 @@ def _check_cdp(cfg: Config, probe: Callable[[str], list[dict[str, Any]]]) -> Che
         message=f"已连接 {endpoint}，发现 {len(targets)} 个目标。",
         details={"endpoint": endpoint, "target_count": len(targets)},
     )
+
+
+def _manual_backend_checks() -> list[CheckResult]:
+    return [
+        CheckResult(
+            id="weflow_executable",
+            group="数据入口",
+            name="WeFlow 可执行文件",
+            status="ready",
+            message="manual 后端不需要 WeFlow 可执行文件。",
+        ),
+        CheckResult(
+            id="cdp",
+            group="数据入口",
+            name="CDP 调试端口",
+            status="ready",
+            message="manual 后端不连接 CDP；将直接处理现有 raw。",
+        ),
+    ]
 
 
 def _check_data_roots(cfg: Config, can_write: Callable[[Path], bool]) -> list[CheckResult]:

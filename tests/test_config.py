@@ -1,13 +1,59 @@
 from __future__ import annotations
 
+import io
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 from wechat_diary_core.config import load_config
 
 
 class ConfigTests(unittest.TestCase):
+    def test_legacy_automation_maps_to_weflow_backend_with_one_hint(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.toml"
+            config_path.write_text(
+                """
+[automation]
+driver = "uia"
+electron_cdp_port = 9333
+""".strip(),
+                encoding="utf-8",
+            )
+            output = io.StringIO()
+            with redirect_stderr(output):
+                first = load_config(config_path)
+                second = load_config(config_path)
+
+        self.assertEqual(first.export_backend.backend, "weflow")
+        self.assertEqual(first.export_backend.weflow.driver, "uia")
+        self.assertEqual(first.export_backend.weflow.electron_cdp_port, 9333)
+        self.assertIs(first.automation, first.export_backend.weflow)
+        self.assertEqual(second.automation.driver, "uia")
+        self.assertEqual(output.getvalue().count("config 建议迁移到 [export_backend.weflow]"), 1)
+
+    def test_new_backend_config_takes_precedence_without_migration_hint(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.toml"
+            config_path.write_text(
+                """
+[export_backend]
+backend = "manual"
+
+[export_backend.weflow]
+driver = "template"
+""".strip(),
+                encoding="utf-8",
+            )
+            output = io.StringIO()
+            with redirect_stdout(output):
+                cfg = load_config(config_path)
+
+        self.assertEqual(cfg.export_backend.backend, "manual")
+        self.assertEqual(cfg.automation.driver, "template")
+        self.assertEqual(output.getvalue(), "")
+
     def test_load_config_merges_defaults_and_resolves_paths(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / "config.toml"

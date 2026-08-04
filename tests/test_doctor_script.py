@@ -112,7 +112,7 @@ class DoctorTests(unittest.TestCase):
 
         result = _by_id(report, "config")
         self.assertEqual(result.status, "error")
-        self.assertIn("automation.electron_cdp_port", result.message)
+        self.assertIn("export_backend.weflow.electron_cdp_port", result.message)
         self.assertIn("config.example.toml", result.action or "")
 
     def test_missing_weflow_executable_gives_config_action(self) -> None:
@@ -121,7 +121,21 @@ class DoctorTests(unittest.TestCase):
 
         result = _by_id(report, "weflow_executable")
         self.assertEqual(result.status, "error")
-        self.assertIn("automation.weflow_exe", result.action or "")
+        self.assertIn("export_backend.weflow.weflow_exe", result.action or "")
+
+    def test_manual_backend_skips_weflow_and_cdp_requirements(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = _write_config(root, executable_exists=False)
+            body = config.read_text(encoding="utf-8") + '\n\n[export_backend]\nbackend = "manual"\n'
+            body = body.replace("electron_cdp_port = 9222\n", "")
+            config.write_text(body, encoding="utf-8")
+            report = run_doctor(config, deps=_deps(cdp_ready=False))
+
+        self.assertEqual(_by_id(report, "config").status, "ready")
+        self.assertEqual(_by_id(report, "weflow_executable").status, "ready")
+        self.assertEqual(_by_id(report, "cdp").status, "ready")
+        self.assertTrue(report.to_dict()["summary"]["can_run_daily_export"])
 
     def test_unavailable_cdp_is_a_warning_with_launch_action(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

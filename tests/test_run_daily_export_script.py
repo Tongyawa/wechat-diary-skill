@@ -85,10 +85,12 @@ def _write_config(
     self_users: str | None = "",
     voice_users: str = "",
     voice_fallback_script: str = "",
+    backend: str | None = None,
 ) -> Path:
     config_path = root / "config.toml"
     # self_users=None omits the key entirely (the "never configured" state).
     self_moments_line = "" if self_users is None else f"self_moments_usernames = [{self_users}]\n"
+    backend_section = "" if backend is None else f'\n[export_backend]\nbackend = "{backend}"\n'
     config_path.write_text(
         f"""
 [user]
@@ -108,6 +110,7 @@ target_usernames = [{target_users}]
 voice_fallback_script = "{voice_fallback_script}"
 cleanup_mode = "archive"
 restart_weflow = true
+{backend_section}
 """.strip(),
         encoding="utf-8",
     )
@@ -363,6 +366,31 @@ weflow_exe = "{(root / 'WeFlow.exe').as_posix()}"
         self.assertNotIn("self_moments_usernames", updated)
         self.assertFalse(cfg.daily_export.self_moments_configured)
 
+    def test_ensure_local_config_manual_backend_does_not_require_weflow_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = root / "config.toml"
+            config_path.write_text(
+                """
+[export_backend]
+backend = "manual"
+
+[daily_export]
+self_moments_usernames = []
+""".strip(),
+                encoding="utf-8",
+            )
+
+            ensure_local_config(
+                config_path=config_path,
+                example_path=Path("config.example.toml"),
+                prompt=False,
+                input_func=lambda _prompt: (_ for _ in ()).throw(AssertionError("must not prompt")),
+            )
+            cfg = load_config(config_path)
+
+        self.assertEqual(cfg.export_backend.backend, "manual")
+
     def test_runner_skips_target_steps_when_target_is_empty(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -403,6 +431,47 @@ weflow_exe = "{(root / 'WeFlow.exe').as_posix()}"
         self.assertEqual(captured.exception.stage, "prepare_backend")
         self.assertIn("not ready", str(captured.exception.cause))
 
+    def test_manual_backend_preserves_live_raw_and_runs_processed_pipeline(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            raw_path = _write_voice_failure_raw(root, message_ids=[72])
+            previous_processed = root / "processed" / "Previous" / "2026-05-15.md"
+            previous_processed.parent.mkdir(parents=True)
+            previous_processed.write_text("previous", encoding="utf-8")
+            cfg = load_config(_write_config(root, target_users="", backend="manual"))
+
+            def forbidden(*args, **kwargs):
+                raise AssertionError("manual mode must skip every online/rotation stage")
+
+            backend = FakeBackend(
+                name="manual",
+                prepare_action=forbidden,
+                export_chats_action=forbidden,
+                export_moments_action=forbidden,
+                transcribe_action=forbidden,
+                shutdown_action=forbidden,
+            )
+            deps = DailyExportDeps(
+                backend=backend,
+                rotate_export_workspace=forbidden,
+                wait_for_raw_exports_stable=forbidden,
+                archive=archive,
+                archive_chats_for=archive_chats_for,
+                archive_moments_for=forbidden,
+            )
+
+            output = io.StringIO()
+            with redirect_stdout(output):
+                result = run_daily_export(cfg, deps=deps, day=date(2026, 5, 16))
+
+            self.assertTrue(raw_path.exists())
+            self.assertTrue((root / "archived" / "processed" / "Previous" / "2026-05-15.md").exists())
+            self.assertEqual(backend.calls, [])
+            self.assertIsNone(result.rotation_target)
+            self.assertEqual(len(result.diary_files), 1)
+            self.assertTrue(result.diary_files[0].exists())
+            self.assertIn("prepare/rotate/export stages skipped", output.getvalue())
+
     def test_main_stops_weflow_after_stage_failure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -426,6 +495,21 @@ weflow_exe = "{(root / 'WeFlow.exe').as_posix()}"
         self.assertEqual(exit_code, 1)
         self.assertEqual(stop_calls, [90])
         self.assertIn("FAILED at stage: export_all_chats", buffer.getvalue())
+
+    def test_main_does_not_stop_weflow_after_manual_pipeline_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = _write_config(root, target_users="", backend="manual")
+            failure = DailyExportStageError("archive_diary_processed", RuntimeError("bad raw"))
+            with (
+                patch("scripts.run_daily_export.run_daily_export", side_effect=failure),
+                patch("scripts.run_daily_export.stop_weflow_processes") as stop,
+                redirect_stderr(io.StringIO()),
+            ):
+                exit_code = main(["--config", str(config_path), "--no-config-prompt"])
+
+        self.assertEqual(exit_code, 1)
+        stop.assert_not_called()
 
     def test_main_returns_1_with_warnings_on_partial_failure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

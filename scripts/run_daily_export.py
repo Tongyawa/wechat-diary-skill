@@ -27,6 +27,7 @@ from wechat_diary_core.config import Config, load_config
 from wechat_diary_core.preprocessing import archive_moments_for
 from wechat_diary_core.preprocessing import collect_voice_transcription_failures
 from wechat_diary_core.workspace import rotate_export_workspace
+from scripts.process_existing_raw import archive_existing_processed
 
 
 SECTION_RE = re.compile(r"(?m)^[ \t]*\[([^\]]+)\][ \t]*$")
@@ -60,6 +61,7 @@ class DailyExportDeps:
     wait_for_raw_exports_stable: Callable[..., Any] = None  # type: ignore[assignment]
     rotate_export_workspace: Callable[..., Any] = rotate_export_workspace
     run_voice_fallback_script: Callable[..., Any] = None  # type: ignore[assignment]
+    archive_existing_processed: Callable[..., Any] = archive_existing_processed
     archive: Callable[..., Any] = archive
     archive_chats_for: Callable[..., Any] = archive_chats_for
     archive_moments_for: Callable[..., Any] = archive_moments_for
@@ -169,7 +171,7 @@ def ensure_local_config(
 
     if _needs_weflow_path(data):
         if not prompt:
-            raise RuntimeError("config.toml is missing a usable [automation].weflow_exe value.")
+            raise RuntimeError("config.toml is missing a usable [export_backend.weflow].weflow_exe value.")
         # input()'s prompt arg goes to stdout, which under .bat → cmd /c 2>&1 |
         # PowerShell ForEach-Object is block-buffered; a partial line stays
         # invisible until something flushes. Print + flush explicitly so the
@@ -178,7 +180,7 @@ def ensure_local_config(
         weflow_exe = input_func("").strip().strip('"')
         if not weflow_exe:
             raise RuntimeError("WeFlow.exe path is required.")
-        text = _set_toml_value(text, "automation", "weflow_exe", _toml_string(weflow_exe))
+        text = _set_toml_value(text, _weflow_config_section(data), "weflow_exe", _toml_string(weflow_exe))
         data = _loads_toml(text, config_path)
 
     daily_export_section = data.get("daily_export") or {}
@@ -226,7 +228,7 @@ def run_daily_export(
     day: date | None = None,
 ) -> DailyExportResult:
     active_deps = deps or DailyExportDeps()
-    backend = active_deps.backend or active_deps.backend_factory("weflow", cfg)
+    backend = active_deps.backend or active_deps.backend_factory(cfg.export_backend.backend, cfg)
     export_day = day or (datetime.now().date() - timedelta(days=1))
     day_iso = export_day.isoformat()
     target_usernames = list(cfg.daily_export.target_usernames)
@@ -254,67 +256,85 @@ def run_daily_export(
     moments_failures: list[str] = []
     target_moments_ok = False
     self_moments_ok = False
-    try:
-        # Prepare is deliberately before rotation: a backend that cannot become
-        # ready must not mutate the live raw/processed roots.
-        _run_stage("prepare_backend", backend.prepare)
-        prepared = True
-        rotation = _run_stage(
-            "rotate_workspace",
-            lambda: active_deps.rotate_export_workspace(
-                cfg,
-                label="daily_export",
-                mode=cfg.daily_export.cleanup_mode,
+    if backend.name == "manual":
+        print(
+            "manual backend: using existing live raw; "
+            "prepare/rotate/export stages skipped."
+        )
+        rotation = None
+        _run_stage(
+            "archive_existing_processed",
+            lambda: active_deps.archive_existing_processed(
+                cfg.paths.processed,
+                cfg.paths.archived / "processed",
             ),
         )
-
-        voice_usernames = list(cfg.user.voice_transcribe_usernames) or target_usernames
-        if voice_usernames and "voice_transcribe" in backend.capabilities:
-            _run_stage("voice_transcribe", lambda: backend.transcribe_voices(voice_usernames))
-        elif voice_usernames:
-            print(
-                f"voice_transcribe skipped: backend '{backend.name}' does not support "
-                "a separate voice_transcribe stage."
+        # Existing raw may already contain either moments stream. Treat it like
+        # process_existing_raw: configured consumers inspect what is present.
+        target_moments_ok = bool(target_usernames)
+        self_moments_ok = bool(self_moments_usernames)
+    else:
+        try:
+            # Prepare is deliberately before rotation: a backend that cannot
+            # become ready must not mutate the live raw/processed roots.
+            _run_stage("prepare_backend", backend.prepare)
+            prepared = True
+            rotation = _run_stage(
+                "rotate_workspace",
+                lambda: active_deps.rotate_export_workspace(
+                    cfg,
+                    label="daily_export",
+                    mode=cfg.daily_export.cleanup_mode,
+                ),
             )
-        else:
-            print("voice_transcribe skipped: no configured contacts.")
 
-        _run_stage("export_all_chats", lambda: backend.export_chats(export_day))
-        _run_stage(
-            "wait_raw_exports_stable",
-            lambda: active_deps.wait_for_raw_exports_stable(cfg.paths.raw, min_files=1),
-        )
+            voice_usernames = list(cfg.user.voice_transcribe_usernames) or target_usernames
+            if voice_usernames and "voice_transcribe" in backend.capabilities:
+                _run_stage("voice_transcribe", lambda: backend.transcribe_voices(voice_usernames))
+            elif voice_usernames:
+                print(
+                    f"voice_transcribe skipped: backend '{backend.name}' does not support "
+                    "a separate voice_transcribe stage."
+                )
+            else:
+                print("voice_transcribe skipped: no configured contacts.")
 
-        # Moments are supplementary: isolate each failure so the primary chat
-        # diary and any successful stream can still complete.
-        if target_usernames and "moments" in backend.capabilities:
-            target_moments_ok = _run_moments_stage(
-                "export_target_moments",
-                lambda: backend.export_moments(target_usernames, export_day),
-                "wait_raw_exports_stable_after_moments",
+            _run_stage("export_all_chats", lambda: backend.export_chats(export_day))
+            _run_stage(
+                "wait_raw_exports_stable",
                 lambda: active_deps.wait_for_raw_exports_stable(cfg.paths.raw, min_files=1),
-                failures=moments_failures,
             )
-        elif target_usernames:
-            print(f"export_target_moments skipped: backend '{backend.name}' does not support moments.")
-        else:
-            print("export_target_moments skipped: no target sidecar contacts.")
 
-        if self_moments_usernames and "moments" in backend.capabilities:
-            self_moments_ok = _run_moments_stage(
-                "export_self_moments",
-                lambda: backend.export_moments(self_moments_usernames, export_day),
-                "wait_raw_exports_stable_after_self_moments",
-                lambda: active_deps.wait_for_raw_exports_stable(cfg.paths.raw, min_files=1),
-                failures=moments_failures,
-            )
-        elif self_moments_usernames:
-            print(f"export_self_moments skipped: backend '{backend.name}' does not support moments.")
-        else:
-            print("export_self_moments skipped: no configured self moments contacts.")
-    finally:
-        if prepared:
-            _finish_backend(backend)
+            # Moments are supplementary: isolate each failure so the primary
+            # chat diary and any successful stream can still complete.
+            if target_usernames and "moments" in backend.capabilities:
+                target_moments_ok = _run_moments_stage(
+                    "export_target_moments",
+                    lambda: backend.export_moments(target_usernames, export_day),
+                    "wait_raw_exports_stable_after_moments",
+                    lambda: active_deps.wait_for_raw_exports_stable(cfg.paths.raw, min_files=1),
+                    failures=moments_failures,
+                )
+            elif target_usernames:
+                print(f"export_target_moments skipped: backend '{backend.name}' does not support moments.")
+            else:
+                print("export_target_moments skipped: no target sidecar contacts.")
+
+            if self_moments_usernames and "moments" in backend.capabilities:
+                self_moments_ok = _run_moments_stage(
+                    "export_self_moments",
+                    lambda: backend.export_moments(self_moments_usernames, export_day),
+                    "wait_raw_exports_stable_after_self_moments",
+                    lambda: active_deps.wait_for_raw_exports_stable(cfg.paths.raw, min_files=1),
+                    failures=moments_failures,
+                )
+            elif self_moments_usernames:
+                print(f"export_self_moments skipped: backend '{backend.name}' does not support moments.")
+            else:
+                print("export_self_moments skipped: no configured self moments contacts.")
+        finally:
+            if prepared:
+                _finish_backend(backend)
 
     if cfg.daily_export.voice_fallback_script:
         _run_stage(
@@ -493,6 +513,8 @@ def _stage_error_detail(cause: BaseException) -> str:
 
 
 def _cleanup_weflow_after_failure(cfg: Config | None) -> None:
+    if cfg is not None and cfg.export_backend.backend != "weflow":
+        return
     timeout = cfg.automation.launch_timeout_sec if cfg is not None else 30
     try:
         stopped = stop_weflow_processes(timeout=timeout)
@@ -579,8 +601,18 @@ def _loads_toml(text: str, path: Path) -> dict[str, Any]:
 
 
 def _needs_weflow_path(data: dict[str, Any]) -> bool:
-    value = str((data.get("automation") or {}).get("weflow_exe") or "").strip()
+    backend = str((data.get("export_backend") or {}).get("backend") or "weflow").strip().lower()
+    if backend == "manual":
+        return False
+    export_backend = data.get("export_backend") or {}
+    weflow = export_backend.get("weflow") or data.get("automation") or {}
+    value = str(weflow.get("weflow_exe") or "").strip()
     return not value or value == "C:/Path/To/WeFlow.exe"
+
+
+def _weflow_config_section(data: dict[str, Any]) -> str:
+    export_backend = data.get("export_backend") or {}
+    return "export_backend.weflow" if "weflow" in export_backend else "automation"
 
 
 def _string_list(value: Any) -> list[str]:
