@@ -1,0 +1,4 @@
+# Optional local SenseVoice transcription. Install only when [asr].engine is enabled.
+funasr
+torch
+modelscope

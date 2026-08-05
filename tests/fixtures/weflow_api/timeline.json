@@ -1,0 +1,20 @@
+{
+  "success": true,
+  "count": 1,
+  "timeline": [
+    {
+      "tid": "-3465965",
+      "id": "timeline-placeholder",
+      "username": "wxid_contact_placeholder",
+      "nickname": "示例联系人",
+      "createTime": 1785000000,
+      "contentDesc": "示例动态正文",
+      "type": 1,
+      "media": [],
+      "likes": [],
+      "comments": [],
+      "rawXml": "<TimelineObject />",
+      "location": {"poiName": "", "address": ""}
+    }
+  ]
+}

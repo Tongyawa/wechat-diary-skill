@@ -8,15 +8,15 @@
 
 ```text
 <raw-root>/
-  <会话名>_<YYYYMMDD>/
-    <会话名>_<YYYYMMDD>.json
+  {私聊|群聊}_<会话名>_<YYYYMMDD>/
+    {私聊|群聊}_<会话名>_<YYYYMMDD>.json
     media/
       images/
       voices/
       emojis/
       ...
-  <会话名>_<YYYYMMDD-YYYYMMDD>/
-    <会话名>_<YYYYMMDD-YYYYMMDD>.json
+  {私聊|群聊}_<会话名>_<YYYYMMDD-YYYYMMDD>/
+    {私聊|群聊}_<会话名>_<YYYYMMDD-YYYYMMDD>.json
     media/
       images/
       voices/
@@ -29,7 +29,7 @@
 
 约定：
 
-- 会话目录名必须带日期后缀：`_<YYYYMMDD>` 或 `_<YYYYMMDD-YYYYMMDD>`。进入长期归档库时会去掉日期后缀，JSON 文件名保留原日期。
+- 会话目录名必须以会话类型开头并带日期后缀：`{私聊|群聊}_<会话名>_<YYYYMMDD>` 或 `{私聊|群聊}_<会话名>_<YYYYMMDD-YYYYMMDD>`。类型前缀用于保证不同导出后端写入同一套长期会话目录；进入长期归档库时会去掉日期后缀，JSON 文件名保留原日期。
 - 聊天媒体路径以会话目录为基准解析，例如 `media/images/a.jpg`。
 - 朋友圈 canonical 位置是 raw 根级 `朋友圈导出_*.json`，朋友圈媒体在 raw 根级 `media/` 下。当前发现器仍递归兼容旧位置，但新适配器应按根级布局产出。
 - 长期归档库中的 `archived/raw/<会话>/...json` 仍是 schema v1；根级朋友圈 JSON 与根级 `media/` 也按原名归档。
@@ -78,6 +78,7 @@
 | `quotedContent` | string | 否 | WeFlow 原始引用内容。 | 引用兜底内容为空时显示 `[消息]` 或不显示引用。 |
 | `quotedSender` | string | 否 | WeFlow 原始引用发送者。 | 引用发送者退回其他字段或“未知”。 |
 | `quotedSenderDisplayName` | string | 否 | WeFlow 原始引用发送者显示名。 | 引用发送者退回 `quotedSender` 或“未知”。 |
+| `voiceEmotion` | object | 否 | 本地 ASR 从语音中抽出的标签，形如 `{ "emotion": ["HAPPY"], "events": ["Speech"] }`；本期只在 canonical raw 留档。 | 现有 preprocessing 与渲染忽略，不影响语音正文。 |
 
 `messages[].replyContext` 是可选嵌套对象。当前 preprocessing 会根据 `replyToMessageId` 生成它，raw 适配器通常不必直接提供；若提供，下游会消费这些字段：
 

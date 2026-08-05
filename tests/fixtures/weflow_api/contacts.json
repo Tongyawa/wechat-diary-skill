@@ -1,0 +1,28 @@
+{
+  "success": true,
+  "count": 2,
+  "contacts": [
+    {
+      "username": "wxid_contact_placeholder",
+      "displayName": "示例联系人",
+      "remark": "示例备注",
+      "nickname": "示例昵称",
+      "alias": "",
+      "labels": ["示例标签"],
+      "detailDescription": "",
+      "region": "",
+      "type": "friend"
+    },
+    {
+      "username": "wxid_self_placeholder",
+      "displayName": "本人占位",
+      "remark": "",
+      "nickname": "本人占位",
+      "alias": "",
+      "labels": [],
+      "detailDescription": "",
+      "region": "",
+      "type": "friend"
+    }
+  ]
+}

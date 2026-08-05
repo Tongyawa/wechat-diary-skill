@@ -1,0 +1,197 @@
+"""ExporterBackend implementation for the WeFlow 5.x local HTTP API."""
+
+from __future__ import annotations
+
+import subprocess
+import sys
+import time
+from dataclasses import dataclass, field
+from datetime import date
+from pathlib import Path
+from typing import Any, Callable, ClassVar
+
+from ...asr import SenseVoiceTranscriber
+from ...config import Config
+from .client import WeflowApiClient, WeflowApiError
+from .mapper import write_moments_export, write_session_export
+
+
+@dataclass
+class WeflowApiBackend:
+    name: ClassVar[str] = "weflow_api"
+    capabilities: ClassVar[frozenset[str]] = frozenset({"moments"})
+
+    config: Config
+    client_factory: Callable[..., WeflowApiClient] = field(default=WeflowApiClient, repr=False)
+    process_launcher: Callable[[Path], Any] = field(default=None, repr=False)  # type: ignore[assignment]
+    sleep: Callable[[float], None] = field(default=time.sleep, repr=False)
+    partial_failures: list[str] = field(default_factory=list, init=False)
+    _client: WeflowApiClient | None = field(default=None, init=False, repr=False)
+    _transcriber: Any = field(default=None, init=False, repr=False)
+    _transcriber_initialized: bool = field(default=False, init=False, repr=False)
+    _asr_unavailable_reason: str = field(default="ASR未启用", init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if self.process_launcher is None:
+            self.process_launcher = _launch_weflow_normally
+
+    @property
+    def client(self) -> WeflowApiClient:
+        if self._client is None:
+            api = self.config.export_backend.weflow_api
+            self._client = self.client_factory(
+                api.base_url,
+                api.access_token,
+                timeout=api.request_timeout_sec,
+            )
+        return self._client
+
+    def prepare(self) -> None:
+        api = self.config.export_backend.weflow_api
+        if not api.access_token:
+            raise RuntimeError(
+                "WeFlow API Access Token 未配置。请打开 WeFlow → 设置 → API 服务，"
+                "生成并固定非空 token，写入 config.toml 后重启 API 服务。"
+            )
+        try:
+            self._probe_ready()
+            return
+        except Exception as first_error:
+            if isinstance(first_error, WeflowApiError) and first_error.status == 401:
+                raise RuntimeError(
+                    "WeFlow API Access Token 不匹配。请固定非空 token 并重启 API 服务后重试。"
+                ) from first_error
+            executable = self.config.export_backend.weflow.weflow_exe
+            if not executable.is_file():
+                raise RuntimeError(
+                    "WeFlow API 服务未启动。请打开 WeFlow → 设置 → API 服务 → 启动服务，"
+                    "并确认 Access Token 已固定；也可配置有效的 weflow_exe 供程序普通启动。"
+                ) from first_error
+            try:
+                self.process_launcher(executable)
+            except Exception:
+                pass
+            deadline = time.monotonic() + self.config.export_backend.weflow.launch_timeout_sec
+            last_error: BaseException = first_error
+            while time.monotonic() < deadline:
+                try:
+                    self._probe_ready()
+                    return
+                except Exception as exc:
+                    last_error = exc
+                    self.sleep(1.0)
+            raise RuntimeError(
+                "WeFlow API 服务未启动或鉴权失败。请打开 WeFlow → 设置 → API 服务 → "
+                "启动服务，并确认 Access Token 已固定；修改 token 后需重启 API 服务。"
+                f" 最后错误：{last_error}"
+            ) from first_error
+
+    def export_chats(self, export_date: date) -> None:
+        self.partial_failures.clear()
+        sessions = self.client.fetch_sessions(limit=2000)
+        contacts = self.client.fetch_contacts(limit=5000)
+        if len(contacts) == 100:
+            raise RuntimeError("联系人名册恰好 100 条，拒绝用疑似截断的 roster 映射会话")
+
+        successful_requests = 0
+        messages_found = 0
+        published_sessions = 0
+        for session in sessions:
+            talker = str(session.get("username") or "")
+            if not talker:
+                self._record_session_failure("unknown", "会话缺少 username")
+                continue
+            try:
+                messages = self.client.fetch_messages(
+                    talker,
+                    start=export_date,
+                    end=export_date,
+                    media=self.config.export_backend.weflow_api.media_localize,
+                )
+                successful_requests += 1
+                if not messages:
+                    continue
+                messages_found += 1
+                members = self.client.fetch_group_members(talker) if talker.endswith("@chatroom") else []
+                transcriber, reason = self._asr()
+                write_session_export(
+                    self.config.paths.raw,
+                    session,
+                    messages,
+                    start=export_date,
+                    end=export_date,
+                    contacts=contacts,
+                    group_members=members,
+                    self_wxids=self.config.user.self_wxids,
+                    transcriber=transcriber,
+                    asr_unavailable_reason=reason,
+                    emit_emotion=self.config.asr.emit_emotion,
+                    require_media=self.config.export_backend.weflow_api.media_localize,
+                )
+                published_sessions += 1
+            except Exception as exc:
+                self._record_session_failure(talker, str(exc))
+
+        if self.partial_failures and (successful_requests == 0 or (messages_found > 0 and published_sessions == 0)):
+            raise RuntimeError("全部会话请求失败，未发布任何 canonical raw")
+
+    def export_moments(self, usernames: list[str], export_date: date) -> None:
+        posts: list[dict[str, Any]] = []
+        for username in usernames:
+            # iter_timeline always sends usernames=, locally filters exact username,
+            # and exhausts offset pages; the date window is intentionally local.
+            posts.extend(self.client.iter_timeline(username, limit=100))
+        write_moments_export(
+            self.config.paths.raw,
+            posts,
+            usernames=usernames,
+            export_date=export_date,
+        )
+
+    def transcribe_voices(self, usernames: list[str]) -> None:
+        # Inline in export_chats; deliberately absent from capabilities.
+        return None
+
+    def shutdown(self) -> None:
+        # WeFlow remains user-owned even when prepare best-effort started it.
+        return None
+
+    def _probe_ready(self) -> None:
+        self.client.health()
+        self.client.validate_token()
+
+    def _asr(self) -> tuple[Any, str]:
+        if self._transcriber_initialized:
+            return self._transcriber, self._asr_unavailable_reason
+        self._transcriber_initialized = True
+        engine = self.config.asr.engine
+        if not engine:
+            self._asr_unavailable_reason = "ASR未启用"
+        elif engine == "whisper":
+            self._asr_unavailable_reason = "whisper引擎本期未就绪"
+        elif engine == "sensevoice":
+            self._transcriber = SenseVoiceTranscriber(
+                model=self.config.asr.model,
+                language=self.config.asr.language,
+                device=self.config.asr.device,
+            )
+            self._asr_unavailable_reason = "SenseVoice可选依赖未就绪"
+        else:
+            self._asr_unavailable_reason = f"未知ASR引擎:{engine}"
+        return self._transcriber, self._asr_unavailable_reason
+
+    def _record_session_failure(self, talker: str, reason: str) -> None:
+        marker = f"export_chat_session:{talker}"
+        self.partial_failures.append(marker)
+        print(f"[WARN] 会话导出失败，已隔离 {talker}: {reason}", file=sys.stderr)
+
+
+def _launch_weflow_normally(executable: Path) -> subprocess.Popen[Any]:
+    return subprocess.Popen(
+        [str(executable)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+__all__ = ["WeflowApiBackend"]

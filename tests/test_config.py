@@ -10,6 +10,51 @@ from wechat_diary_core.config import load_config
 
 
 class ConfigTests(unittest.TestCase):
+    def test_fresh_defaults_select_weflow_api_and_disabled_asr(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = load_config(Path(tmp) / "missing.toml")
+
+        self.assertEqual(cfg.export_backend.backend, "weflow_api")
+        self.assertEqual(cfg.export_backend.weflow_api.base_url, "http://127.0.0.1:5031")
+        self.assertEqual(cfg.export_backend.weflow_api.access_token, "")
+        self.assertTrue(cfg.export_backend.weflow_api.media_localize)
+        self.assertEqual(cfg.export_backend.weflow_api.message_format, "json")
+        self.assertEqual(cfg.asr.engine, "")
+
+    def test_reads_weflow_api_and_sensevoice_settings(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.toml"
+            config_path.write_text(
+                """
+[export_backend]
+backend = "weflow_api"
+
+[export_backend.weflow_api]
+base_url = "http://127.0.0.1:6000/"
+access_token = "fixed-token"
+media_localize = false
+message_format = "json"
+
+[asr]
+engine = "sensevoice"
+model = "local/model"
+language = "yue"
+device = "cpu"
+emit_emotion = false
+""".strip(),
+                encoding="utf-8",
+            )
+            cfg = load_config(config_path)
+
+        self.assertEqual(cfg.export_backend.backend, "weflow_api")
+        self.assertEqual(cfg.export_backend.weflow_api.base_url, "http://127.0.0.1:6000")
+        self.assertEqual(cfg.export_backend.weflow_api.access_token, "fixed-token")
+        self.assertFalse(cfg.export_backend.weflow_api.media_localize)
+        self.assertEqual(cfg.asr.engine, "sensevoice")
+        self.assertEqual(cfg.asr.model, "local/model")
+        self.assertEqual(cfg.asr.language, "yue")
+        self.assertFalse(cfg.asr.emit_emotion)
+
     def test_legacy_automation_maps_to_weflow_backend_with_one_hint(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / "config.toml"

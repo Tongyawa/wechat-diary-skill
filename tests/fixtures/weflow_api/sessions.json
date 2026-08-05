@@ -1,0 +1,14 @@
+{
+  "success": true,
+  "count": 1,
+  "sessions": [
+    {
+      "username": "wxid_contact_placeholder",
+      "displayName": "示例联系人",
+      "type": 0,
+      "sessionType": "private",
+      "lastTimestamp": 1785921697,
+      "unreadCount": 0
+    }
+  ]
+}

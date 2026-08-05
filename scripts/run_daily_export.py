@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
 import os
 import re
@@ -158,6 +159,7 @@ def ensure_local_config(
     *,
     prompt: bool = True,
     input_func: Callable[[str], str] = input,
+    password_func: Callable[[str], str] | None = None,
 ) -> None:
     if not config_path.exists():
         if not example_path.exists():
@@ -168,8 +170,9 @@ def ensure_local_config(
 
     text = config_path.read_text(encoding="utf-8")
     data = _loads_toml(text, config_path)
+    backend_name = _selected_backend(data)
 
-    if _needs_weflow_path(data):
+    if backend_name == "weflow" and _needs_weflow_path(data):
         if not prompt:
             raise RuntimeError("config.toml is missing a usable [export_backend.weflow].weflow_exe value.")
         # input()'s prompt arg goes to stdout, which under .bat → cmd /c 2>&1 |
@@ -182,6 +185,38 @@ def ensure_local_config(
             raise RuntimeError("WeFlow.exe path is required.")
         text = _set_toml_value(text, _weflow_config_section(data), "weflow_exe", _toml_string(weflow_exe))
         data = _loads_toml(text, config_path)
+
+    if backend_name == "weflow_api":
+        api = (data.get("export_backend") or {}).get("weflow_api") or {}
+        if not str(api.get("base_url") or "").strip():
+            text = _set_toml_value(
+                text,
+                "export_backend.weflow_api",
+                "base_url",
+                _toml_string("http://127.0.0.1:5031"),
+            )
+            data = _loads_toml(text, config_path)
+            api = (data.get("export_backend") or {}).get("weflow_api") or {}
+        if not str(api.get("access_token") or "").strip():
+            if not prompt:
+                raise RuntimeError(
+                    "config.toml 缺少 [export_backend.weflow_api].access_token；"
+                    "请在 WeFlow → 设置 → API 服务中生成固定 token。"
+                )
+            # Production uses getpass so the token never echoes. Tests and
+            # embedders that inject an input function can inject the secret via
+            # the same controlled channel without touching the real terminal.
+            secret_reader = password_func or (getpass.getpass if input_func is input else input_func)
+            token = secret_reader("WeFlow API Access Token（输入不回显）: ").strip()
+            if not token:
+                raise RuntimeError("WeFlow API Access Token 不能为空。")
+            text = _set_toml_value(
+                text,
+                "export_backend.weflow_api",
+                "access_token",
+                _toml_string(token),
+            )
+            data = _loads_toml(text, config_path)
 
     daily_export_section = data.get("daily_export") or {}
 
@@ -293,17 +328,23 @@ def run_daily_export(
             if voice_usernames and "voice_transcribe" in backend.capabilities:
                 _run_stage("voice_transcribe", lambda: backend.transcribe_voices(voice_usernames))
             elif voice_usernames:
-                print(
-                    f"voice_transcribe skipped: backend '{backend.name}' does not support "
-                    "a separate voice_transcribe stage."
-                )
+                if backend.name == "weflow_api":
+                    print("voice_transcribe skipped: backend 'weflow_api' transcribes inline during export_all_chats.")
+                else:
+                    print(
+                        f"voice_transcribe skipped: backend '{backend.name}' does not support "
+                        "a separate voice_transcribe stage."
+                    )
             else:
                 print("voice_transcribe skipped: no configured contacts.")
 
             _run_stage("export_all_chats", lambda: backend.export_chats(export_day))
+            for failure in getattr(backend, "partial_failures", []):
+                if failure not in moments_failures:
+                    moments_failures.append(failure)
             _run_stage(
                 "wait_raw_exports_stable",
-                lambda: active_deps.wait_for_raw_exports_stable(cfg.paths.raw, min_files=1),
+                lambda: _settle_raw_exports(backend, cfg.paths.raw, active_deps),
             )
 
             # Moments are supplementary: isolate each failure so the primary
@@ -313,7 +354,7 @@ def run_daily_export(
                     "export_target_moments",
                     lambda: backend.export_moments(target_usernames, export_day),
                     "wait_raw_exports_stable_after_moments",
-                    lambda: active_deps.wait_for_raw_exports_stable(cfg.paths.raw, min_files=1),
+                    lambda: _settle_raw_exports(backend, cfg.paths.raw, active_deps),
                     failures=moments_failures,
                 )
             elif target_usernames:
@@ -326,7 +367,7 @@ def run_daily_export(
                     "export_self_moments",
                     lambda: backend.export_moments(self_moments_usernames, export_day),
                     "wait_raw_exports_stable_after_self_moments",
-                    lambda: active_deps.wait_for_raw_exports_stable(cfg.paths.raw, min_files=1),
+                    lambda: _settle_raw_exports(backend, cfg.paths.raw, active_deps),
                     failures=moments_failures,
                 )
             elif self_moments_usernames:
@@ -615,8 +656,8 @@ def _loads_toml(text: str, path: Path) -> dict[str, Any]:
 
 
 def _needs_weflow_path(data: dict[str, Any]) -> bool:
-    backend = str((data.get("export_backend") or {}).get("backend") or "weflow").strip().lower()
-    if backend == "manual":
+    backend = _selected_backend(data)
+    if backend != "weflow":
         return False
     export_backend = data.get("export_backend") or {}
     weflow = {
@@ -625,6 +666,23 @@ def _needs_weflow_path(data: dict[str, Any]) -> bool:
     }
     value = str(weflow.get("weflow_exe") or "").strip()
     return not value or value == "C:/Path/To/WeFlow.exe"
+
+
+def _selected_backend(data: dict[str, Any]) -> str:
+    export_backend = data.get("export_backend") or {}
+    explicit = str(export_backend.get("backend") or "").strip().lower()
+    if explicit:
+        return explicit
+    if isinstance(data.get("automation"), dict):
+        return "weflow"
+    return "weflow_api"
+
+
+def _settle_raw_exports(backend: ExporterBackend, raw_root: Path, deps: DailyExportDeps) -> None:
+    if backend.name == "weflow_api":
+        print("raw settle skipped: WeFlow API publishes validated session directories synchronously.")
+        return
+    deps.wait_for_raw_exports_stable(raw_root, min_files=1)
 
 
 def _weflow_config_section(data: dict[str, Any]) -> str:

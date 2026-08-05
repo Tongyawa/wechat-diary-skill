@@ -74,6 +74,90 @@ def _by_id(report: DoctorReport, check_id: str) -> CheckResult:
 
 
 class DoctorTests(unittest.TestCase):
+    def test_weflow_api_backend_has_health_token_semantic_and_optional_asr_checks(self) -> None:
+        class ApiClient:
+            def health(self):
+                return {"status": "ok"}
+
+            def semantic_probe(self):
+                return "wxid_placeholder", 1
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for name in ("raw", "processed", "archived", "insights"):
+                (root / name).mkdir()
+            config = root / "config.toml"
+            config.write_text(
+                f"""
+[paths]
+raw = "{(root / 'raw').as_posix()}"
+processed = "{(root / 'processed').as_posix()}"
+archived = "{(root / 'archived').as_posix()}"
+insights = "{(root / 'insights').as_posix()}"
+
+[export_backend]
+backend = "weflow_api"
+
+[export_backend.weflow_api]
+base_url = "http://127.0.0.1:5031"
+access_token = "fixed-token"
+
+[asr]
+engine = "sensevoice"
+""".strip(),
+                encoding="utf-8",
+            )
+            deps = ProbeDependencies(
+                api_client_factory=lambda cfg: ApiClient(),
+                find_spec=lambda name: object(),
+                can_write=lambda path: True,
+            )
+            report = run_doctor(config, deps=deps)
+
+        for check_id in (
+            "weflow_api_health",
+            "weflow_api_token",
+            "weflow_api_semantic",
+            "dependency_asr",
+        ):
+            self.assertEqual(_by_id(report, check_id).status, "ready", check_id)
+
+    def test_weflow_api_asr_missing_is_warning_not_error(self) -> None:
+        class ApiClient:
+            def health(self):
+                return {"status": "ok"}
+
+            def semantic_probe(self):
+                return "wxid_placeholder", 1
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = _write_config(root)
+            body = config.read_text(encoding="utf-8") + """
+
+[export_backend]
+backend = "weflow_api"
+
+[export_backend.weflow_api]
+base_url = "http://127.0.0.1:5031"
+access_token = "fixed-token"
+
+[asr]
+engine = "sensevoice"
+"""
+            config.write_text(body, encoding="utf-8")
+            report = run_doctor(
+                config,
+                deps=ProbeDependencies(
+                    api_client_factory=lambda cfg: ApiClient(),
+                    find_spec=lambda name: None,
+                    can_write=lambda path: True,
+                ),
+            )
+
+        self.assertEqual(_by_id(report, "dependency_asr").status, "warning")
+        self.assertNotIn("dependency_asr", [check.id for check in report.checks if check.status == "error"])
+
     def test_ready_state_covers_all_core_checks(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             report = run_doctor(_write_config(Path(tmp)), deps=_deps())

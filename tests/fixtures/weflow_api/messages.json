@@ -1,0 +1,27 @@
+{
+  "success": true,
+  "talker": "wxid_contact_placeholder",
+  "count": 1,
+  "hasMore": false,
+  "media": {
+    "enabled": true,
+    "exportPath": "C:\\placeholder\\api-media",
+    "count": 0
+  },
+  "messages": [
+    {
+      "localId": 2334,
+      "serverId": "6277496717170092270",
+      "localType": 1,
+      "createTime": 1785921697,
+      "sortSeq": 123,
+      "isSend": 1,
+      "senderUsername": "wxid_self_placeholder",
+      "content": "示例文本",
+      "rawContent": "",
+      "parsedContent": "",
+      "replyToMessageId": "",
+      "quote": null
+    }
+  ]
+}

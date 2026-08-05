@@ -6,9 +6,8 @@
 # `D：` prefix items to be promoted into DoneList, etc.
 self_wxids = ["filehelper"]               # filehelper = 文件传输助手; add your own wxid here too
 
-# Contacts whose voice messages get WeFlow's built-in batch transcribe pass
-# before the daily all-chats export. Empty list = skip. Each entry is a wxid
-# or display name string that WeFlow's chat search can resolve.
+# Legacy GUI backend only: contacts whose voice messages get WeFlow's built-in
+# batch transcribe pass. The HTTP API backend transcribes inline via [asr].
 voice_transcribe_usernames = []
 
 [paths]
@@ -22,10 +21,19 @@ archived = "WeFlow-archived-exports"
 insights = "WeFlow-insights"
 
 [export_backend]
-# Phase A keeps the legacy GUI backend as default. Use "manual" to process
-# canonical raw files already placed in [paths].raw without starting or rotating
-# WeFlow. Additional backends can be registered by later versions.
-backend = "weflow"
+# "weflow_api" = WeFlow 5.x local HTTP API (default)
+# "weflow" = legacy GUI automation for WeFlow <=4.x
+# "manual" = process canonical raw already placed in [paths].raw
+backend = "weflow_api"
+
+[export_backend.weflow_api]
+base_url = "http://127.0.0.1:5031"
+# Keep one fixed non-empty token in the git-ignored config.toml. Token changes
+# take effect only after restarting WeFlow's API service.
+access_token = ""
+media_localize = true
+message_format = "json"
+request_timeout_sec = 120                # media localization may take tens of seconds
 
 [export_backend.weflow]
 # Legacy WeFlow <=4.x GUI-automation settings.
@@ -50,6 +58,16 @@ electron_cdp_port = 9222                  # only used when driver = "cdp"
 zoom_reset_shortcut = "ctrl+0"            # pressed once on entry; we never change zoom mid-session
 multi_scale = [0.85, 0.9, 0.95, 1.0, 1.05]
 retry = 3
+
+[asr]
+# "" disables ASR with an explicit transcription-failure placeholder.
+# "whisper" is reserved and intentionally not implemented in this phase.
+engine = ""
+model = "iic/SenseVoiceSmall"
+language = "zh"
+device = "cpu"
+emit_emotion = true
+# Optional install: python -m pip install -r requirements-asr.txt
 
 [preprocessing]
 skip_emoji_dir = true                     # ignore media/emojis/ entirely (no OCR)
@@ -112,5 +130,5 @@ voice_fallback_script = ""
 # delete yesterday's raw/processed workspace.
 cleanup_mode = "archive"
 
-# Stop WeFlow before rotating old exports so media files are not locked.
+# Legacy GUI backend only. The API backend never stops a user-owned WeFlow.
 restart_weflow = true

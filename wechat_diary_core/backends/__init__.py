@@ -33,10 +33,12 @@ class ExporterBackend(Protocol):
 
 from .manual import ManualBackend
 from .weflow.backend import WeflowBackend
+from .weflow_api.backend import WeflowApiBackend
 
 
-REGISTRY: dict[str, type[ManualBackend] | type[WeflowBackend]] = {
+REGISTRY: dict[str, type] = {
     "weflow": WeflowBackend,
+    "weflow_api": WeflowApiBackend,
     "manual": ManualBackend,
 }
 
@@ -52,4 +54,11 @@ def create_backend(name: str, config: Config) -> ExporterBackend:
     return backend_type(config)
 
 
-__all__ = ["ExporterBackend", "ManualBackend", "REGISTRY", "WeflowBackend", "create_backend"]
+__all__ = [
+    "ExporterBackend",
+    "ManualBackend",
+    "REGISTRY",
+    "WeflowApiBackend",
+    "WeflowBackend",
+    "create_backend",
+]

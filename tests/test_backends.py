@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from wechat_diary_core.backends import REGISTRY, create_backend
 from wechat_diary_core.backends.manual import ManualBackend
 from wechat_diary_core.backends.weflow.backend import WeflowBackend
+from wechat_diary_core.backends.weflow_api.backend import WeflowApiBackend
 from wechat_diary_core.config import load_config
 
 
@@ -34,12 +35,14 @@ self_moments_usernames = []
 
 
 class WeflowBackendTests(unittest.TestCase):
-    def test_registry_contains_only_phase_a_backends(self) -> None:
+    def test_registry_contains_phase_b_api_backend(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             cfg = _config(Path(tmp))
 
-        self.assertEqual(set(REGISTRY), {"weflow", "manual"})
+        self.assertEqual(set(REGISTRY), {"weflow", "weflow_api", "manual"})
         self.assertIsInstance(create_backend("manual", cfg), ManualBackend)
+        self.assertIsInstance(create_backend("weflow_api", cfg), WeflowApiBackend)
+        self.assertEqual(WeflowApiBackend.capabilities, frozenset({"moments"}))
 
     def test_wraps_legacy_operations_in_port_order(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

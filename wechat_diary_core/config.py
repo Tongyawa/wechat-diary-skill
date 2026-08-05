@@ -20,7 +20,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "insights": "WeFlow-insights",
     },
     "export_backend": {
-        "backend": "weflow",
+        "backend": "weflow_api",
+        "weflow_api": {
+            "base_url": "http://127.0.0.1:5031",
+            "access_token": "",
+            "media_localize": True,
+            "message_format": "json",
+            "request_timeout_sec": 120,
+        },
         "weflow": {
             "driver": "cdp",
             "weflow_exe": "C:/Path/To/WeFlow.exe",
@@ -43,6 +50,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
                 "retry": 3,
             },
         },
+    },
+    "asr": {
+        "engine": "",
+        "model": "iic/SenseVoiceSmall",
+        "language": "zh",
+        "device": "cpu",
+        "emit_emotion": True,
     },
     "preprocessing": {
         "skip_emoji_dir": True,
@@ -125,9 +139,28 @@ class AutomationConfig:
 
 
 @dataclass(frozen=True)
+class WeflowApiConfig:
+    base_url: str
+    access_token: str
+    media_localize: bool
+    message_format: str
+    request_timeout_sec: float
+
+
+@dataclass(frozen=True)
 class ExportBackendConfig:
     backend: str
     weflow: AutomationConfig
+    weflow_api: WeflowApiConfig
+
+
+@dataclass(frozen=True)
+class AsrConfig:
+    engine: str
+    model: str
+    language: str
+    device: str
+    emit_emotion: bool
 
 
 @dataclass(frozen=True)
@@ -183,6 +216,7 @@ class Config:
     # Compatibility alias for callers not yet migrated to
     # ``config.export_backend.weflow``.
     automation: AutomationConfig
+    asr: AsrConfig
     preprocessing: PreprocessingConfig
     agent: AgentConfig
     skills: SkillsConfig
@@ -216,7 +250,9 @@ def load_config(config_path: str | Path | None = None) -> Config:
 def _build_config(raw: dict[str, Any], base_dir: Path, *, source: dict[str, Any]) -> Config:
     paths = raw["paths"]
     export_backend = raw["export_backend"]
+    weflow_api = export_backend["weflow_api"]
     automation = export_backend["weflow"]
+    asr = raw["asr"]
     preprocessing = raw["preprocessing"]
     group_window = preprocessing["group_context_window"]
     template = automation["template_fallback"]
@@ -230,9 +266,16 @@ def _build_config(raw: dict[str, Any], base_dir: Path, *, source: dict[str, Any]
     if cleanup_mode not in {"archive", "delete", "skip"}:
         raise ValueError(f"Unsupported daily_export cleanup_mode: {cleanup_mode}")
 
-    backend_name = str(export_backend.get("backend") or "weflow").strip().lower()
+    backend_name = str(export_backend.get("backend") or "weflow_api").strip().lower()
     if not backend_name:
         raise ValueError("export_backend.backend must not be empty")
+
+    message_format = str(weflow_api.get("message_format") or "json").strip().lower()
+    if message_format != "json":
+        raise ValueError("export_backend.weflow_api.message_format 本期只支持 json")
+    asr_engine = str(asr.get("engine") or "").strip().lower()
+    if asr_engine not in {"", "sensevoice", "whisper"}:
+        raise ValueError(f"Unsupported ASR engine: {asr_engine}")
 
     automation_config = AutomationConfig(
         driver=driver,
@@ -266,8 +309,25 @@ def _build_config(raw: dict[str, Any], base_dir: Path, *, source: dict[str, Any]
             archived=_resolve_path(base_dir, paths["archived"]),
             insights=_resolve_path(base_dir, paths["insights"]),
         ),
-        export_backend=ExportBackendConfig(backend=backend_name, weflow=automation_config),
+        export_backend=ExportBackendConfig(
+            backend=backend_name,
+            weflow=automation_config,
+            weflow_api=WeflowApiConfig(
+                base_url=str(weflow_api.get("base_url") or "http://127.0.0.1:5031").rstrip("/"),
+                access_token=str(weflow_api.get("access_token") or "").strip(),
+                media_localize=bool(weflow_api.get("media_localize", True)),
+                message_format=message_format,
+                request_timeout_sec=float(weflow_api.get("request_timeout_sec", 120)),
+            ),
+        ),
         automation=automation_config,
+        asr=AsrConfig(
+            engine=asr_engine,
+            model=str(asr.get("model") or "iic/SenseVoiceSmall"),
+            language=str(asr.get("language") or "zh"),
+            device=str(asr.get("device") or "cpu"),
+            emit_emotion=bool(asr.get("emit_emotion", True)),
+        ),
         preprocessing=PreprocessingConfig(
             skip_emoji_dir=bool(preprocessing["skip_emoji_dir"]),
             voice_fail_log_only=bool(preprocessing["voice_fail_log_only"]),
@@ -315,6 +375,9 @@ def _normalize_export_backend(loaded: dict[str, Any], path: Path) -> dict[str, A
         return normalized
 
     export_backend = normalized.setdefault("export_backend", {})
+    # A legacy-only config must keep selecting the legacy adapter even though
+    # fresh configs now default to the HTTP API backend.
+    export_backend.setdefault("backend", "weflow")
     explicit_weflow = export_backend.get("weflow")
     if isinstance(explicit_weflow, dict):
         export_backend["weflow"] = _deep_merge(legacy, explicit_weflow)

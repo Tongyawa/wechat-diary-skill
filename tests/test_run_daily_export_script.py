@@ -268,8 +268,8 @@ class DailyExportScriptTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             config_path = root / "config.toml"
-            # WeFlow.exe path, then empty answer to the self-moments question.
-            answers = iter([(root / "WeFlow.exe").as_posix(), ""])
+            # Fixed API token, then empty answer to the self-moments question.
+            answers = iter(["fixed-token", ""])
 
             ensure_local_config(
                 config_path=config_path,
@@ -286,6 +286,8 @@ class DailyExportScriptTests(unittest.TestCase):
         self.assertEqual(cfg.user.voice_transcribe_usernames, [])
         self.assertIsNone(cfg.daily_export.voice_fallback_script)
         self.assertEqual(cfg.daily_export.cleanup_mode, "archive")
+        self.assertEqual(cfg.export_backend.backend, "weflow_api")
+        self.assertEqual(cfg.export_backend.weflow_api.access_token, "fixed-token")
 
     def test_ensure_local_config_preserves_inline_comments_on_existing_keys(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -590,6 +592,26 @@ driver = "uia"
         self.assertEqual(exit_code, 1)
         stop.assert_not_called()
 
+    def test_main_does_not_stop_user_owned_weflow_after_api_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = _write_config(root, target_users="", backend="weflow_api")
+            with config_path.open("a", encoding="utf-8") as stream:
+                stream.write(
+                    '\n[export_backend.weflow_api]\nbase_url = "http://127.0.0.1:5031"\n'
+                    'access_token = "fixed-token"\n'
+                )
+            failure = DailyExportStageError("export_all_chats", RuntimeError("api unavailable"))
+            with (
+                patch("scripts.run_daily_export.run_daily_export", side_effect=failure),
+                patch("scripts.run_daily_export.stop_weflow_processes") as stop,
+                redirect_stderr(io.StringIO()),
+            ):
+                exit_code = main(["--config", str(config_path), "--no-config-prompt"])
+
+        self.assertEqual(exit_code, 1)
+        stop.assert_not_called()
+
     def test_main_returns_1_with_warnings_on_partial_failure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -870,6 +892,30 @@ driver = "uia"
         self.assertIn("voice_transcribe skipped: backend 'fake'", output.getvalue())
         self.assertIn("export_target_moments skipped: backend 'fake'", output.getvalue())
         self.assertIn("export_self_moments skipped: backend 'fake'", output.getvalue())
+
+    def test_api_backend_skips_async_settle_and_propagates_session_partial_failures(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = load_config(_write_config(root, target_users="", backend="weflow_api"))
+            backend = FakeBackend(name="weflow_api", capabilities=frozenset())
+            backend.partial_failures = ["export_chat_session:wxid_placeholder"]
+            deps = DailyExportDeps(
+                backend=backend,
+                rotate_export_workspace=lambda cfg, label, mode: SimpleNamespace(target=None),
+                wait_for_raw_exports_stable=lambda *args: (_ for _ in ()).throw(
+                    AssertionError("synchronous API backend must not poll raw stability")
+                ),
+                archive=lambda raw_path, config, clear_first: [],
+                archive_chats_for=lambda *args, **kwargs: [],
+                archive_moments_for=lambda *args, **kwargs: [],
+            )
+
+            output = io.StringIO()
+            with redirect_stdout(output):
+                result = run_daily_export(cfg, deps=deps, day=date(2026, 5, 16))
+
+        self.assertIn("export_chat_session:wxid_placeholder", result.partial_failures)
+        self.assertIn("publishes validated session directories synchronously", output.getvalue())
 
     def test_runner_calls_voice_fallback_before_archiving(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -17,6 +17,7 @@ if str(ROOT) not in sys.path:
 
 from wechat_diary_core.config import Config, load_config
 from wechat_diary_core.backends.weflow.cdp_driver import fetch_cdp_targets
+from wechat_diary_core.backends.weflow_api.client import WeflowApiClient
 
 
 STATUS_ICON = {"ready": "✅", "warning": "⚠️", "error": "❌"}
@@ -64,6 +65,11 @@ class ProbeDependencies:
     fetch_cdp_targets: Callable[[str], list[dict[str, Any]]] = fetch_cdp_targets
     find_spec: Callable[[str], Any] = importlib.util.find_spec
     can_write: Callable[[Path], bool] = lambda path: os.access(path, os.W_OK)
+    api_client_factory: Callable[[Config], Any] = lambda cfg: WeflowApiClient(
+        cfg.export_backend.weflow_api.base_url,
+        cfg.export_backend.weflow_api.access_token,
+        timeout=cfg.export_backend.weflow_api.request_timeout_sec,
+    )
 
 
 def run_doctor(config_path: str | Path = "config.toml", *, deps: ProbeDependencies | None = None) -> DoctorReport:
@@ -104,9 +110,15 @@ def run_doctor(config_path: str | Path = "config.toml", *, deps: ProbeDependenci
     checks = [_check_config(cfg, path)]
     if cfg.export_backend.backend == "manual":
         checks.extend(_manual_backend_checks())
-    else:
+    elif cfg.export_backend.backend == "weflow":
         checks.append(_check_weflow_executable(cfg))
         checks.append(_check_cdp(cfg, active.fetch_cdp_targets))
+    elif cfg.export_backend.backend == "weflow_api":
+        client = active.api_client_factory(cfg)
+        checks.append(_check_api_health(cfg, client))
+        checks.append(_check_api_token(cfg))
+        checks.append(_check_api_semantic(cfg, client))
+        checks.append(_check_asr(cfg, active.find_spec))
     checks.extend(_check_data_roots(cfg, active.can_write))
     checks.extend(_check_optional_dependencies(cfg, active.find_spec))
     return DoctorReport(checks)
@@ -121,6 +133,10 @@ def _check_config(cfg: Config, config_path: Path) -> CheckResult:
                 or _has_config_key(cfg.source, f"automation.{key}")
             ):
                 missing.append(f"export_backend.weflow.{key}")
+    elif cfg.export_backend.backend == "weflow_api" and not _has_config_key(
+        cfg.source, "export_backend.weflow_api.base_url"
+    ):
+        missing.append("export_backend.weflow_api.base_url")
     if missing:
         return CheckResult(
             id="config",
@@ -234,6 +250,126 @@ def _manual_backend_checks() -> list[CheckResult]:
             message="manual 后端不连接 CDP；将直接处理现有 raw。",
         ),
     ]
+
+
+def _check_api_health(cfg: Config, client: Any) -> CheckResult:
+    endpoint = cfg.export_backend.weflow_api.base_url
+    try:
+        client.health()
+    except Exception as exc:
+        return CheckResult(
+            id="weflow_api_health",
+            group="数据入口",
+            name="WeFlow API 探活",
+            status="error",
+            message=f"无法通过 {endpoint}/health 探活。",
+            action="打开 WeFlow → 设置 → API 服务 → 启动服务；首次启用必须手动操作一次。",
+            details={"endpoint": endpoint, "error": str(exc)},
+        )
+    return CheckResult(
+        id="weflow_api_health",
+        group="数据入口",
+        name="WeFlow API 探活",
+        status="ready",
+        message=f"{endpoint}/health 可达。",
+        details={"endpoint": endpoint},
+    )
+
+
+def _check_api_token(cfg: Config) -> CheckResult:
+    configured = bool(cfg.export_backend.weflow_api.access_token)
+    if configured:
+        return CheckResult(
+            id="weflow_api_token",
+            group="数据入口",
+            name="WeFlow API Token",
+            status="ready",
+            message="已配置固定非空 Access Token（内容不回显）。",
+            details={"configured": True},
+        )
+    return CheckResult(
+        id="weflow_api_token",
+        group="数据入口",
+        name="WeFlow API Token",
+        status="error",
+        message="Access Token 未配置。",
+        action="在 WeFlow API 服务中生成固定 token，写入 config.toml；修改后重启 API 服务。",
+        details={"configured": False},
+    )
+
+
+def _check_api_semantic(cfg: Config, client: Any) -> CheckResult:
+    if not cfg.export_backend.weflow_api.access_token:
+        return CheckResult(
+            id="weflow_api_semantic",
+            group="数据入口",
+            name="WeFlow API 语义探测",
+            status="warning",
+            message="因 Access Token 未配置而未探测受保护消息端点。",
+            action="先配置固定 token，再重跑 doctor。",
+        )
+    try:
+        talker, count = client.semantic_probe()
+    except Exception as exc:
+        return CheckResult(
+            id="weflow_api_semantic",
+            group="数据入口",
+            name="WeFlow API 语义探测",
+            status="error",
+            message="health 可用不代表数据可读；当前未能读取已知非空会话。",
+            action="确认 token 匹配并已重启 API 服务；若仍为空，检查当前微信数据版本是否受 WeFlow 支持。",
+            details={"error": str(exc)},
+        )
+    return CheckResult(
+        id="weflow_api_semantic",
+        group="数据入口",
+        name="WeFlow API 语义探测",
+        status="ready",
+        message="受保护消息端点可读，已找到非空会话。",
+        details={"talker": talker, "sample_count": count},
+    )
+
+
+def _check_asr(cfg: Config, find_spec: Callable[[str], Any]) -> CheckResult:
+    engine = cfg.asr.engine
+    if not engine:
+        return CheckResult(
+            id="dependency_asr",
+            group="可选能力",
+            name="SenseVoice 本地语音转写",
+            status="warning",
+            message="ASR 未启用；语音会写入可识别的“转文字失败”占位。",
+            details={"engine": "", "enabled": False},
+        )
+    if engine == "whisper":
+        return CheckResult(
+            id="dependency_asr",
+            group="可选能力",
+            name="本地语音转写",
+            status="warning",
+            message="whisper 是保留值，本期未实现；语音将优雅降级。",
+            action="本期请使用 engine = \"sensevoice\"，或设为空字符串关闭。",
+            details={"engine": engine, "enabled": False},
+        )
+    missing = [name for name in ("funasr", "torch", "modelscope") if not _module_available(name, find_spec)]
+    if missing:
+        return CheckResult(
+            id="dependency_asr",
+            group="可选能力",
+            name="SenseVoice 本地语音转写",
+            status="warning",
+            message="可选能力未就绪，缺少：" + "、".join(missing),
+            action="按需运行 python -m pip install -r requirements-asr.txt；未安装不影响聊天导出。",
+            details={"engine": engine, "missing_modules": missing},
+        )
+    return CheckResult(
+        id="dependency_asr",
+        group="可选能力",
+        name="SenseVoice 本地语音转写",
+        status="ready",
+        message="funasr、torch、modelscope 均可用。",
+        details={"engine": engine, "model": cfg.asr.model},
+    )
 
 
 def _check_data_roots(cfg: Config, can_write: Callable[[Path], bool]) -> list[CheckResult]:

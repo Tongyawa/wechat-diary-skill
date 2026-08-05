@@ -1,0 +1,21 @@
+{
+  "success": true,
+  "chatroomId": "sample@chatroom",
+  "count": 1,
+  "fromCache": true,
+  "updatedAt": 0,
+  "members": [
+    {
+      "wxid": "wxid_member_placeholder",
+      "displayName": "",
+      "nickname": "成员占位",
+      "remark": "",
+      "alias": "",
+      "groupNickname": "群昵称占位",
+      "avatarUrl": "",
+      "isOwner": false,
+      "isFriend": true,
+      "messageCount": 0
+    }
+  ]
+}
