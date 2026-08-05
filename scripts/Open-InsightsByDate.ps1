@@ -1,7 +1,9 @@
-param(
+﻿param(
   [string]$Date,
   [string]$Workspace = "",
-  [switch]$NoPause
+  [string]$InsightsRoot = "",
+  [switch]$NoPause,
+  [switch]$NoOpen
 )
 
 $ErrorActionPreference = "Stop"
@@ -11,29 +13,62 @@ $WorkspaceRoot = if ([string]::IsNullOrWhiteSpace($Workspace)) {
 } else {
   (Resolve-Path -LiteralPath $Workspace).Path
 }
-$InsightsRoot = Join-Path $WorkspaceRoot "WeFlow-insights"
+function Resolve-InsightsRoot {
+  param([string]$RootPath)
+
+  $FallbackRoot = Join-Path $RootPath "WeFlow-insights"
+  $ConfigPath = Join-Path $RootPath "config.toml"
+  $ConfigReader = Join-Path $CodeRoot "scripts\print_config_path.py"
+  # 原生命令往 stderr 写一个字，$ErrorActionPreference = "Stop" 就会把它升级成终止性
+  # 错误。config 加载时的「建议迁移到 [export_backend.weflow]」提示正是走 stderr，真实
+  # 配置因此会被误判成「读不出」而静默回退到空壳目录。这里必须局部降级再调用。
+  $PreviousErrorAction = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  try {
+    $Output = @(& python -u $ConfigReader --config $ConfigPath --key "paths.insights" 2>$null)
+    $ExitCode = $LASTEXITCODE
+  } catch {
+    $Output = @()
+    $ExitCode = 1
+  } finally {
+    $ErrorActionPreference = $PreviousErrorAction
+  }
+
+  if ($ExitCode -eq 0 -and $Output.Count -gt 0) {
+    $ConfiguredRoot = ([string]($Output | Select-Object -Last 1)).Trim()
+    if (-not [string]::IsNullOrWhiteSpace($ConfiguredRoot)) {
+      return $ConfiguredRoot
+    }
+  }
+
+  Write-Host "无法读取 $ConfigPath 的 [paths].insights，已使用回退路径：$FallbackRoot。请在 -Workspace 指定的工作区中配置有效的 config.toml，并设置 [paths] 的 insights 后重新运行。"
+  return $FallbackRoot
+}
+
+if ([string]::IsNullOrWhiteSpace($InsightsRoot)) {
+  $InsightsRoot = Resolve-InsightsRoot $WorkspaceRoot
+}
 
 function Open-InsightFiles {
   param([string[]]$Paths)
   foreach ($Path in $Paths | Select-Object -Unique) {
     Invoke-Item -LiteralPath $Path
-    Write-Host "Opened: $Path"
+    Write-Host "已打开：$Path"
   }
 }
 
 if (-not $Date) {
-  $Date = Read-Host "Date (yyyy-mm-dd)"
+  $Date = Read-Host "日期（yyyy-mm-dd）"
 }
 $Date = $Date.Trim()
 if ($Date -notmatch '^\d{4}-\d{2}-\d{2}$') {
-  throw "Date must be yyyy-mm-dd, got: $Date"
+  throw "日期必须是 yyyy-mm-dd，实际收到：$Date"
 }
 
 $Year = $Date.Substring(0, 4)
 $Paths = [System.Collections.Generic.List[string]]::new()
 
-# Daily products may carry a title/keyword suffix (`<date> 标题 #kw.md`), so
-# glob by date prefix instead of expecting an exact `<date>.md` name.
+# 日常产物可能带标题或关键词后缀，因此按日期前缀查找，而不是固定查找日期文件名。
 foreach ($Kind in @("Diary", "DoneList", "Inspirations", "ExtraNotes")) {
   $KindDir = Join-Path $InsightsRoot "$Kind\$Year"
   if (Test-Path -LiteralPath $KindDir) {
@@ -42,8 +77,7 @@ foreach ($Kind in @("Diary", "DoneList", "Inspirations", "ExtraNotes")) {
   }
 }
 
-# Sidecar products (any `_`-prefixed dir) open alongside when present; their
-# concrete names are workspace-local and stay out of this script on purpose.
+# 存在时一并打开侧车产物（任意以下划线开头的目录）；具体名称由工作区决定，不写死在脚本中。
 if (Test-Path -LiteralPath $InsightsRoot) {
   $SidecarRoots = @(Get-ChildItem -LiteralPath $InsightsRoot -Directory | Where-Object { $_.Name.StartsWith("_") })
   foreach ($SidecarRoot in $SidecarRoots) {
@@ -58,11 +92,23 @@ if (Test-Path -LiteralPath $InsightsRoot) {
 }
 
 if ($Paths.Count -eq 0) {
-  Write-Host "No insights found for $Date."
+  if ($NoOpen) {
+    Write-Host "二次加工产物根目录：$InsightsRoot"
+    Write-Host "命中文件：无"
+  } else {
+    Write-Host "未找到 $Date 的二次加工产物。"
+  }
 } else {
-  Open-InsightFiles $Paths.ToArray()
+  if ($NoOpen) {
+    Write-Host "二次加工产物根目录：$InsightsRoot"
+    foreach ($Path in $Paths | Select-Object -Unique) {
+      Write-Host "命中文件：$Path"
+    }
+  } else {
+    Open-InsightFiles $Paths.ToArray()
+  }
 }
 
 if (-not $NoPause) {
-  Read-Host "Press Enter to exit" | Out-Null
+  Read-Host "按 Enter 键退出" | Out-Null
 }
