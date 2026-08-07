@@ -6,10 +6,32 @@ import unittest
 from datetime import date
 from pathlib import Path
 
-from wechat_diary_core.backends.weflow_api.failure_state import SessionFailureState
+from wechat_diary_core.backends.weflow_api.failure_state import (
+    SessionFailureState,
+    error_fingerprint,
+    normalize_error_text,
+)
 
 
 class SessionFailureStateTests(unittest.TestCase):
+    def test_error_fingerprint_ignores_variable_parts_but_preserves_failure_type(self) -> None:
+        first = (
+            "WeFlow API HTTP 500: /api/v1/messages — 创建游标失败: -3 "
+            "wxid_first_placeholder C:\\Users\\One\\data\\shard_123.db"
+        )
+        same_type = (
+            "WeFlow API HTTP 503: /api/v2/messages — 创建游标失败: -99 "
+            "wxid_second_placeholder D:\\Backup\\data\\shard_987.db"
+        )
+        different_type = "WeFlow API HTTP 500: /api/v1/messages — 鉴权失败: token 已过期"
+
+        self.assertEqual(error_fingerprint(first), error_fingerprint(same_type))
+        self.assertNotEqual(error_fingerprint(first), error_fingerprint(different_type))
+        normalized = normalize_error_text(first)
+        self.assertIn("<path>", normalized)
+        self.assertIn("<id>", normalized)
+        self.assertIn("<num>", normalized)
+
     def test_failure_count_uses_distinct_export_dates_and_reviews_on_third_day(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / ".export-state.json"

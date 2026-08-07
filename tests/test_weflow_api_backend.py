@@ -128,9 +128,10 @@ class _EmptyMomentsClient(_Client):
 
 
 class _TrackingSessionClient:
-    def __init__(self, sessions, *, failures=()):
+    def __init__(self, sessions, *, failures=(), failure_reason="fixture cursor failure"):
         self.sessions = sessions
         self.failures = set(failures)
+        self.failure_reason = failure_reason
         self.message_calls = []
 
     def fetch_sessions(self, *, limit):
@@ -149,7 +150,7 @@ class _TrackingSessionClient:
     def fetch_messages(self, talker, **kwargs):
         self.message_calls.append(talker)
         if talker in self.failures:
-            raise RuntimeError("fixture cursor failure")
+            raise RuntimeError(self.failure_reason)
         return []
 
 
@@ -227,6 +228,57 @@ class WeflowApiBackendTests(unittest.TestCase):
         self.assertIn("[IGNORED]", log_text)
         self.assertIn("wxid_ignored_placeholder", log_text)
 
+    def test_ignored_failure_with_changed_fingerprint_warns_and_restarts_review_count(self) -> None:
+        sessions = [
+            {"username": "wxid_changed_placeholder", "displayName": "变化会话占位"},
+            {"username": "wxid_ok_placeholder", "displayName": "成功会话占位"},
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state_path = _seed_failure_state(root, "wxid_changed_placeholder", ignored=True)
+            backend = WeflowApiBackend(_config(root))
+            backend._client = _TrackingSessionClient(
+                sessions,
+                failures={"wxid_changed_placeholder"},
+                failure_reason="fixture authentication failure",
+            )
+            output, errors = io.StringIO(), io.StringIO()
+            with redirect_stdout(output), redirect_stderr(errors):
+                backend.export_chats(date(2026, 8, 7))
+            restored = SessionFailureState.load(state_path)
+
+        self.assertEqual(backend.partial_failures, ["export_chat_session:wxid_changed_placeholder"])
+        self.assertIn("新的失败类型", errors.getvalue())
+        self.assertNotIn("已忽略会话仍导出失败", output.getvalue())
+        self.assertNotIn("wxid_changed_placeholder", restored.ignored)
+        record = restored.failures["wxid_changed_placeholder"]
+        self.assertEqual(record["consecutiveFailures"], 1)
+        self.assertEqual(record["failureDates"], ["2026-08-07"])
+
+    def test_legacy_ignored_record_without_fingerprint_establishes_first_fingerprint_silently(self) -> None:
+        sessions = [{"username": "wxid_legacy_placeholder", "displayName": "旧状态会话占位"}]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state_path = _seed_failure_state(root, "wxid_legacy_placeholder", ignored=True)
+            payload = json.loads(state_path.read_text(encoding="utf-8"))
+            payload["version"] = 1
+            payload["failures"]["wxid_legacy_placeholder"].pop("errorFingerprint")
+            payload["ignored"]["wxid_legacy_placeholder"].pop("errorFingerprint")
+            state_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            backend = WeflowApiBackend(_config(root))
+            backend._client = _TrackingSessionClient(sessions, failures={"wxid_legacy_placeholder"})
+            output, errors = io.StringIO(), io.StringIO()
+
+            with redirect_stdout(output), redirect_stderr(errors):
+                backend.export_chats(date(2026, 8, 7))
+            restored = SessionFailureState.load(state_path)
+
+        self.assertEqual(backend.partial_failures, [])
+        self.assertNotIn("[WARN]", errors.getvalue())
+        self.assertIn("已忽略会话仍导出失败", output.getvalue())
+        self.assertIn("wxid_legacy_placeholder", restored.ignored)
+        self.assertTrue(restored.ignored["wxid_legacy_placeholder"]["errorFingerprint"])
+
     def test_ignored_session_success_clears_state_and_prints_recovery(self) -> None:
         sessions = [{"username": "wxid_recovered_placeholder", "displayName": "恢复会话占位"}]
         with tempfile.TemporaryDirectory() as tmp:
@@ -260,6 +312,7 @@ class WeflowApiBackendTests(unittest.TestCase):
 
         self.assertEqual(after, before)
         input_func.assert_not_called()
+        self.assertIn("fixture cursor failure", output.getvalue())
         self.assertIn("下次交互式运行", output.getvalue())
 
     def test_review_interactive_all_ignore_updates_state(self) -> None:

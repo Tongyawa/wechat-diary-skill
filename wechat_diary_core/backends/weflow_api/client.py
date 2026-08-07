@@ -11,6 +11,10 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 
+MAX_HTTP_ERROR_BODY_BYTES = 64 * 1024
+MAX_HTTP_ERROR_DETAIL_CHARS = 500
+
+
 class WeflowApiError(RuntimeError):
     def __init__(self, message: str, *, status: int | None = None) -> None:
         self.status = status
@@ -254,7 +258,11 @@ class WeflowApiClient:
                     "WeFlow API Access Token 缺失或不匹配；固定 token 后请重启 API 服务。",
                     status=401,
                 ) from exc
-            raise WeflowApiError(f"WeFlow API HTTP {exc.code}: {path}", status=exc.code) from exc
+            message = f"WeFlow API HTTP {exc.code}: {path}"
+            detail = _http_error_detail(exc, access_token=self.access_token)
+            if detail:
+                message += f" — {detail}"
+            raise WeflowApiError(message, status=exc.code) from exc
         except (URLError, OSError, TimeoutError) as exc:
             raise WeflowApiError(f"无法连接 WeFlow API {self.base_url}：{exc}") from exc
         try:
@@ -282,6 +290,27 @@ def _api_date(value: date | str) -> str:
     if len(text) != 8 or not text.isdigit():
         raise ValueError(f"日期必须为 YYYYMMDD 或 YYYY-MM-DD：{value!r}")
     return text
+
+
+def _http_error_detail(exc: HTTPError, *, access_token: str) -> str:
+    try:
+        raw = exc.read(MAX_HTTP_ERROR_BODY_BYTES + 1)
+    except Exception:
+        return ""
+    if len(raw) > MAX_HTTP_ERROR_BODY_BYTES:
+        return ""
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return ""
+    if not isinstance(payload, dict) or not isinstance(payload.get("error"), str):
+        return ""
+    detail = " ".join(payload["error"].split())
+    if access_token:
+        detail = detail.replace(access_token, "[REDACTED]")
+    if len(detail) > MAX_HTTP_ERROR_DETAIL_CHARS:
+        detail = detail[: MAX_HTTP_ERROR_DETAIL_CHARS - 1].rstrip() + "…"
+    return detail
 
 
 __all__ = ["WeflowApiClient", "WeflowApiError"]

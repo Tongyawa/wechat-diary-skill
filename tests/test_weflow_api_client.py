@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import io
 import unittest
 from datetime import date
 from pathlib import Path
+from urllib.error import HTTPError
 from urllib.parse import parse_qs, urlparse
 
 from wechat_diary_core.backends.weflow_api.client import WeflowApiClient, WeflowApiError
@@ -24,6 +26,70 @@ class _Response:
 
 
 class WeflowApiClientTests(unittest.TestCase):
+    def test_http_500_includes_weflow_error_reason(self) -> None:
+        reason = "创建游标失败: -3（消息数据库未找到）"
+
+        def opener(request, timeout):
+            raise HTTPError(
+                request.full_url,
+                500,
+                "Internal Server Error",
+                hdrs=None,
+                fp=io.BytesIO(json.dumps({"error": reason}, ensure_ascii=False).encode("utf-8")),
+            )
+
+        client = WeflowApiClient("http://127.0.0.1:5031", "token-placeholder", opener=opener)
+        with self.assertRaisesRegex(WeflowApiError, reason) as captured:
+            client.get_message_page(
+                "wxid_contact_placeholder",
+                start=date(2026, 8, 6),
+                end=date(2026, 8, 6),
+            )
+
+        self.assertIn("WeFlow API HTTP 500: /api/v1/messages — ", str(captured.exception))
+
+    def test_http_500_body_edge_cases_fall_back_or_truncate_safely(self) -> None:
+        cases = [
+            (b"not-json", False),
+            (json.dumps({"message": "missing error"}).encode("utf-8"), False),
+            (json.dumps({"error": "x" * 2000}).encode("utf-8"), True),
+        ]
+        for body, has_detail in cases:
+            with self.subTest(has_detail=has_detail, body_length=len(body)):
+                def opener(request, timeout, response_body=body):
+                    raise HTTPError(
+                        request.full_url,
+                        500,
+                        "Internal Server Error",
+                        hdrs=None,
+                        fp=io.BytesIO(response_body),
+                    )
+
+                client = WeflowApiClient("http://127.0.0.1:5031", "token-placeholder", opener=opener)
+                with self.assertRaises(WeflowApiError) as captured:
+                    client.validate_token()
+                message = str(captured.exception)
+
+                self.assertTrue(message.startswith("WeFlow API HTTP 500: /api/v1/sessions"))
+                self.assertEqual(" — " in message, has_detail)
+                if has_detail:
+                    self.assertTrue(message.endswith("…"))
+                    self.assertLess(len(message), 600)
+
+    def test_http_error_message_never_echoes_access_token(self) -> None:
+        token = "secret-token-placeholder"
+
+        def opener(request, timeout):
+            body = json.dumps({"error": f"upstream echoed Bearer {token}"}).encode("utf-8")
+            raise HTTPError(request.full_url, 500, "Internal Server Error", hdrs=None, fp=io.BytesIO(body))
+
+        client = WeflowApiClient("http://127.0.0.1:5031", token, opener=opener)
+        with self.assertRaises(WeflowApiError) as captured:
+            client.validate_token()
+
+        self.assertNotIn(token, str(captured.exception))
+        self.assertIn("[REDACTED]", str(captured.exception))
+
     def test_message_range_paginates_and_uses_bearer_auth(self) -> None:
         requests = []
 

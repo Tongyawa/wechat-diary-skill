@@ -152,9 +152,16 @@ class WeflowApiBackend:
                 published_sessions += 1
                 self._record_session_success(state, talker, display_name)
             except Exception as exc:
-                ignored = state.is_ignored(talker)
-                state.record_failure(talker, display_name, export_date, str(exc))
-                if ignored:
+                update = state.record_failure(talker, display_name, export_date, str(exc))
+                if update.fingerprint_changed:
+                    marker = f"export_chat_session:{talker}"
+                    self.partial_failures.append(marker)
+                    print(
+                        f"[WARN] 会话「{display_name}」出现新的失败类型（原因已变化），"
+                        f"已重新纳入审查：{update.record['lastError']}",
+                        file=sys.stderr,
+                    )
+                elif update.was_ignored:
                     ignored_failures += 1
                     self._append_ignored_failure_detail(talker, display_name, str(exc))
                 else:
@@ -185,9 +192,10 @@ class WeflowApiBackend:
 
         print(f"[INFO] {len(pending)} 个会话连续失败达到待审查阈值：")
         for record in pending:
+            reason = _readable_error_summary(str(record["lastError"]))
             print(
                 f"[INFO]   - 「{record['displayName']}」({record['wxid']})："
-                f"连续 {record['consecutiveFailures']} 个导出日；{record['lastError']}"
+                f"连续 {record['consecutiveFailures']} 个导出日；{reason}"
             )
         if not interactive:
             print("[INFO] 当前为非交互运行；下次交互式运行时可确认是否忽略后续失败提示。")
@@ -343,6 +351,11 @@ def _launch_weflow_normally(executable: Path) -> subprocess.Popen[Any]:
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
+
+
+def _readable_error_summary(value: str, limit: int = 180) -> str:
+    text = " ".join(str(value or "未知错误").split())
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
 
 
 __all__ = ["WeflowApiBackend"]

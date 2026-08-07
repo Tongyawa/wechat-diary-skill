@@ -3,15 +3,26 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
+import re
+import unicodedata
 import uuid
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from typing import Any, Iterable
 
 
-STATE_VERSION = 1
+STATE_VERSION = 2
 REVIEW_THRESHOLD = 3
+
+
+@dataclass(frozen=True)
+class FailureUpdate:
+    record: dict[str, Any]
+    was_ignored: bool
+    fingerprint_changed: bool
 
 
 class SessionFailureState:
@@ -55,26 +66,42 @@ class SessionFailureState:
         display_name: str,
         export_date: date,
         error: str,
-    ) -> dict[str, Any]:
+    ) -> FailureUpdate:
         day = export_date.isoformat()
         previous = self.failures.get(wxid, {})
-        failure_dates = sorted({*previous.get("failureDates", []), day})
+        previous_ignored = self.ignored.get(wxid)
+        fingerprint = error_fingerprint(error)
+        previous_fingerprint = str((previous_ignored or {}).get("errorFingerprint") or "")
+        fingerprint_changed = bool(previous_ignored and previous_fingerprint and previous_fingerprint != fingerprint)
+        failure_dates = (
+            [day]
+            if fingerprint_changed
+            else sorted({*previous.get("failureDates", []), day})
+        )
         record = _build_record(
             wxid,
             display_name,
             failure_dates,
             _error_summary(error),
+            fingerprint,
         )
         if record != previous:
             self.failures[wxid] = record
             self._dirty = True
-        if wxid in self.ignored:
-            ignored_at = str(self.ignored[wxid].get("ignoredAtDate") or day)
+        if fingerprint_changed:
+            self.ignored.pop(wxid, None)
+            self._dirty = True
+        elif previous_ignored is not None:
+            ignored_at = str(previous_ignored.get("ignoredAtDate") or day)
             ignored_record = {**record, "ignoredAtDate": ignored_at}
-            if ignored_record != self.ignored[wxid]:
+            if ignored_record != previous_ignored:
                 self.ignored[wxid] = ignored_record
                 self._dirty = True
-        return record
+        return FailureUpdate(
+            record=record,
+            was_ignored=previous_ignored is not None,
+            fingerprint_changed=fingerprint_changed,
+        )
 
     def record_success(self, wxid: str) -> bool:
         was_ignored = wxid in self.ignored
@@ -139,6 +166,7 @@ def _normalize_record(wxid: str, value: Any) -> dict[str, Any]:
         str(value.get("displayName") or wxid),
         dates,
         str(value.get("lastError") or "未知错误"),
+        str(value.get("errorFingerprint") or ""),
     )
     ignored_at = str(value.get("ignoredAtDate") or "")
     if ignored_at:
@@ -151,8 +179,9 @@ def _build_record(
     display_name: str,
     failure_dates: list[str],
     error: str,
+    fingerprint: str,
 ) -> dict[str, Any]:
-    return {
+    record = {
         "wxid": wxid,
         "displayName": display_name or wxid,
         "consecutiveFailures": len(failure_dates),
@@ -161,6 +190,9 @@ def _build_record(
         "lastFailureDate": failure_dates[-1] if failure_dates else "",
         "lastError": _error_summary(error),
     }
+    if fingerprint:
+        record["errorFingerprint"] = fingerprint
+    return record
 
 
 def _error_summary(value: str, limit: int = 500) -> str:
@@ -168,4 +200,35 @@ def _error_summary(value: str, limit: int = 500) -> str:
     return text[:limit]
 
 
-__all__ = ["REVIEW_THRESHOLD", "STATE_VERSION", "SessionFailureState"]
+_WINDOWS_PATH_RE = re.compile(r"(?i)(?<![\w])(?:[a-z]:[\\/]|\\\\)[^\s]+")
+_POSIX_PATH_RE = re.compile(r"(?<![:\w])/(?:[^/\s]+/)*[^\s]+")
+_IDENTITY_RE = re.compile(r"(?i)(?<![a-z0-9_])(?:wxid|gh)_[a-z0-9_-]+")
+_UUID_RE = re.compile(r"(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b")
+_LONG_HEX_RE = re.compile(r"(?i)\b[0-9a-f]{8,}\b")
+_NUMBER_RE = re.compile(r"(?<![\w])[-+]?\d+(?:\.\d+)?(?![\w])")
+
+
+def normalize_error_text(value: str) -> str:
+    text = unicodedata.normalize("NFKC", str(value or "未知错误")).lower()
+    text = _WINDOWS_PATH_RE.sub("<path>", text)
+    text = _POSIX_PATH_RE.sub("<path>", text)
+    text = _IDENTITY_RE.sub("<id>", text)
+    text = _UUID_RE.sub("<uuid>", text)
+    text = _LONG_HEX_RE.sub("<hex>", text)
+    text = _NUMBER_RE.sub("<num>", text)
+    return " ".join(text.split())
+
+
+def error_fingerprint(value: str) -> str:
+    normalized = normalize_error_text(value)
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+__all__ = [
+    "FailureUpdate",
+    "REVIEW_THRESHOLD",
+    "STATE_VERSION",
+    "SessionFailureState",
+    "error_fingerprint",
+    "normalize_error_text",
+]
