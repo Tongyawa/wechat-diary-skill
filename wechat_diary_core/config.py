@@ -87,6 +87,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "daily_export": {
         "target_usernames": [],
+        "skip_official_accounts": True,
         # None = key absent in config.toml (never answered); [] = explicit opt-out.
         "self_moments_usernames": None,
         "target_processed_subroot": "_targets",
@@ -206,6 +207,7 @@ class SkillsConfig:
 @dataclass(frozen=True)
 class DailyExportConfig:
     target_usernames: list[str]
+    skip_official_accounts: bool
     self_moments_usernames: list[str]
     # False when the key is absent from config.toml; lets the runner tell
     # "never configured" apart from "deliberately disabled with []".
@@ -367,6 +369,7 @@ def _build_config(raw: dict[str, Any], base_dir: Path, *, source: dict[str, Any]
         skills=SkillsConfig(daily=list(raw["skills"]["daily"])),
         daily_export=DailyExportConfig(
             target_usernames=[str(value).strip() for value in daily_export.get("target_usernames") or [] if str(value).strip()],
+            skip_official_accounts=bool(daily_export.get("skip_official_accounts", True)),
             self_moments_usernames=[
                 str(value).strip() for value in daily_export.get("self_moments_usernames") or [] if str(value).strip()
             ],

@@ -143,6 +143,7 @@ raw = "raw"
         self.assertEqual(cfg.preprocessing.group_context_window.anchor_keywords, [])
         self.assertEqual(cfg.skills.daily, ["wechat-diary-skill"])
         self.assertEqual(cfg.daily_export.target_usernames, [])
+        self.assertTrue(cfg.daily_export.skip_official_accounts)
         self.assertEqual(cfg.daily_export.self_moments_usernames, [])
         self.assertFalse(cfg.daily_export.self_moments_configured)
         self.assertEqual(cfg.daily_export.target_processed_subroot, "_targets")
@@ -164,6 +165,7 @@ self_moments_usernames = ["wxid_self"]
 target_processed_subroot = "_sidecar"
 cleanup_mode = "delete"
 restart_weflow = false
+skip_official_accounts = false
 """.strip(),
                 encoding="utf-8",
             )
@@ -176,6 +178,7 @@ restart_weflow = false
         self.assertEqual(cfg.daily_export.target_processed_subroot, "_sidecar")
         self.assertEqual(cfg.daily_export.cleanup_mode, "delete")
         self.assertFalse(cfg.daily_export.restart_weflow)
+        self.assertFalse(cfg.daily_export.skip_official_accounts)
 
     def test_load_config_can_disable_group_context_filtering(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

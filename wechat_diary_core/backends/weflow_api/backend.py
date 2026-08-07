@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 import shutil
 import sys
@@ -15,6 +16,7 @@ from typing import Any, Callable, ClassVar
 from ...asr import SenseVoiceTranscriber
 from ...config import Config
 from .client import WeflowApiClient, WeflowApiError
+from .failure_state import SessionFailureState
 from .mapper import write_moments_export, write_session_export
 
 
@@ -32,6 +34,9 @@ class WeflowApiBackend:
     _transcriber: Any = field(default=None, init=False, repr=False)
     _transcriber_initialized: bool = field(default=False, init=False, repr=False)
     _asr_unavailable_reason: str = field(default="ASR未启用", init=False, repr=False)
+    _failure_state: SessionFailureState | None = field(default=None, init=False, repr=False)
+    _failure_state_writable: bool = field(default=True, init=False, repr=False)
+    _last_export_date: date | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         if self.process_launcher is None:
@@ -95,14 +100,27 @@ class WeflowApiBackend:
         if len(contacts) == 100:
             raise RuntimeError("联系人名册恰好 100 条，拒绝用疑似截断的 roster 映射会话")
 
+        state = self._load_failure_state()
+        self._last_export_date = export_date
         successful_requests = 0
         messages_found = 0
         published_sessions = 0
+        skipped_official_accounts = 0
+        ignored_failures = 0
         for session in sessions:
             talker = str(session.get("username") or "")
             if not talker:
                 self._record_session_failure("unknown", "会话缺少 username")
                 continue
+            if self.config.daily_export.skip_official_accounts and talker.startswith("gh_"):
+                skipped_official_accounts += 1
+                continue
+            display_name = str(
+                session.get("displayName")
+                or session.get("nickname")
+                or session.get("remark")
+                or talker
+            )
             try:
                 messages = self.client.fetch_messages(
                     talker,
@@ -112,6 +130,7 @@ class WeflowApiBackend:
                 )
                 successful_requests += 1
                 if not messages:
+                    self._record_session_success(state, talker, display_name)
                     continue
                 messages_found += 1
                 members = self.client.fetch_group_members(talker) if talker.endswith("@chatroom") else []
@@ -131,11 +150,59 @@ class WeflowApiBackend:
                     require_media=self.config.export_backend.weflow_api.media_localize,
                 )
                 published_sessions += 1
+                self._record_session_success(state, talker, display_name)
             except Exception as exc:
-                self._record_session_failure(talker, str(exc))
+                ignored = state.is_ignored(talker)
+                state.record_failure(talker, display_name, export_date, str(exc))
+                if ignored:
+                    ignored_failures += 1
+                    self._append_ignored_failure_detail(talker, display_name, str(exc))
+                else:
+                    self._record_session_failure(talker, str(exc))
+
+        self._save_failure_state()
+        if skipped_official_accounts:
+            print(
+                f"[INFO] 已跳过 {skipped_official_accounts} 个公众号会话"
+                "（skip_official_accounts=true）"
+            )
+        if ignored_failures:
+            print(f"[INFO] {ignored_failures} 个已忽略会话仍导出失败（明细见 runlog）")
 
         if self.partial_failures and (successful_requests == 0 or (messages_found > 0 and published_sessions == 0)):
             raise RuntimeError("全部会话请求失败，未发布任何 canonical raw")
+
+    def review_session_failures(
+        self,
+        *,
+        interactive: bool,
+        input_func: Callable[[str], str],
+    ) -> None:
+        state = self._failure_state or self._load_failure_state()
+        pending = state.pending_review()
+        if not pending:
+            return
+
+        print(f"[INFO] {len(pending)} 个会话连续失败达到待审查阈值：")
+        for record in pending:
+            print(
+                f"[INFO]   - 「{record['displayName']}」({record['wxid']})："
+                f"连续 {record['consecutiveFailures']} 个导出日；{record['lastError']}"
+            )
+        if not interactive:
+            print("[INFO] 当前为非交互运行；下次交互式运行时可确认是否忽略后续失败提示。")
+            return
+
+        print("[INFO] 忽略后仍会每天尝试导出，恢复成功时会自动移出忽略名单。", flush=True)
+        print("[INFO] 请选择：[a] 全部忽略 / [k] 全部保留（默认）", flush=True)
+        choice = input_func("").strip().lower()
+        if choice not in {"a", "all", "y", "yes", "全部", "全部忽略"}:
+            print("[INFO] 已保留全部待审查会话；后续失败继续按 WARN 提示。")
+            return
+        authorized_date = self._last_export_date or date.today()
+        changed = state.ignore((str(record["wxid"]) for record in pending), authorized_date=authorized_date)
+        self._save_failure_state()
+        print(f"[INFO] 已忽略 {changed} 个会话的后续失败提示；仍会每日尝试以便自动恢复。")
 
     def export_moments(self, usernames: list[str], export_date: date) -> None:
         raw_root = self.config.paths.raw
@@ -224,6 +291,50 @@ class WeflowApiBackend:
         marker = f"export_chat_session:{talker}"
         self.partial_failures.append(marker)
         print(f"[WARN] 会话导出失败，已隔离 {talker}: {reason}", file=sys.stderr)
+
+    def _load_failure_state(self) -> SessionFailureState:
+        state_path = self.config.base_dir / ".export-state.json"
+        try:
+            self._failure_state = SessionFailureState.load(state_path)
+            self._failure_state_writable = True
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            self._failure_state = SessionFailureState(state_path)
+            self._failure_state_writable = False
+            print(
+                f"[WARN] 无法读取会话失败状态，本轮不会覆盖该文件：{exc}",
+                file=sys.stderr,
+            )
+        return self._failure_state
+
+    def _save_failure_state(self) -> None:
+        if self._failure_state is None or not self._failure_state_writable:
+            return
+        try:
+            self._failure_state.save()
+        except OSError as exc:
+            self._failure_state_writable = False
+            print(f"[WARN] 无法写入会话失败状态：{exc}", file=sys.stderr)
+
+    @staticmethod
+    def _record_session_success(
+        state: SessionFailureState,
+        talker: str,
+        display_name: str,
+    ) -> None:
+        if state.record_success(talker):
+            print(f"[INFO] 会话「{display_name}」已恢复正常导出，已从忽略名单移除")
+
+    def _append_ignored_failure_detail(self, talker: str, display_name: str, reason: str) -> None:
+        log_path = self.config.base_dir / ".runlog" / f"{date.today():%Y-%m-%d}-daily-export.log"
+        try:
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            with log_path.open("a", encoding="utf-8") as stream:
+                summary = " ".join(str(reason).split())[:500]
+                stream.write(f"[IGNORED] 会话导出失败 {display_name} ({talker}): {summary}\n")
+        except OSError:
+            # The same detail remains in .export-state.json; logging must not
+            # turn an explicitly ignored upstream failure back into a failure.
+            pass
 
 
 def _launch_weflow_normally(executable: Path) -> subprocess.Popen[Any]:

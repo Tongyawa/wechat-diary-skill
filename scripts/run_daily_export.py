@@ -224,6 +224,8 @@ def ensure_local_config(
     # `# comment` the user inherited from config.example.toml.
     if "target_usernames" not in daily_export_section:
         text = _set_toml_value(text, "daily_export", "target_usernames", _toml_array([]))
+    if "skip_official_accounts" not in daily_export_section:
+        text = _set_toml_value(text, "daily_export", "skip_official_accounts", "true")
     if "self_moments_usernames" not in daily_export_section and prompt:
         # Never silently write [] here: an auto-written empty list is
         # indistinguishable from a deliberate opt-out and made the runner skip
@@ -339,6 +341,7 @@ def run_daily_export(
                 print("voice_transcribe skipped: no configured contacts.")
 
             _run_stage("export_all_chats", lambda: backend.export_chats(export_day))
+            _review_session_failures(backend)
             for failure in getattr(backend, "partial_failures", []):
                 if failure not in moments_failures:
                     moments_failures.append(failure)
@@ -652,6 +655,15 @@ def _finish_backend(backend: ExporterBackend, partial_failures: list[str]) -> No
             f"[WARN] backend shutdown failed; export pipeline will continue: {exc.cause}",
             file=sys.stderr,
         )
+
+
+def _review_session_failures(backend: ExporterBackend) -> None:
+    review = getattr(backend, "review_session_failures", None)
+    if not callable(review):
+        return
+    isatty = getattr(sys.stdin, "isatty", None)
+    interactive = bool(isatty()) if callable(isatty) else False
+    review(interactive=interactive, input_func=input)
 
 
 def _loads_toml(text: str, path: Path) -> dict[str, Any]:

@@ -59,6 +59,10 @@ function ShouldShowDailyExportLine {
     return $true
   }
 
+  if ($Line -match '^\[INFO\]') {
+    return $true
+  }
+
   if ($Line -match '^(Daily export day|Raw root|Processed root|Target sidecar contacts|Self moments contacts):') {
     return $true
   }

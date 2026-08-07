@@ -17,6 +17,7 @@ from scripts.run_daily_export import (
     DailyExportDeps,
     DailyExportResult,
     DailyExportStageError,
+    _review_session_failures,
     ensure_local_config,
     main,
     run_daily_export,
@@ -159,6 +160,27 @@ def _write_voice_failure_raw(root: Path, *, message_ids: list[int] | None = None
 
 
 class DailyExportScriptTests(unittest.TestCase):
+    def test_review_uses_tty_stdin_for_interactive_authorization(self) -> None:
+        class TtyInput(io.StringIO):
+            def isatty(self) -> bool:
+                return True
+
+        class ReviewBackend:
+            def __init__(self) -> None:
+                self.choice = ""
+                self.interactive = False
+
+            def review_session_failures(self, *, interactive, input_func) -> None:
+                self.interactive = interactive
+                self.choice = input_func("")
+
+        backend = ReviewBackend()
+        with patch("scripts.run_daily_export.sys.stdin", TtyInput("a\n")):
+            _review_session_failures(backend)
+
+        self.assertTrue(backend.interactive)
+        self.assertEqual(backend.choice, "a")
+
     def test_wrappers_separate_code_root_from_workspace(self) -> None:
         daily = Path("scripts/run_daily_export.ps1").read_text(encoding="utf-8-sig")
         process = Path("scripts/process_existing_raw.ps1").read_text(encoding="utf-8-sig")
@@ -174,6 +196,7 @@ class DailyExportScriptTests(unittest.TestCase):
         self.assertIn('Join-Path $WorkspaceRoot ".runlog"', process)
         self.assertNotIn('WeFlow-insights\\.runlog', daily)
         self.assertNotIn('WeFlow-insights\\.runlog', process)
+        self.assertIn("if ($Line -match '^\\[INFO\\]')", daily)
         self.assertIn('if "%ROOT:~-1%"=="\\" set "ROOT=%ROOT:~0,-1%"', batch)
         self.assertIn('-File "%ROOT%\\scripts\\run_daily_export.ps1"', batch)
         self.assertIn('-Workspace "%ROOT%"', batch)
@@ -638,6 +661,29 @@ driver = "uia"
         self.assertEqual(exit_code, 1)
         self.assertIn("Daily export completed with warnings.", out.getvalue())
         self.assertIn("export_self_moments", err.getvalue())
+
+    def test_main_returns_zero_when_ignored_failures_create_no_partial_failures(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = _write_config(root, target_users="")
+            clean_result = DailyExportResult(
+                day="2026-05-16",
+                rotation_target=None,
+                diary_files=[],
+                self_moment_files=[],
+                sidecar_chat_files=[],
+                sidecar_moment_files=[],
+                partial_failures=[],
+            )
+
+            with (
+                patch("scripts.run_daily_export.run_daily_export", return_value=clean_result),
+                redirect_stdout(io.StringIO()),
+                redirect_stderr(io.StringIO()),
+            ):
+                exit_code = main(["--config", str(config_path), "--no-config-prompt"])
+
+        self.assertEqual(exit_code, 0)
 
     def test_runner_uses_target_usernames_when_voice_config_is_empty(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
