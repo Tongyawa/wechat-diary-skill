@@ -59,9 +59,16 @@ def map_session_json(
     display_name = str(session.get("displayName") or _display_name(session_contact, talker))
     nickname = str(session_contact.get("nickname") or display_name)
     remark = str(session_contact.get("remark") or "")
+    ordered_messages = sorted(
+        messages,
+        key=lambda message: (
+            _message_sort_value(message.get("createTime")),
+            _message_sort_value(message.get("localId")),
+        ),
+    )
     observed_self_wxids = [
         str(message.get("senderUsername"))
-        for message in messages
+        for message in ordered_messages
         if bool(message.get("isSend")) and str(message.get("senderUsername") or "")
     ]
     effective_self_wxids = list(dict.fromkeys([*observed_self_wxids, *map(str, self_wxids)]))
@@ -80,7 +87,7 @@ def map_session_json(
             emit_emotion=emit_emotion,
             require_media=require_media,
         )
-        for message in messages
+        for message in ordered_messages
     ]
     data = {
         "session": {
@@ -97,6 +104,13 @@ def map_session_json(
     }
     validate_session_json(data)
     return data
+
+
+def _message_sort_value(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError, OverflowError):
+        return 0
 
 
 def write_session_export(

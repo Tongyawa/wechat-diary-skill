@@ -62,6 +62,9 @@ def validate_session_json(data: Any) -> None:
     if not isinstance(messages, list):
         issues.append("messages (array)")
     else:
+        previous_create_time: int | None = None
+        first_order_violation: tuple[int, int, int] | None = None
+        order_violation_count = 0
         for index, message in enumerate(messages):
             path = f"messages[{index}]"
             if not isinstance(message, dict):
@@ -69,6 +72,21 @@ def validate_session_json(data: Any) -> None:
                 continue
             _require_fields(message, path, _CHAT_MESSAGE_REQUIRED, issues)
             _validate_optional_reply_context(message.get("replyContext"), path, issues)
+            if "createTime" not in message:
+                continue
+            create_time = _message_numeric_value(message.get("createTime"))
+            if previous_create_time is not None and create_time < previous_create_time:
+                order_violation_count += 1
+                if first_order_violation is None:
+                    first_order_violation = (index, previous_create_time, create_time)
+            previous_create_time = create_time
+        if first_order_violation is not None:
+            first_index, first_previous_time, first_current_time = first_order_violation
+            issues.append(
+                f"messages[{first_index}].createTime 顺序错误：canonical raw 消息必须按 createTime 单调不减 "
+                f"（首个违规处 createTime {first_previous_time} → {first_current_time}，"
+                f"共 {order_violation_count} 处），请重新导出"
+            )
 
     _raise_if_issues("chat", issues)
 
@@ -190,3 +208,10 @@ def _type_name(value: type) -> str:
     if value is dict:
         return "object"
     return value.__name__
+
+
+def _message_numeric_value(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError, OverflowError):
+        return 0

@@ -78,6 +78,42 @@ class RawSchemaTests(unittest.TestCase):
         with self.assertRaisesRegex(RawSchemaError, r"messages\[0\]\.createTime"):
             validate_session_json(payload)
 
+    def test_session_message_create_time_must_not_decrease(self) -> None:
+        payload = _session_payload()
+        later_message = copy.deepcopy(payload["messages"][0])
+        later_message.update({"localId": 2, "createTime": 1778839199})
+        payload["messages"].append(later_message)
+
+        with self.assertRaisesRegex(RawSchemaError, r"顺序错误.*重新导出"):
+            validate_session_json(payload)
+
+    def test_fully_descending_session_reports_one_order_issue(self) -> None:
+        payload = _session_payload()
+        template = payload["messages"][0]
+        payload["messages"] = []
+        for index, create_time in enumerate(range(6, 0, -1), start=1):
+            message = copy.deepcopy(template)
+            message.update({"localId": index, "createTime": create_time})
+            payload["messages"].append(message)
+
+        with self.assertRaises(RawSchemaError) as context:
+            validate_session_json(payload)
+
+        error = str(context.exception)
+        self.assertEqual(error.count("顺序错误"), 1)
+        self.assertIn("messages[1].createTime", error)
+        self.assertIn("createTime 6 → 5", error)
+        self.assertIn("共 5 处", error)
+        self.assertIn("请重新导出", error)
+
+    def test_session_messages_with_equal_create_time_pass(self) -> None:
+        payload = _session_payload()
+        same_time_message = copy.deepcopy(payload["messages"][0])
+        same_time_message["localId"] = 2
+        payload["messages"].append(same_time_message)
+
+        validate_session_json(payload)
+
     def test_complete_moments_payload_passes(self) -> None:
         validate_moments_json(_moments_payload())
 

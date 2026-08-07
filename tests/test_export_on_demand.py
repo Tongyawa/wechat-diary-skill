@@ -386,7 +386,10 @@ class ExportOnDemandTests(unittest.TestCase):
                 enable_asr=False,
             )
             payload = json.loads((result.raw_session_dir / f"{result.raw_session_dir.name}.json").read_text(encoding="utf-8"))
-            self.assertEqual(payload["messages"][0]["platformMessageId"], "6277496717170092270")
+            self.assertEqual(
+                next(message["platformMessageId"] for message in payload["messages"] if message["localId"] == 2334),
+                "6277496717170092270",
+            )
             self.assertIn("quotedContent", json.dumps(payload, ensure_ascii=False))
             self.assertIn("转文字失败", json.dumps(payload, ensure_ascii=False))
             self.assertTrue(result.diary_files)

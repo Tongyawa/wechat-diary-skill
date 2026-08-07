@@ -1,0 +1,64 @@
+{
+  "success": true,
+  "talker": "wxid_contact_placeholder",
+  "count": 4,
+  "hasMore": false,
+  "messages": [
+    {
+      "localId": 104,
+      "serverId": "server-104",
+      "localType": 1,
+      "createTime": 3000,
+      "sortSeq": 104,
+      "isSend": 1,
+      "senderUsername": "wxid_self_placeholder",
+      "content": "message 104",
+      "rawContent": "",
+      "parsedContent": "",
+      "replyToMessageId": "",
+      "quote": null
+    },
+    {
+      "localId": 103,
+      "serverId": "server-103",
+      "localType": 1,
+      "createTime": 2000,
+      "sortSeq": 103,
+      "isSend": 1,
+      "senderUsername": "wxid_self_placeholder",
+      "content": "message 103",
+      "rawContent": "",
+      "parsedContent": "",
+      "replyToMessageId": "",
+      "quote": null
+    },
+    {
+      "localId": 102,
+      "serverId": "server-102",
+      "localType": 1,
+      "createTime": 2000,
+      "sortSeq": 102,
+      "isSend": 1,
+      "senderUsername": "wxid_self_placeholder",
+      "content": "message 102",
+      "rawContent": "",
+      "parsedContent": "",
+      "replyToMessageId": "",
+      "quote": null
+    },
+    {
+      "localId": 101,
+      "serverId": "server-101",
+      "localType": 1,
+      "createTime": 1000,
+      "sortSeq": 101,
+      "isSend": 1,
+      "senderUsername": "wxid_self_placeholder",
+      "content": "message 101",
+      "rawContent": "",
+      "parsedContent": "",
+      "replyToMessageId": "",
+      "quote": null
+    }
+  ]
+}

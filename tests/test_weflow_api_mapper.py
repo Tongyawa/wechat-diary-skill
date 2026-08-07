@@ -82,15 +82,37 @@ class WeflowApiMapperTests(unittest.TestCase):
             )
 
         validate_session_json(data)
-        self.assertEqual(data["messages"][0]["platformMessageId"], "6277496717170092270")
-        self.assertEqual(data["messages"][0]["localId"], 2334)
-        self.assertEqual(data["messages"][0]["formattedTime"], datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S"))
-        self.assertEqual(data["messages"][1]["senderUsername"], "wxid_self_placeholder")
-        self.assertEqual(data["messages"][2]["type"], "动画表情")
-        self.assertEqual(data["messages"][2]["replyToMessageId"], "6277496717170092270")
-        self.assertEqual(data["messages"][2]["quotedContent"], "被引用原文")
-        self.assertNotEqual(data["messages"][3]["content"], "[语音]")
-        self.assertIn("转文字失败", data["messages"][3]["content"])
+        self.assertEqual([message["localId"] for message in data["messages"]], [2331, 2332, 2333, 2334])
+        mapped_by_local_id = {message["localId"]: message for message in data["messages"]}
+        self.assertEqual(mapped_by_local_id[2334]["platformMessageId"], "6277496717170092270")
+        self.assertEqual(mapped_by_local_id[2334]["formattedTime"], datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S"))
+        self.assertEqual(mapped_by_local_id[2333]["senderUsername"], "wxid_self_placeholder")
+        self.assertEqual(mapped_by_local_id[2332]["type"], "动画表情")
+        self.assertEqual(mapped_by_local_id[2332]["replyToMessageId"], "6277496717170092270")
+        self.assertEqual(mapped_by_local_id[2332]["quotedContent"], "被引用原文")
+        self.assertNotEqual(mapped_by_local_id[2331]["content"], "[语音]")
+        self.assertIn("转文字失败", mapped_by_local_id[2331]["content"])
+
+    def test_descending_api_fixture_maps_to_ascending_canonical_messages(self) -> None:
+        session = _fixture("sessions.json")["sessions"][0]
+        messages = _fixture("messages_descending.json")["messages"]
+
+        self.assertEqual(
+            [message["createTime"] for message in messages],
+            [3000, 2000, 2000, 1000],
+        )
+        data = map_session_json(
+            session,
+            messages,
+            contacts=_fixture("contacts.json")["contacts"],
+        )
+
+        validate_session_json(data)
+        self.assertEqual([message["localId"] for message in data["messages"]], [101, 102, 103, 104])
+        self.assertEqual(
+            [message["createTime"] for message in data["messages"]],
+            [1000, 2000, 2000, 3000],
+        )
 
     def test_empty_group_system_sender_falls_back_to_chatroom(self) -> None:
         message = copy.deepcopy(_fixture("messages.json")["messages"][0])
@@ -129,9 +151,10 @@ class WeflowApiMapperTests(unittest.TestCase):
             )
 
         validate_session_json(data)
-        self.assertIn("转文字失败", data["messages"][0]["content"])
-        self.assertNotEqual(data["messages"][0]["content"], "[语音]")
-        self.assertEqual(data["messages"][1]["content"], text_message["content"])
+        mapped_by_local_id = {message["localId"]: message for message in data["messages"]}
+        self.assertIn("转文字失败", mapped_by_local_id[2335]["content"])
+        self.assertNotEqual(mapped_by_local_id[2335]["content"], "[语音]")
+        self.assertEqual(mapped_by_local_id[text_message["localId"]]["content"], text_message["content"])
 
     def test_range_export_uses_type_prefix_and_range_suffix_and_validates(self) -> None:
         session = _fixture("sessions.json")["sessions"][0]
