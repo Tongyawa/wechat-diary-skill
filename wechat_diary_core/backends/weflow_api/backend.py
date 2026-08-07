@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import subprocess
+import shutil
 import sys
+import tempfile
 import time
 from dataclasses import dataclass, field
 from datetime import date
@@ -136,25 +138,50 @@ class WeflowApiBackend:
             raise RuntimeError("全部会话请求失败，未发布任何 canonical raw")
 
     def export_moments(self, usernames: list[str], export_date: date) -> None:
-        posts: list[dict[str, Any]] = []
-        for username in usernames:
-            # iter_timeline always sends usernames=, locally filters exact username,
-            # and exhausts offset pages; the date window is intentionally local.
-            posts.extend(self.client.iter_timeline(username, limit=100))
-        write_moments_export(
-            self.config.paths.raw,
-            posts,
-            usernames=usernames,
-            export_date=export_date,
-        )
+        raw_root = self.config.paths.raw
+        staging_parent = raw_root.parent / f".{raw_root.name}.weflow-api-moments-staging"
+        staging_parent.mkdir(parents=True, exist_ok=True)
+        staging_dir = Path(tempfile.mkdtemp(prefix=f"moments-{export_date:%Y%m%d}-", dir=staging_parent))
+        try:
+            response = self.client.export_moments(
+                staging_dir,
+                usernames,
+                start=export_date,
+                end=export_date,
+            )
+            source_path = Path(str(response["filePath"]))
+            result = write_moments_export(
+                raw_root,
+                source_path,
+                usernames=usernames,
+                export_date=export_date,
+                staging_dir=staging_dir,
+            )
+            if result.missing_media_posts:
+                marker = f"export_moments_media:{result.path.stem}"
+                if marker not in self.partial_failures:
+                    self.partial_failures.append(marker)
+                print(
+                    f"[WARN] 朋友圈有 {result.missing_media_posts} 条动态的媒体未解密，"
+                    "已保留 URL 并继续导出。",
+                    file=sys.stderr,
+                )
+        finally:
+            if staging_dir.exists():
+                shutil.rmtree(staging_dir)
+            try:
+                staging_parent.rmdir()
+            except OSError:
+                pass
 
     def transcribe_voices(self, usernames: list[str]) -> None:
         # Inline in export_chats; deliberately absent from capabilities.
         return None
 
     def shutdown(self) -> None:
-        # WeFlow remains user-owned even when prepare best-effort started it.
-        return None
+        # WeFlow remains user-owned; only the backend-owned ASR worker closes.
+        if self._transcriber is not None and hasattr(self._transcriber, "close"):
+            self._transcriber.close()
 
     def _probe_ready(self) -> None:
         self.client.health()
@@ -170,12 +197,20 @@ class WeflowApiBackend:
         elif engine == "whisper":
             self._asr_unavailable_reason = "whisper引擎本期未就绪"
         elif engine == "sensevoice":
-            self._transcriber = SenseVoiceTranscriber(
-                model=self.config.asr.model,
-                language=self.config.asr.language,
-                device=self.config.asr.device,
-            )
-            self._asr_unavailable_reason = "SenseVoice可选依赖未就绪"
+            worker_python = self.config.asr.worker_python
+            if worker_python is None or not worker_python.is_file():
+                self._asr_unavailable_reason = "SenseVoice worker_python未配置或不可执行"
+            else:
+                self._transcriber = SenseVoiceTranscriber(
+                    worker_python=worker_python,
+                    worker_script=self.config.asr.worker_script,
+                    model=self.config.asr.model,
+                    language=self.config.asr.language,
+                    device=self.config.asr.device,
+                    startup_timeout_sec=self.config.asr.worker_startup_timeout_sec,
+                    request_timeout_sec=self.config.asr.worker_request_timeout_sec,
+                )
+                self._asr_unavailable_reason = "SenseVoice worker未就绪"
         else:
             self._asr_unavailable_reason = f"未知ASR引擎:{engine}"
         return self._transcriber, self._asr_unavailable_reason

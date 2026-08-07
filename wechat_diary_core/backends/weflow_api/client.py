@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import date
+from pathlib import Path
 from typing import Any, Callable, Iterator
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
@@ -164,6 +165,37 @@ class WeflowApiClient:
                 return
             offset += len(page)
 
+    def export_moments(
+        self,
+        output_dir: str | Path,
+        usernames: list[str],
+        *,
+        start: date | str,
+        end: date | str,
+    ) -> dict[str, Any]:
+        """Ask WeFlow to export one exact moments range into a staging directory."""
+
+        destination = Path(output_dir).resolve()
+        targets = [str(value).strip() for value in usernames if str(value).strip()]
+        if not targets:
+            raise ValueError("朋友圈导出 usernames 不能为空，拒绝退化为全量导出")
+        payload = self._request(
+            "/api/v1/sns/export",
+            method="POST",
+            body={
+                "outputDir": str(destination),
+                "usernames": targets,
+                "start": _api_date(start),
+                "end": _api_date(end),
+                # This exact key is required by WeFlow. Similar-looking names
+                # silently return 200 while exporting no media.
+                "exportMedia": True,
+            },
+        )
+        if not payload.get("success") or not str(payload.get("filePath") or ""):
+            raise WeflowApiError("WeFlow 朋友圈导出未返回 filePath")
+        return payload
+
     def semantic_probe(self) -> tuple[str, int]:
         """Prove that a protected endpoint can read at least one message."""
 
@@ -199,13 +231,19 @@ class WeflowApiClient:
         params: dict[str, Any] | None = None,
         *,
         authenticated: bool = True,
+        method: str = "GET",
+        body: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         query = urlencode({key: value for key, value in (params or {}).items() if value is not None})
         url = f"{self.base_url}{path}" + (f"?{query}" if query else "")
         headers = {"Accept": "application/json"}
         if authenticated and self.access_token:
             headers["Authorization"] = f"Bearer {self.access_token}"
-        request = Request(url, headers=headers, method="GET")
+        data = None
+        if body is not None:
+            headers["Content-Type"] = "application/json"
+            data = json.dumps(body, ensure_ascii=False).encode("utf-8")
+        request = Request(url, data=data, headers=headers, method=method)
         try:
             response = self._opener(request, timeout=self.timeout)
             with response:

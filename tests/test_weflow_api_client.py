@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import unittest
 from datetime import date
+from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from wechat_diary_core.backends.weflow_api.client import WeflowApiClient, WeflowApiError
@@ -99,6 +100,50 @@ class WeflowApiClientTests(unittest.TestCase):
         self.assertEqual([query["offset"] for query in queries], [["0"], ["2"]])
         self.assertTrue(all(query["usernames"] == ["wxid_contact_placeholder"] for query in queries))
         self.assertTrue(all("start" not in query and "end" not in query for query in queries))
+
+    def test_export_moments_posts_exact_media_request_to_staging(self) -> None:
+        captured = []
+
+        def opener(request, timeout):
+            captured.append(request)
+            return _Response(
+                {
+                    "success": True,
+                    "filePath": "C:/staging/朋友圈导出_2026-08-05T12-03-20.json",
+                    "postCount": 2,
+                    "mediaCount": 19,
+                }
+            )
+
+        client = WeflowApiClient("http://127.0.0.1:5031", "fixed-token", opener=opener)
+        response = client.export_moments(
+            "C:/staging",
+            ["wxid_contact_placeholder"],
+            start=date(2026, 8, 1),
+            end=date(2026, 8, 5),
+        )
+
+        request = captured[0]
+        body = json.loads(request.data.decode("utf-8"))
+        self.assertEqual(request.method, "POST")
+        self.assertEqual(urlparse(request.full_url).path, "/api/v1/sns/export")
+        self.assertEqual(body["usernames"], ["wxid_contact_placeholder"])
+        self.assertEqual(body["start"], "20260801")
+        self.assertEqual(body["end"], "20260805")
+        self.assertTrue(Path(body["outputDir"]).is_absolute())
+        self.assertIs(body["exportMedia"], True)
+        self.assertNotIn("media", body)
+        self.assertNotIn("withMedia", body)
+        self.assertEqual(response["mediaCount"], 19)
+
+    def test_export_moments_rejects_empty_targets_before_request(self) -> None:
+        client = WeflowApiClient(
+            "http://127.0.0.1:5031",
+            "fixed-token",
+            opener=lambda *args, **kwargs: self.fail("empty usernames must not reach API"),
+        )
+        with self.assertRaisesRegex(ValueError, "不能为空"):
+            client.export_moments("C:/staging", [], start=date(2026, 8, 5), end=date(2026, 8, 5))
 
     def test_contacts_explicit_large_limit_rejects_exactly_100_truncation_signal(self) -> None:
         captured = []

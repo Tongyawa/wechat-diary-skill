@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -104,6 +105,7 @@ access_token = "fixed-token"
 
 [asr]
 engine = "sensevoice"
+worker_python = "{Path(sys.executable).as_posix()}"
 """.strip(),
                 encoding="utf-8",
             )
@@ -157,6 +159,53 @@ engine = "sensevoice"
 
         self.assertEqual(_by_id(report, "dependency_asr").status, "warning")
         self.assertNotIn("dependency_asr", [check.id for check in report.checks if check.status == "error"])
+
+    def test_weflow_api_asr_invalid_worker_python_has_clear_warning(self) -> None:
+        class ApiClient:
+            def health(self):
+                return {"status": "ok"}
+
+            def semantic_probe(self):
+                return "wxid_placeholder", 1
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for name in ("raw", "processed", "archived", "insights"):
+                (root / name).mkdir()
+            config = root / "config.toml"
+            config.write_text(
+                f'''
+[paths]
+raw = "{(root / 'raw').as_posix()}"
+processed = "{(root / 'processed').as_posix()}"
+archived = "{(root / 'archived').as_posix()}"
+insights = "{(root / 'insights').as_posix()}"
+
+[export_backend]
+backend = "weflow_api"
+
+[export_backend.weflow_api]
+access_token = "fixed-token"
+
+[asr]
+engine = "sensevoice"
+worker_python = "missing/python.exe"
+'''.strip(),
+                encoding="utf-8",
+            )
+            report = run_doctor(
+                config,
+                deps=ProbeDependencies(
+                    api_client_factory=lambda cfg: ApiClient(),
+                    find_spec=lambda name: None,
+                    can_write=lambda path: True,
+                ),
+            )
+
+        check = _by_id(report, "dependency_asr")
+        self.assertEqual(check.status, "warning")
+        self.assertIn("不存在或不可执行", check.message)
+        self.assertIn("worker_python", check.action)
 
     def test_ready_state_covers_all_core_checks(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

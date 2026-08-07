@@ -374,6 +374,12 @@ def run_daily_export(
                 print(f"export_self_moments skipped: backend '{backend.name}' does not support moments.")
             else:
                 print("export_self_moments skipped: no configured self moments contacts.")
+            # Backends may degrade individual media items without failing the
+            # moments stage. Surface those warnings through the same tri-state
+            # result used for isolated session and sidecar failures.
+            for failure in getattr(backend, "partial_failures", []):
+                if failure not in moments_failures:
+                    moments_failures.append(failure)
         finally:
             if prepared:
                 _finish_backend(backend, moments_failures)

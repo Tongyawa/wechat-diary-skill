@@ -1,0 +1,44 @@
+{
+  "exportTime": "2026-08-05 12:03:20",
+  "totalPosts": 2,
+  "filters": {
+    "usernames": ["wxid_contact_placeholder"],
+    "start": "20260805",
+    "end": "20260805"
+  },
+  "posts": [
+    {
+      "username": "wxid_contact_placeholder",
+      "nickname": "示例联系人",
+      "createTime": 1785921697,
+      "createTimeStr": "2026/08/05 12:01:37",
+      "contentDesc": "带媒体的示例动态",
+      "type": 1,
+      "media": [
+        {
+          "url": "https://example.invalid/media/post-placeholder-1.jpg",
+          "thumb": "https://example.invalid/media/post-placeholder-1-thumb.jpg"
+        }
+      ],
+      "likes": [],
+      "comments": [],
+      "location": {"poiName": "", "address": ""},
+      "id": "post-placeholder-1"
+    },
+    {
+      "username": "wxid_contact_placeholder",
+      "nickname": "示例联系人",
+      "createTime": 1785921697,
+      "createTimeStr": "2026/08/05 12:01:37",
+      "contentDesc": "媒体解密失败仍保留的示例动态",
+      "type": 1,
+      "media": [
+        {"url": "https://example.invalid/media/post-placeholder-2.jpg"}
+      ],
+      "likes": [],
+      "comments": [],
+      "location": {"poiName": "", "address": ""},
+      "id": "post-placeholder-2"
+    }
+  ]
+}

@@ -16,6 +16,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from wechat_diary_core.config import Config, load_config
+from wechat_diary_core.asr import default_worker_script
 from wechat_diary_core.backends.weflow.cdp_driver import fetch_cdp_targets
 from wechat_diary_core.backends.weflow_api.client import WeflowApiClient
 
@@ -118,7 +119,7 @@ def run_doctor(config_path: str | Path = "config.toml", *, deps: ProbeDependenci
         checks.append(_check_api_health(cfg, client))
         checks.append(_check_api_token(cfg))
         checks.append(_check_api_semantic(cfg, client))
-        checks.append(_check_asr(cfg, active.find_spec))
+        checks.append(_check_asr(cfg))
     checks.extend(_check_data_roots(cfg, active.can_write))
     checks.extend(_check_optional_dependencies(cfg, active.find_spec))
     return DoctorReport(checks)
@@ -330,7 +331,7 @@ def _check_api_semantic(cfg: Config, client: Any) -> CheckResult:
     )
 
 
-def _check_asr(cfg: Config, find_spec: Callable[[str], Any]) -> CheckResult:
+def _check_asr(cfg: Config) -> CheckResult:
     engine = cfg.asr.engine
     if not engine:
         return CheckResult(
@@ -351,24 +352,54 @@ def _check_asr(cfg: Config, find_spec: Callable[[str], Any]) -> CheckResult:
             action="本期请使用 engine = \"sensevoice\"，或设为空字符串关闭。",
             details={"engine": engine, "enabled": False},
         )
-    missing = [name for name in ("funasr", "torch", "modelscope") if not _module_available(name, find_spec)]
-    if missing:
+    worker_python = cfg.asr.worker_python
+    if worker_python is None:
         return CheckResult(
             id="dependency_asr",
             group="可选能力",
-            name="SenseVoice 本地语音转写",
+            name="SenseVoice 常驻 worker",
             status="warning",
-            message="可选能力未就绪，缺少：" + "、".join(missing),
-            action="按需运行 python -m pip install -r requirements-asr.txt；未安装不影响聊天导出。",
-            details={"engine": engine, "missing_modules": missing},
+            message="可选能力未就绪：[asr].worker_python 未配置。",
+            action=(
+                "在独立 uv 项目中安装 SenseVoice，再把该项目 .venv 的 Python 绝对路径写入 "
+                "[asr].worker_python；不要向 daily export 使用的全局 Python 安装依赖。"
+            ),
+            details={"engine": engine, "worker_python": ""},
+        )
+    python_executable = worker_python.is_file() and (os.name == "nt" or os.access(worker_python, os.X_OK))
+    if not python_executable:
+        return CheckResult(
+            id="dependency_asr",
+            group="可选能力",
+            name="SenseVoice 常驻 worker",
+            status="warning",
+            message="可选能力未就绪：worker_python 不存在或不可执行。",
+            action="修正 [asr].worker_python，使其指向独立 uv 环境内可执行的 Python。",
+            details={"engine": engine, "worker_python": str(worker_python)},
+        )
+    worker_script = cfg.asr.worker_script or default_worker_script()
+    if not worker_script.is_file():
+        return CheckResult(
+            id="dependency_asr",
+            group="可选能力",
+            name="SenseVoice 常驻 worker",
+            status="warning",
+            message="可选能力未就绪：worker_script 不存在。",
+            action="将 [asr].worker_script 留空以使用仓库自带脚本，或配置有效的绝对路径。",
+            details={"engine": engine, "worker_script": str(worker_script)},
         )
     return CheckResult(
         id="dependency_asr",
         group="可选能力",
-        name="SenseVoice 本地语音转写",
+        name="SenseVoice 常驻 worker",
         status="ready",
-        message="funasr、torch、modelscope 均可用。",
-        details={"engine": engine, "model": cfg.asr.model},
+        message="独立 Python 与 worker 脚本均已配置；模型将在首次语音时懒加载。",
+        details={
+            "engine": engine,
+            "model": cfg.asr.model,
+            "worker_python": str(worker_python),
+            "worker_script": str(worker_script),
+        },
     )
 
 

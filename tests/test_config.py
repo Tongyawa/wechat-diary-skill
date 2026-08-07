@@ -20,6 +20,10 @@ class ConfigTests(unittest.TestCase):
         self.assertTrue(cfg.export_backend.weflow_api.media_localize)
         self.assertEqual(cfg.export_backend.weflow_api.message_format, "json")
         self.assertEqual(cfg.asr.engine, "")
+        self.assertIsNone(cfg.asr.worker_python)
+        self.assertIsNone(cfg.asr.worker_script)
+        self.assertEqual(cfg.asr.worker_startup_timeout_sec, 180)
+        self.assertEqual(cfg.asr.worker_request_timeout_sec, 120)
 
     def test_reads_weflow_api_and_sensevoice_settings(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -41,6 +45,10 @@ model = "local/model"
 language = "yue"
 device = "cpu"
 emit_emotion = false
+worker_python = "env/python.exe"
+worker_script = "custom_worker.py"
+worker_startup_timeout_sec = 240
+worker_request_timeout_sec = 90
 """.strip(),
                 encoding="utf-8",
             )
@@ -54,6 +62,10 @@ emit_emotion = false
         self.assertEqual(cfg.asr.model, "local/model")
         self.assertEqual(cfg.asr.language, "yue")
         self.assertFalse(cfg.asr.emit_emotion)
+        self.assertEqual(cfg.asr.worker_python, config_path.parent / "env" / "python.exe")
+        self.assertEqual(cfg.asr.worker_script, config_path.parent / "custom_worker.py")
+        self.assertEqual(cfg.asr.worker_startup_timeout_sec, 240)
+        self.assertEqual(cfg.asr.worker_request_timeout_sec, 90)
 
     def test_legacy_automation_maps_to_weflow_backend_with_one_hint(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

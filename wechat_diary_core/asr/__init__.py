@@ -1,5 +1,5 @@
-"""Optional local speech-recognition capabilities."""
+"""Optional out-of-process speech-recognition capabilities."""
 
-from .sensevoice import ASRUnavailableError, SenseVoiceTranscriber, sensevoice_dependencies_available
+from .sensevoice import ASRUnavailableError, SenseVoiceTranscriber, default_worker_script
 
-__all__ = ["ASRUnavailableError", "SenseVoiceTranscriber", "sensevoice_dependencies_available"]
+__all__ = ["ASRUnavailableError", "SenseVoiceTranscriber", "default_worker_script"]

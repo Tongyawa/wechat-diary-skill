@@ -69,7 +69,7 @@ WeFlow-insights/             # 日记、DoneList、灵感、画像、主线等�
    - `[export_backend].backend`：默认 `weflow_api`（WeFlow 5.x 本地 HTTP API）；已有 canonical raw、只想离线处理时可设为 `manual`。`weflow` 仅保留给 WeFlow ≤4.x 的 legacy GUI 自动化。
    - `[export_backend.weflow_api]`：确认 `base_url`，并在 WeFlow「设置 → API 服务」生成一个固定非空 Access Token 写入 `access_token`。token 不热更新，修改后要重启 API 服务；首次启用 API 服务仍需手动打开一次。
    - `[export_backend.weflow].weflow_exe`：API 不可达时可用于普通启动 WeFlow，也是 legacy GUI 后端的可执行文件路径；API 后端不会停止用户自己打开的 WeFlow。旧 `[automation]` 配置仍兼容，运行时会提示迁移。
-   - `[asr].engine`：空字符串表示关闭并写明确的语音转写失败占位；设为 `sensevoice` 前按需安装 `requirements-asr.txt`。缺少可选依赖只降级语音，不阻断聊天导出。
+   - `[asr].engine`：空字符串表示关闭并写明确的语音转写失败占位；设为 `sensevoice` 时，还要让 `worker_python` 指向独立 uv 项目的 Python。模型在首次语音时才由常驻 worker 加载；路径缺失或 worker 崩溃只降级语音，不阻断聊天导出，也不会向全局 Python 安装重依赖。
    - `[paths]`：raw、processed、archived、insights 的落点。
    - `[user].self_wxids`：自己的 wxid / 文件传输助手，用于识别收集箱。
    - `[skills].daily`：默认包含 `wechat-diary-skill`。
@@ -84,7 +84,7 @@ python "$SkillRoot\scripts\doctor.py"
 Pop-Location
 ```
 
-doctor 会按后端检查数据入口：`weflow_api` 覆盖 `/health`、固定 token、已知非空会话的消息语义探测和 SenseVoice 可选依赖；legacy `weflow` 检查可执行文件与 CDP。此外还检查四个数据根。它不会启动 WeFlow 或修改文件。自动化联动可给同一命令追加 `--json` 获取结构化结果。
+doctor 会按后端检查数据入口：`weflow_api` 覆盖 `/health`、固定 token、已知非空会话的消息语义探测和 SenseVoice worker 配置；legacy `weflow` 检查可执行文件与 CDP。此外还检查四个数据根。它不会启动 WeFlow、worker 或修改文件。自动化联动可给同一命令追加 `--json` 获取结构化结果。
 
 ## 常用用法
 
@@ -127,7 +127,7 @@ python -m unittest discover -s tests
 
 ## 注意事项
 
-- 默认 HTTP API 后端不做 GUI/CDP 点按；目标朋友圈必须先被 WeFlow 缓存/浏览过，当前不会主动调用有副作用的 `POST /sns/export`。legacy GUI 后端仍依赖 Windows 可见桌面，Agent 触发时通常需要提权运行。
+- 默认 HTTP API 后端不做 GUI/CDP 点按；朋友圈日常导出会调用 `POST /sns/export` 并固定使用 `exportMedia: true`，让 WeFlow 在 staging 中按需解密媒体，再以稳定的日期+目标哈希文件名发布。解密失败的动态保留 URL 并产生警告，不会中断聊天导出。动态仍须已经进入 WeFlow 的朋友圈库；久未打开 WeFlow 时的数据新鲜度需要结合实际导出检查。legacy GUI 后端仍依赖 Windows 可见桌面，Agent 触发时通常需要提权运行。
 - `WeFlow-*`、`config.toml`、最终 insights 产物都属于本地数据，不应提交进公开仓库。
 - 群聊默认经过上下文窗口过滤，保留和用户相关的片段；需要完整语料时可将
   `preprocessing.group_context_window.enabled` 设为 `false`，此时群聊保留全量消息流。私聊始终保留全量消息流。

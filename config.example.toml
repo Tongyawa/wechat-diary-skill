@@ -67,7 +67,13 @@ model = "iic/SenseVoiceSmall"
 language = "zh"
 device = "cpu"
 emit_emotion = true
-# Optional install: python -m pip install -r requirements-asr.txt
+# SenseVoice runs in an isolated uv environment, never in this process.
+# Example only (keep the real machine path in git-ignored config.toml):
+# worker_python = "E:/.100_Code/Coding_Tools/sensevoice-asr/.venv/Scripts/python.exe"
+worker_python = ""                       # empty = optional ASR capability not ready
+worker_script = ""                       # empty = bundled scripts/sensevoice_worker.py
+worker_startup_timeout_sec = 180          # cold import + one model load
+worker_request_timeout_sec = 120          # each request after startup
 
 [preprocessing]
 skip_emoji_dir = true                     # ignore media/emojis/ entirely (no OCR)

@@ -917,6 +917,27 @@ driver = "uia"
         self.assertIn("export_chat_session:wxid_placeholder", result.partial_failures)
         self.assertIn("publishes validated session directories synchronously", output.getvalue())
 
+    def test_api_backend_propagates_degraded_moments_media_partial_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = load_config(_write_config(root, target_users='"Target"', backend="weflow_api"))
+            backend = FakeBackend(name="weflow_api", capabilities=frozenset({"moments"}))
+            backend.partial_failures = []
+
+            def export_moments(usernames, export_date):
+                backend.partial_failures.append("export_moments_media:朋友圈导出_hash")
+
+            backend.export_moments_action = export_moments
+            deps = _quiet_deps(root)
+            deps.backend = backend
+            deps.archive = lambda raw_path, config, clear_first: []
+            deps.archive_chats_for = lambda *args, **kwargs: []
+            deps.archive_moments_for = lambda *args, **kwargs: []
+
+            result = run_daily_export(cfg, deps=deps, day=date(2026, 5, 16))
+
+        self.assertIn("export_moments_media:朋友圈导出_hash", result.partial_failures)
+
     def test_runner_calls_voice_fallback_before_archiving(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

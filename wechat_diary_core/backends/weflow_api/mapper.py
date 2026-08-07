@@ -9,6 +9,7 @@ import shutil
 import tempfile
 import uuid
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
@@ -149,35 +150,76 @@ def write_session_export(
             pass
 
 
+@dataclass(frozen=True)
+class MomentsExportResult:
+    path: Path
+    missing_media_posts: int
+    published_media: int
+
+
 def map_moments_json(
-    posts: Iterable[Mapping[str, Any]],
+    exported: Mapping[str, Any] | Iterable[Mapping[str, Any]],
     *,
     usernames: Sequence[str],
     start: date,
     end: date,
+    media_dir: Path | None = None,
 ) -> dict[str, Any]:
+    data, _missing_media_posts = _map_moments_with_stats(
+        exported,
+        usernames=usernames,
+        start=start,
+        end=end,
+        media_dir=media_dir,
+    )
+    return data
+
+
+def _map_moments_with_stats(
+    exported: Mapping[str, Any] | Iterable[Mapping[str, Any]],
+    *,
+    usernames: Sequence[str],
+    start: date,
+    end: date,
+    media_dir: Path | None,
+) -> tuple[dict[str, Any], int]:
     targets = {str(value) for value in usernames if str(value)}
+    if isinstance(exported, Mapping):
+        source_posts = exported.get("posts")
+        if not isinstance(source_posts, list) or any(not isinstance(item, Mapping) for item in source_posts):
+            raise ValueError("朋友圈导出 JSON 缺少 posts[]")
+        posts: Iterable[Mapping[str, Any]] = source_posts
+        source_export_time = exported.get("exportTime")
+    else:
+        posts = exported
+        source_export_time = None
     mapped: list[dict[str, Any]] = []
+    missing_media_posts = 0
     for post in posts:
         username = str(post.get("username") or "")
         timestamp = int(post.get("createTime") or 0)
-        # start/end are intentionally local filters: the endpoint ignores them.
+        # Defense in depth: /sns/export honors the range, but canonical output
+        # still enforces both the requested identities and local calendar days.
         local_day = datetime.fromtimestamp(timestamp).date() if timestamp else None
         if username not in targets or local_day is None or not (start <= local_day <= end):
             continue
         location = post.get("location") if isinstance(post.get("location"), Mapping) else {}
         media = post.get("media") if isinstance(post.get("media"), list) else []
         comments = post.get("comments") if isinstance(post.get("comments"), list) else []
+        post_id = str(post.get("id") or post.get("tid") or "")
+        mapped_media, media_missing = _map_moment_media_list(post_id, media, media_dir)
+        if media_missing:
+            missing_media_posts += 1
         mapped.append(
             {
-                "id": post.get("id") or post.get("tid") or "",
+                "id": post_id,
                 "username": username,
                 "nickname": str(post.get("nickname") or username),
                 "createTime": timestamp,
-                "createTimeStr": datetime.fromtimestamp(timestamp).strftime("%Y/%m/%d %H:%M:%S"),
+                "createTimeStr": str(post.get("createTimeStr") or datetime.fromtimestamp(timestamp).strftime("%Y/%m/%d %H:%M:%S")),
                 "contentDesc": str(post.get("contentDesc") or ""),
                 "type": post.get("type", ""),
-                "media": [_map_moment_media(item) for item in media if isinstance(item, Mapping)],
+                "media": mapped_media,
                 "likes": post.get("likes") if isinstance(post.get("likes"), list) else [],
                 "comments": [_map_comment(item) for item in comments if isinstance(item, Mapping)],
                 "location": {
@@ -191,10 +233,10 @@ def map_moments_json(
         "filters": {"usernames": sorted(targets)},
         "posts": mapped,
         "totalPosts": len(mapped),
-        "exportTime": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "exportTime": str(source_export_time or datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
     }
     validate_moments_json(data)
-    return data
+    return data, missing_media_posts
 
 
 def moments_filename(usernames: Sequence[str], export_date: date) -> str:
@@ -205,24 +247,71 @@ def moments_filename(usernames: Sequence[str], export_date: date) -> str:
 
 def write_moments_export(
     raw_root: Path,
-    posts: Iterable[Mapping[str, Any]],
+    exported_json: Mapping[str, Any] | Path,
     *,
     usernames: Sequence[str],
     export_date: date,
-) -> Path:
+    staging_dir: Path,
+) -> MomentsExportResult:
+    """Publish staged WeFlow moments media first and canonical JSON last."""
+
     raw_root.mkdir(parents=True, exist_ok=True)
-    data = map_moments_json(posts, usernames=usernames, start=export_date, end=export_date)
+    staging_dir = staging_dir.resolve()
+    if isinstance(exported_json, Path):
+        source_path = exported_json.resolve()
+        _require_inside(source_path, staging_dir, "WeFlow 朋友圈 JSON")
+        source_data = json.loads(source_path.read_text(encoding="utf-8"))
+    else:
+        source_path = None
+        source_data = exported_json
+    if not isinstance(source_data, Mapping):
+        raise ValueError("朋友圈导出 JSON 顶层必须是 object")
+
+    media_source = staging_dir / "media"
+    data, missing_media_posts = _map_moments_with_stats(
+        source_data,
+        usernames=usernames,
+        start=export_date,
+        end=export_date,
+        media_dir=media_source,
+    )
     destination = raw_root / moments_filename(usernames, export_date)
-    handle, temp_name = tempfile.mkstemp(prefix=f".{destination.name}.", suffix=".tmp", dir=raw_root)
-    temp_path = Path(temp_name)
-    try:
-        with os.fdopen(handle, "w", encoding="utf-8") as stream:
-            json.dump(data, stream, ensure_ascii=False, indent=2)
-        validate_moments_json(json.loads(temp_path.read_text(encoding="utf-8")))
-        os.replace(temp_path, destination)
-    finally:
-        temp_path.unlink(missing_ok=True)
-    return destination
+    canonical_stage = staging_dir / destination.name
+    temp_path = staging_dir / f".{destination.name}.{uuid.uuid4().hex}.tmp"
+    temp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    validate_moments_json(json.loads(temp_path.read_text(encoding="utf-8")))
+    os.replace(temp_path, canonical_stage)
+    if source_path is not None and source_path != canonical_stage:
+        source_path.unlink(missing_ok=True)
+
+    published_media = 0
+    selected_media_prefixes = {
+        f"{post['id']}_" for post in data["posts"] if str(post.get("id") or "")
+    }
+    if media_source.is_dir():
+        for source_media in sorted(path for path in media_source.rglob("*") if path.is_file()):
+            if not any(source_media.name.startswith(prefix) for prefix in selected_media_prefixes):
+                continue
+            relative = source_media.relative_to(media_source)
+            destination_media = raw_root / "media" / relative
+            destination_media.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(source_media, destination_media)
+            published_media += 1
+
+    for post in data["posts"]:
+        for media in post["media"]:
+            relative_text = str(media.get("localPath") or "")
+            if relative_text and not (raw_root / Path(relative_text)).is_file():
+                raise FileNotFoundError(f"朋友圈媒体发布后不存在：{relative_text}")
+
+    # JSON is the live discovery marker, so it is published only after every
+    # available media file is in place. Missing decrypted media stays URL-only.
+    os.replace(canonical_stage, destination)
+    return MomentsExportResult(
+        path=destination,
+        missing_media_posts=missing_media_posts,
+        published_media=published_media,
+    )
 
 
 def _map_message(
@@ -409,12 +498,46 @@ def _display_name(record: Mapping[str, Any], fallback: str) -> str:
     )
 
 
-def _map_moment_media(item: Mapping[str, Any]) -> dict[str, Any]:
-    mapped = dict(item)
-    path = item.get("localPath") or item.get("mediaLocalPath")
-    if path:
-        mapped["localPath"] = str(path).replace("\\", "/")
-    return mapped
+def _map_moment_media_list(
+    post_id: str,
+    media: Sequence[Any],
+    media_dir: Path | None,
+) -> tuple[list[dict[str, Any]], bool]:
+    items = [item for item in media if isinstance(item, Mapping)]
+    candidates: list[Path] = []
+    if media_dir is not None and media_dir.is_dir() and post_id:
+        prefix = f"{post_id}_"
+        candidates = sorted(
+            (
+                path
+                for path in media_dir.rglob("*")
+                if path.is_file()
+                and path.name.startswith(prefix)
+                and not path.stem.endswith("_live")
+            ),
+            key=_moment_media_sort_key,
+        )
+
+    mapped_items: list[dict[str, Any]] = []
+    missing = False
+    for index, item in enumerate(items):
+        mapped = dict(item)
+        mapped.pop("mediaLocalPath", None)
+        mapped.pop("localPath", None)
+        if index < len(candidates) and media_dir is not None:
+            relative = candidates[index].relative_to(media_dir)
+            mapped["localPath"] = (Path("media") / relative).as_posix()
+        else:
+            # Preserve url/thumb and all other metadata. URL-only is the
+            # canonical degradation for a post whose media was not decrypted.
+            missing = True
+        mapped_items.append(mapped)
+    return mapped_items, missing
+
+
+def _moment_media_sort_key(path: Path) -> tuple[int, str]:
+    tail = path.stem.rsplit("_", 1)[-1]
+    return (int(tail) if tail.isdigit() else 10**9, path.name)
 
 
 def _map_comment(item: Mapping[str, Any]) -> dict[str, Any]:
@@ -423,6 +546,13 @@ def _map_comment(item: Mapping[str, Any]) -> dict[str, Any]:
     mapped.setdefault("content", "")
     mapped.setdefault("refNickname", "")
     return mapped
+
+
+def _require_inside(path: Path, parent: Path, label: str) -> None:
+    try:
+        path.relative_to(parent)
+    except ValueError as exc:
+        raise ValueError(f"{label} 不在 staging 目录内：{path}") from exc
 
 
 def _replace_directory(source: Path, destination: Path) -> None:
@@ -443,6 +573,7 @@ def _replace_directory(source: Path, destination: Path) -> None:
 
 
 __all__ = [
+    "MomentsExportResult",
     "map_moments_json",
     "map_session_json",
     "moments_filename",

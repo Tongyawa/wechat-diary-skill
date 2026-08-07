@@ -12,6 +12,7 @@ from wechat_diary_core.backends.weflow_api.mapper import (
     map_session_json,
     moments_filename,
     session_directory_name,
+    write_moments_export,
     write_session_export,
 )
 from wechat_diary_core.raw_schema import validate_moments_json, validate_session_json
@@ -106,6 +107,32 @@ class WeflowApiMapperTests(unittest.TestCase):
         self.assertEqual(data["messages"][0]["senderUsername"], "sample@chatroom")
         self.assertEqual(data["messages"][0]["senderDisplayName"], "示例群聊")
 
+    def test_single_voice_worker_failure_only_writes_placeholder(self) -> None:
+        class BrokenWorker:
+            def transcribe(self, audio_path):
+                raise RuntimeError("fixture worker crash")
+
+        session = _fixture("sessions.json")["sessions"][0]
+        text_message = copy.deepcopy(_fixture("messages.json")["messages"][0])
+        voice_message = {**copy.deepcopy(text_message), "localId": 2335, "serverId": "voice", "localType": 34, "content": "[语音]"}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            voice_file = root / "voice.wav"
+            voice_file.write_bytes(b"RIFF\x00\x00\x00\x00WAVE")
+            voice_message.update({"mediaLocalPath": str(voice_file), "mediaFileName": "voice.wav"})
+            data = map_session_json(
+                session,
+                [voice_message, text_message],
+                contacts=_fixture("contacts.json")["contacts"],
+                media_dir=root / "session" / "media",
+                transcriber=BrokenWorker(),
+            )
+
+        validate_session_json(data)
+        self.assertIn("转文字失败", data["messages"][0]["content"])
+        self.assertNotEqual(data["messages"][0]["content"], "[语音]")
+        self.assertEqual(data["messages"][1]["content"], text_message["content"])
+
     def test_range_export_uses_type_prefix_and_range_suffix_and_validates(self) -> None:
         session = _fixture("sessions.json")["sessions"][0]
         messages = _fixture("messages.json")["messages"]
@@ -172,6 +199,47 @@ class WeflowApiMapperTests(unittest.TestCase):
         filename = moments_filename(["wxid_contact_placeholder"], export_day)
         self.assertRegex(filename, rf"^朋友圈导出_{export_day:%Y%m%d}_[0-9a-f]{{8}}\.json$")
         self.assertNotIn("wxid", filename)
+
+    def test_sns_export_is_renamed_and_publishes_relative_media_with_degradation(self) -> None:
+        exported = _fixture("sns-export.json")
+        export_day = datetime.fromtimestamp(exported["posts"][0]["createTime"]).date()
+        exported["posts"].append(
+            {**copy.deepcopy(exported["posts"][0]), "id": "foreign", "username": "wxid_foreign_placeholder"}
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            raw = root / "raw"
+            staging = root / ".raw.weflow-api-moments-staging" / "run"
+            media = staging / "media"
+            media.mkdir(parents=True)
+            source = staging / "朋友圈导出_2026-08-05T12-03-20.json"
+            source.write_text(json.dumps(exported, ensure_ascii=False), encoding="utf-8")
+            (media / "post-placeholder-1_0.jpg").write_bytes(b"jpeg-placeholder")
+            (media / "post-placeholder-1_0_live.mp4").write_bytes(b"mp4-placeholder")
+            (media / "foreign_0.jpg").write_bytes(b"must-not-publish")
+
+            result = write_moments_export(
+                raw,
+                source,
+                usernames=["wxid_contact_placeholder"],
+                export_date=export_day,
+                staging_dir=staging,
+            )
+            payload = json.loads(result.path.read_text(encoding="utf-8"))
+
+            validate_moments_json(payload)
+            self.assertEqual(result.path.name, moments_filename(["wxid_contact_placeholder"], export_day))
+            self.assertFalse(source.exists())
+            self.assertEqual(len(payload["posts"]), 2)
+            self.assertEqual(payload["posts"][0]["media"][0]["localPath"], "media/post-placeholder-1_0.jpg")
+            self.assertTrue((raw / payload["posts"][0]["media"][0]["localPath"]).is_file())
+            self.assertTrue((raw / "media" / "post-placeholder-1_0_live.mp4").is_file())
+            self.assertNotIn("localPath", payload["posts"][1]["media"][0])
+            self.assertIn("url", payload["posts"][1]["media"][0])
+            self.assertEqual(result.missing_media_posts, 1)
+            self.assertEqual(result.published_media, 2)
+            self.assertFalse((raw / "media" / "foreign_0.jpg").exists())
+            self.assertEqual(list(raw.glob("朋友圈导出_*T*.json")), [])
 
 
 if __name__ == "__main__":

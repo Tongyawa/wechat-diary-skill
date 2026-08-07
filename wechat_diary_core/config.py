@@ -57,6 +57,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "language": "zh",
         "device": "cpu",
         "emit_emotion": True,
+        "worker_python": "",
+        "worker_script": "",
+        "worker_startup_timeout_sec": 180,
+        "worker_request_timeout_sec": 120,
     },
     "preprocessing": {
         "skip_emoji_dir": True,
@@ -161,6 +165,10 @@ class AsrConfig:
     language: str
     device: str
     emit_emotion: bool
+    worker_python: Path | None
+    worker_script: Path | None
+    worker_startup_timeout_sec: float
+    worker_request_timeout_sec: float
 
 
 @dataclass(frozen=True)
@@ -276,6 +284,10 @@ def _build_config(raw: dict[str, Any], base_dir: Path, *, source: dict[str, Any]
     asr_engine = str(asr.get("engine") or "").strip().lower()
     if asr_engine not in {"", "sensevoice", "whisper"}:
         raise ValueError(f"Unsupported ASR engine: {asr_engine}")
+    worker_startup_timeout_sec = float(asr.get("worker_startup_timeout_sec", 180))
+    worker_request_timeout_sec = float(asr.get("worker_request_timeout_sec", 120))
+    if worker_startup_timeout_sec <= 0 or worker_request_timeout_sec <= 0:
+        raise ValueError("asr worker timeout 必须大于 0 秒")
 
     automation_config = AutomationConfig(
         driver=driver,
@@ -327,6 +339,10 @@ def _build_config(raw: dict[str, Any], base_dir: Path, *, source: dict[str, Any]
             language=str(asr.get("language") or "zh"),
             device=str(asr.get("device") or "cpu"),
             emit_emotion=bool(asr.get("emit_emotion", True)),
+            worker_python=_optional_path(base_dir, asr.get("worker_python")),
+            worker_script=_optional_path(base_dir, asr.get("worker_script")),
+            worker_startup_timeout_sec=worker_startup_timeout_sec,
+            worker_request_timeout_sec=worker_request_timeout_sec,
         ),
         preprocessing=PreprocessingConfig(
             skip_emoji_dir=bool(preprocessing["skip_emoji_dir"]),
