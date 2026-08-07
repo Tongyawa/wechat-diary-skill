@@ -192,7 +192,7 @@ class WeflowApiClient:
                 "exportMedia": True,
             },
         )
-        if not payload.get("success") or not str(payload.get("filePath") or ""):
+        if not payload.get("success"):
             raise WeflowApiError("WeFlow 朋友圈导出未返回 filePath")
         return payload
 

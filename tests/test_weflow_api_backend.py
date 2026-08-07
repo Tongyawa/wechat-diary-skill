@@ -117,6 +117,11 @@ class _Client:
         return {"success": True, "filePath": str(source), "postCount": 1, "mediaCount": 0}
 
 
+class _EmptyMomentsClient(_Client):
+    def export_moments(self, output_dir, usernames, **kwargs):
+        return {"success": True, "filePath": "", "postCount": 0, "mediaCount": 0}
+
+
 class WeflowApiBackendTests(unittest.TestCase):
     def test_prepare_probes_health_and_protected_endpoint_without_owning_shutdown(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -187,6 +192,22 @@ class WeflowApiBackendTests(unittest.TestCase):
         self.assertTrue(backend.partial_failures[0].startswith("export_moments_media:"))
         self.assertNotIn("localPath", payload["posts"][0]["media"][0])
         self.assertIn("url", payload["posts"][0]["media"][0])
+
+    def test_empty_moments_result_publishes_nothing_and_is_not_partial_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = _config(root)
+            backend = WeflowApiBackend(cfg)
+            backend._client = _EmptyMomentsClient()
+            backend.partial_failures.append("existing-failure")
+
+            backend.export_moments(["wxid_contact_placeholder"], date(2026, 8, 6))
+
+            exports = list(cfg.paths.raw.glob("朋友圈导出_*.json"))
+            staging_parent = cfg.paths.raw.parent / f".{cfg.paths.raw.name}.weflow-api-moments-staging"
+            self.assertEqual(exports, [])
+            self.assertEqual(backend.partial_failures, ["existing-failure"])
+            self.assertFalse(staging_parent.exists())
 
 
 if __name__ == "__main__":

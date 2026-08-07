@@ -149,7 +149,12 @@ class WeflowApiBackend:
                 start=export_date,
                 end=export_date,
             )
-            source_path = Path(str(response["filePath"]))
+            file_path = str(response.get("filePath") or "")
+            if response.get("postCount") == 0 and not file_path:
+                return
+            if not file_path:
+                raise WeflowApiError("WeFlow 朋友圈导出未返回 filePath")
+            source_path = Path(file_path)
             result = write_moments_export(
                 raw_root,
                 source_path,

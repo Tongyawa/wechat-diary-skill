@@ -145,6 +145,38 @@ class WeflowApiClientTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "不能为空"):
             client.export_moments("C:/staging", [], start=date(2026, 8, 5), end=date(2026, 8, 5))
 
+    def test_export_moments_accepts_successful_empty_result_without_file(self) -> None:
+        expected = {"success": True, "filePath": "", "postCount": 0, "mediaCount": 0}
+        client = WeflowApiClient(
+            "http://127.0.0.1:5031",
+            "fixed-token",
+            opener=lambda request, timeout: _Response(expected),
+        )
+
+        response = client.export_moments(
+            "C:/staging",
+            ["wxid_contact_placeholder"],
+            start=date(2026, 8, 6),
+            end=date(2026, 8, 6),
+        )
+
+        self.assertEqual(response, expected)
+
+    def test_export_moments_still_rejects_unsuccessful_result(self) -> None:
+        client = WeflowApiClient(
+            "http://127.0.0.1:5031",
+            "fixed-token",
+            opener=lambda request, timeout: _Response({"success": False, "error": "fixture failure"}),
+        )
+
+        with self.assertRaisesRegex(WeflowApiError, "fixture failure"):
+            client.export_moments(
+                "C:/staging",
+                ["wxid_contact_placeholder"],
+                start=date(2026, 8, 6),
+                end=date(2026, 8, 6),
+            )
+
     def test_contacts_explicit_large_limit_rejects_exactly_100_truncation_signal(self) -> None:
         captured = []
 
