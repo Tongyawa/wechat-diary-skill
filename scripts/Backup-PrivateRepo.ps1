@@ -59,17 +59,35 @@ $stamp = Get-Date -Format "yyyyMMdd"
 $bundlePath = Join-Path $Destination "$Name-$stamp.bundle"
 if (Test-Path -LiteralPath $bundlePath) { Remove-Item -LiteralPath $bundlePath -Force }
 
-git -C $RepoPath bundle create $bundlePath --all
-if ($LASTEXITCODE -ne 0) { throw "git bundle create failed for $RepoPath" }
+# Native commands write progress and even success notices to stderr -- `git
+# bundle verify` reports "<file> is okay" there. The file-level "Stop"
+# preference escalates any stderr write into a terminating error, so a fully
+# successful backup would still exit non-zero (which a scheduled task reads as
+# failure). Drop to "Continue" around the native calls and rely on
+# $LASTEXITCODE for real failure detection; restore the preference afterwards.
+$previousErrorAction = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+try {
+  git -C $RepoPath bundle create $bundlePath --all
+  if ($LASTEXITCODE -ne 0) { throw "git bundle create failed for $RepoPath" }
 
-# --- Verify integrity ---------------------------------------------------------
-git -C $RepoPath bundle verify $bundlePath *> $null
-if ($LASTEXITCODE -ne 0) { throw "git bundle verify failed: $bundlePath" }
+  # --- Verify integrity -------------------------------------------------------
+  git -C $RepoPath bundle verify $bundlePath *> $null
+  if ($LASTEXITCODE -ne 0) { throw "git bundle verify failed: $bundlePath" }
+}
+finally {
+  $ErrorActionPreference = $previousErrorAction
+}
 $sizeKB = [Math]::Round((Get-Item -LiteralPath $bundlePath).Length / 1KB, 1)
 Write-Host "[OK] bundle created + verified: $bundlePath ($sizeKB KB)"
 
 # --- Prune old bundles, keep the newest -Keep ---------------------------------
-$all = @(Get-ChildItem -LiteralPath $Destination -Filter "$Name-*.bundle" |
+# Match only routine daily snapshots -- "<Name>-<yyyyMMdd>.bundle" exactly. A
+# looser "$Name-*" would also sweep up one-off milestone snapshots that happen
+# to share the prefix (e.g. "<Name>-pre-migration-20260704-2129.bundle") and
+# silently delete them once they fall outside the retention window.
+$all = @(Get-ChildItem -LiteralPath $Destination -Filter "$Name-????????.bundle" |
+  Where-Object { $_.BaseName -match "^$([regex]::Escape($Name))-\d{8}$" } |
   Sort-Object LastWriteTime -Descending)
 $old = @($all | Select-Object -Skip $Keep)
 foreach ($f in $old) {
