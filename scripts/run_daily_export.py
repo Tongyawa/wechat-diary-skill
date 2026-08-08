@@ -24,6 +24,7 @@ from wechat_diary_core.archiving import archive, archive_chats_for
 from wechat_diary_core.backends import ExporterBackend, create_backend
 from wechat_diary_core.backends.weflow.driver import DriverCommandError, DriverUnavailable
 from wechat_diary_core.backends.weflow.launcher import stop_weflow_processes
+from wechat_diary_core.backup_state import evaluate_backup_state
 from wechat_diary_core.config import Config, load_config
 from wechat_diary_core.preprocessing import archive_moments_for
 from wechat_diary_core.preprocessing import collect_voice_transcription_failures
@@ -142,6 +143,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Sidecar moments files: {len(result.sidecar_moment_files)}")
     for path in result.diary_files + result.self_moment_files + result.sidecar_chat_files + result.sidecar_moment_files:
         print(f"- {path}")
+    _warn_if_backup_stale(cfg)
+
     if completed_with_warnings:
         print(
             "[WARN] 本轮以下可选阶段失败、已跳过: "
@@ -151,6 +154,22 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
     return 0
+
+
+def _warn_if_backup_stale(cfg: Config) -> None:
+    """Surface a dead bundle backup where a human actually looks every day.
+
+    The daily export is the only thing that runs every day, so it is the only
+    channel that would have caught the previous month-long silent failure.
+    Never blocks and never changes the exit code -- backup health is not a
+    reason to fail an otherwise good export.
+    """
+    try:
+        state = evaluate_backup_state(cfg.backup, skill_root=ROOT)
+    except Exception:  # noqa: BLE001 - a broken check must not break the export
+        return
+    if state.needs_attention:
+        print(f"[WARN] {state.message}", file=sys.stderr)
 
 
 def ensure_local_config(

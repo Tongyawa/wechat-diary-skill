@@ -143,3 +143,32 @@ cleanup_mode = "archive"
 
 # Legacy GUI backend only. The API backend never stops a user-owned WeFlow.
 restart_weflow = true
+
+
+# --- Rolling git-bundle cold backup (optional) --------------------------------
+# Snapshots whole git repositories into single-file bundles you can restore with
+# `git clone <file>.bundle`. Useful for repos that have no remote, and for repos
+# whose .git directory your cloud client refuses to sync (many skip `.git`
+# wholesale, so the files get backed up but the history does not).
+#
+# Leave `repos` empty to disable: every related check then stays silent.
+# Run it with scripts/Invoke-BundleBackup.ps1, ideally from a daily scheduler.
+[backup]
+# Where bundles are written. Point this at a cloud-synced folder or a different
+# physical disk -- a folder on the same disk only guards against accidental
+# deletion, not disk failure.
+bundle_dest = ""
+
+# How many bundles to retain per repo before the oldest are pruned.
+keep = 5
+
+# Warn once the last successful run is older than this many days. The warning
+# surfaces in doctor.py and at the end of the daily export -- that is how a
+# scheduled backup that quietly died gets noticed.
+stale_warn_days = 3
+
+# Each entry needs `path`; `name` defaults to the directory's own name and is
+# used as the bundle filename prefix.
+repos = [
+  # { name = "my-notes", path = "D:/notes" },
+]

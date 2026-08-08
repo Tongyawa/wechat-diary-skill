@@ -27,7 +27,7 @@
   Number of most-recent bundles to retain; older ones are deleted. Default 5.
 
 .EXAMPLE
-  ./Backup-PrivateRepo.ps1 -RepoPath C:\repos\my-repo -Destination D:\Backups\my-repo
+  ./Backup-GitRepo.ps1 -RepoPath C:\repos\my-repo -Destination D:\Backups\my-repo
 #>
 [CmdletBinding()]
 param(

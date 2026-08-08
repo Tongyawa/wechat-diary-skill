@@ -87,6 +87,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "skills": {
         "daily": ["wechat-diary-skill"],
     },
+    "backup": {
+        # Rolling git-bundle cold backup. Empty ``repos`` = feature disabled;
+        # every check tied to it stays silent instead of warning.
+        "bundle_dest": "",
+        "keep": 5,
+        "stale_warn_days": 3,
+        "repos": [],
+    },
     "daily_export": {
         "target_usernames": [],
         "skip_official_accounts": True,
@@ -209,6 +217,38 @@ class SkillsConfig:
 
 
 @dataclass(frozen=True)
+class BackupRepo:
+    """One git repository to snapshot into a rolling bundle."""
+
+    name: str
+    path: Path
+
+
+@dataclass(frozen=True)
+class BackupConfig:
+    """Rolling git-bundle cold backup.
+
+    ``enabled`` is derived, not configured: the feature is on exactly when a
+    destination and at least one repo are configured. Callers must stay silent
+    when it is off — an unconfigured optional feature is not a problem to report.
+    """
+
+    bundle_dest: Path | None
+    keep: int
+    stale_warn_days: int
+    repos: list[BackupRepo]
+
+    @property
+    def enabled(self) -> bool:
+        return self.bundle_dest is not None and bool(self.repos)
+
+    @property
+    def state_file(self) -> Path | None:
+        """Where the orchestrator records the outcome of each run."""
+        return None if self.bundle_dest is None else self.bundle_dest / "last-run.json"
+
+
+@dataclass(frozen=True)
 class DailyExportConfig:
     target_usernames: list[str]
     skip_official_accounts: bool
@@ -234,6 +274,7 @@ class Config:
     preprocessing: PreprocessingConfig
     agent: AgentConfig
     skills: SkillsConfig
+    backup: BackupConfig
     daily_export: DailyExportConfig
     base_dir: Path
     raw: dict[str, Any]
@@ -378,6 +419,7 @@ def _build_config(raw: dict[str, Any], base_dir: Path, *, source: dict[str, Any]
             extra_args=list(raw["agent"]["extra_args"]),
         ),
         skills=SkillsConfig(daily=list(raw["skills"]["daily"])),
+        backup=_build_backup_config(raw.get("backup") or {}, base_dir),
         daily_export=DailyExportConfig(
             target_usernames=[str(value).strip() for value in daily_export.get("target_usernames") or [] if str(value).strip()],
             skip_official_accounts=bool(daily_export.get("skip_official_accounts", True)),
@@ -449,3 +491,25 @@ def _optional_path(base_dir: Path, value: Any) -> Path | None:
 
 def _optional_int(value: Any) -> int | None:
     return None if value is None else int(value)
+
+
+def _build_backup_config(raw: dict[str, Any], base_dir: Path) -> BackupConfig:
+    repos: list[BackupRepo] = []
+    for entry in raw.get("repos") or []:
+        if not isinstance(entry, dict):
+            continue
+        path_text = str(entry.get("path") or "").strip()
+        if not path_text:
+            continue
+        path = _resolve_path(base_dir, path_text)
+        # Default the bundle name to the repo directory's leaf, matching
+        # Backup-GitRepo.ps1's own default so both entry points agree.
+        name = str(entry.get("name") or "").strip() or path.name
+        repos.append(BackupRepo(name=name, path=path))
+
+    return BackupConfig(
+        bundle_dest=_optional_path(base_dir, raw.get("bundle_dest")),
+        keep=max(1, int(raw.get("keep", 5) or 5)),
+        stale_warn_days=max(1, int(raw.get("stale_warn_days", 3) or 3)),
+        repos=repos,
+    )

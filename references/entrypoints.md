@@ -152,28 +152,52 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$SkillRoot\scripts\Open-Lat
 | `-InsightsRoot` | 直接指定 insights 根，**绕过 config 解析**（config 不可用或想临时指向别处时用） |
 | `-Workspace` / `-NoOpen` / `-NoPause` | 同上 |
 
-## 7. 备份本地 git 仓 `Backup-PrivateRepo.ps1`
+## 7. 备份单个 git 仓 `Backup-GitRepo.ps1`
 
-把任意本地 git 仓打成单文件 bundle（全 history 快照，`git clone <bundle>` 即可还原）。
+把**任意**本地 git 仓打成单文件 bundle（全 history 快照，`git clone <bundle>` 即可还原，不依赖任何服务器）。
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File "$SkillRoot\scripts\Backup-PrivateRepo.ps1" -RepoPath <仓路径> -Destination <落点目录> -Name <名字>
+powershell -NoProfile -ExecutionPolicy Bypass -File "$SkillRoot\scripts\Backup-GitRepo.ps1" -RepoPath <仓路径> -Destination <落点目录> -Name <名字>
 ```
 
 | 参数 | 说明 |
 |---|---|
 | `-RepoPath` | 要备份的 git 仓。默认当前目录 |
 | `-Destination` | **必填**，bundle 落点目录 |
-| `-Name` | bundle 名字前缀 |
+| `-Name` | bundle 名字前缀。默认取仓目录名 |
 | `-Keep` | 滚动保留份数，默认 5 |
 
-路径与名字全走参数，不硬编码。
+路径与名字全走参数，不硬编码。把 `-Destination` 指向**另一块物理盘或云同步目录**才算真正的离机备份；和仓在同一块盘只防误删、不防盘坏。
 
-## 8. 内部脚本（不面向用户，路由表不收）
+## 8. 批量 bundle 冷备 `Invoke-BundleBackup.ps1`
+
+按 `config.toml` 的 `[backup]` 段逐个备份配置里的仓，并把结果写进 `<bundle_dest>/last-run.json`。适合交给计划任务每天跑一次。
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File "$SkillRoot\scripts\Invoke-BundleBackup.ps1" -Workspace "$Workspace"
+```
+
+| 参数 | 说明 |
+|---|---|
+| `-Workspace` | 工作区目录（含 `config.toml`）。默认当前目录 |
+| `-Config` | 直接指定 config 路径，优先于 `-Workspace` |
+| `-NoPopup` | 失败时不弹报告窗口。**无人值守/自动化用**；退出码与状态文件照常反映失败 |
+
+行为要点：
+
+- **成功完全静默，失败弹出一个停留的报告窗口**。理由：一个成功和失败长得一模一样的闪窗只会训练人忽略它——旧计划任务正是这样连续失败一个月没被发现。
+- **单仓失败不影响其余**，但整体退出码非零。
+- **配置里的仓路径不存在 = 硬失败**，不会静默跳过（这正是旧任务失效的原因）。
+- `[backup]` 未配置（缺 `bundle_dest` 或 `repos` 为空）时打一行 skip 后正常退出。
+
+配置样例见 `config.example.toml` 的 `[backup]` 段。备份是否还在跑，`doctor.py`（§4）和日常导出（§1）收尾都会检查并在陈旧时给出补跑命令。
+
+## 9. 内部脚本（不面向用户，路由表不收）
 
 | 脚本 | 用途 |
 |---|---|
-| `print_config_path.py` | 供 PowerShell 侧读 config（复用 `load_config`）。**禁止在 ps1 里手写 TOML 解析** |
+| `print_config_path.py` | 供 PowerShell 侧读 config 路径（复用 `load_config`）。**禁止在 ps1 里手写 TOML 解析** |
+| `print_backup_config.py` | 同上，以 JSON 输出 `[backup]` 段，供 §8 使用 |
 | `sensevoice_worker.py` | 语音转写常驻 worker，由导出链路自动拉起 |
 | `init_worktree_config.py` | 开发用：为 git worktree 生成指回主工作区数据根的 config |
 | `validate_weflow_automation.py` | legacy GUI 后端的校验脚本 |

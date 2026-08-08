@@ -12,6 +12,7 @@ INTERNAL_SCRIPTS = {
     "run_daily_export.py",  # 由 run_daily_export.ps1 调用
     "process_existing_raw.ps1",  # process_existing_raw.py 的 PowerShell 包装
     "print_config_path.py",  # 供 ps1 侧读 config，禁止在 ps1 手写 TOML 解析
+    "print_backup_config.py",  # 同上，以 JSON 输出 [backup] 段给 Invoke-BundleBackup.ps1
     "sensevoice_worker.py",  # 语音转写常驻 worker，由导出链路自动拉起
     "init_worktree_config.py",  # 开发用：worktree 数据根指回主工作区
     "validate_weflow_automation.py",  # legacy GUI 后端校验

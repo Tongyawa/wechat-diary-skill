@@ -16,6 +16,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from wechat_diary_core.config import Config, load_config
+from wechat_diary_core.backup_state import STATUS_DISABLED, evaluate_backup_state
 from wechat_diary_core.asr import default_worker_script
 from wechat_diary_core.backends.weflow.cdp_driver import fetch_cdp_targets
 from wechat_diary_core.backends.weflow_api.client import WeflowApiClient
@@ -124,7 +125,43 @@ def run_doctor(config_path: str | Path = "config.toml", *, deps: ProbeDependenci
         checks.append(_check_asr(cfg))
     checks.extend(_check_data_roots(cfg, active.can_write))
     checks.extend(_check_optional_dependencies(cfg, active.find_spec))
+    checks.append(_check_bundle_backup(cfg))
     return DoctorReport(checks)
+
+
+def _check_bundle_backup(cfg: Config) -> CheckResult:
+    """Is the rolling bundle cold backup actually still running?
+
+    A scheduled backup that dies quietly is indistinguishable from one that
+    works, so freshness has to be asserted somewhere a human looks.
+    """
+    state = evaluate_backup_state(cfg.backup, skill_root=ROOT)
+    if state.status == STATUS_DISABLED:
+        return CheckResult(
+            id="backup.bundle",
+            group="backup",
+            name="bundle 冷备",
+            status="ready",
+            message=state.message,
+        )
+    if state.needs_attention:
+        return CheckResult(
+            id="backup.bundle",
+            group="backup",
+            name="bundle 冷备",
+            status="warning",
+            message=state.message,
+            action="检查计划任务是否仍指向现有路径，然后手动补跑一次确认退出码为 0。",
+            details={"state": state.status, "ageDays": state.age_days},
+        )
+    return CheckResult(
+        id="backup.bundle",
+        group="backup",
+        name="bundle 冷备",
+        status="ready",
+        message=state.message,
+        details={"state": state.status, "ageDays": state.age_days},
+    )
 
 
 def _check_config(cfg: Config, config_path: Path) -> CheckResult:
