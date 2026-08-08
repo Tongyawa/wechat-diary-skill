@@ -233,6 +233,45 @@ class BackupConfigParsingTests(unittest.TestCase):
         self.assertIn("覆盖", backup.problems[0])
         self.assertEqual(STATUS_MISCONFIGURED, evaluate_backup_state(backup).status)
 
+    def test_duplicate_names_differing_only_in_case_are_refused(self) -> None:
+        """Windows filenames are case-insensitive: Collision == collision.
+
+        A case-sensitive check lets the pair through, both repos report ok, and
+        one bundle silently overwrites the other -- the exact failure the
+        same-name check exists to stop.
+        """
+        backup = self._load(
+            '[backup]\nbundle_dest = "bundles"\n'
+            'repos = [ { name = "Collision", path = "a" },'
+            ' { name = "collision", path = "b" } ]\n'
+        )
+        self.assertEqual(1, len(backup.repos))
+        self.assertEqual(1, len(backup.problems))
+        self.assertIn("仅大小写不同", backup.problems[0])
+        self.assertEqual(STATUS_MISCONFIGURED, evaluate_backup_state(backup).status)
+
+    def test_repos_without_bundle_dest_is_reported(self) -> None:
+        """Repos but no destination must not read as "disabled".
+
+        Otherwise the job exits 0 having written nothing, while the user
+        believes these repos are backed up nightly.
+        """
+        backup = self._load('[backup]\nrepos = [ { name = "r", path = "a" } ]\n')
+        self.assertFalse(backup.enabled)
+        self.assertTrue(backup.configured)
+        self.assertEqual(1, len(backup.problems))
+        self.assertIn("缺少 bundle_dest", backup.problems[0])
+        self.assertEqual(STATUS_MISCONFIGURED, evaluate_backup_state(backup).status)
+
+    def test_no_repos_and_no_dest_stays_silent(self) -> None:
+        """The genuinely-unconfigured case must remain silent, not warn."""
+        backup = self._load("[backup]\n")
+        self.assertFalse(backup.configured)
+        self.assertEqual([], backup.problems)
+        status = evaluate_backup_state(backup)
+        self.assertEqual(STATUS_DISABLED, status.status)
+        self.assertFalse(status.needs_attention)
+
     def test_name_with_path_separator_is_refused(self) -> None:
         backup = self._load(
             '[backup]\nbundle_dest = "bundles"\n'

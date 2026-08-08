@@ -10,8 +10,11 @@
   Designed to be driven by a scheduler. Window behaviour is deliberately
   asymmetric:
 
-    success -> completely silent (nothing pops up, nothing flashes)
+    success -> nothing pops up (one summary line on stdout for CLI callers)
     failure -> a report file opens and STAYS open until dismissed
+
+  Under a scheduler no window appears at all; that is guaranteed by registering
+  the task with -WindowStyle Hidden, not by suppressing the summary line.
 
   Rationale: a window that flashes identically on success and failure carries
   no information while implying activity, and trains the user to ignore it.
@@ -71,8 +74,10 @@ if (-not (Test-Path $Config)) {
 $stdoutFile = [System.IO.Path]::GetTempFileName()
 $stderrFile = [System.IO.Path]::GetTempFileName()
 try {
+  # -ArgumentList 会把各元素用空格拼成一整条命令行，**不会自动加引号**：
+  # 路径里只要有空格（"C:\My Files\config.toml"）就被拆成两个参数。故显式加引号。
   $proc = Start-Process -FilePath "python" `
-    -ArgumentList @($readConfig, "--config", $Config) `
+    -ArgumentList @("`"$readConfig`"", "--config", "`"$Config`"") `
     -NoNewWindow -Wait -PassThru `
     -RedirectStandardOutput $stdoutFile -RedirectStandardError $stderrFile
   $readExit = $proc.ExitCode

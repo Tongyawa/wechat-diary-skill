@@ -524,7 +524,7 @@ def _build_backup_config(raw: dict[str, Any], base_dir: Path) -> BackupConfig:
     """
     repos: list[BackupRepo] = []
     problems: list[str] = []
-    seen: dict[str, int] = {}
+    seen: dict[str, tuple[int, str]] = {}
 
     for index, entry in enumerate(raw.get("repos") or [], start=1):
         label = f"[backup].repos 第 {index} 项"
@@ -552,20 +552,34 @@ def _build_backup_config(raw: dict[str, Any], base_dir: Path) -> BackupConfig:
             )
             continue
 
-        if name in seen:
-            # Same name = same bundle filename = the later run overwrites the
-            # earlier one while both report success. Refuse instead.
+        # Case-insensitively: the name becomes a filename, and Windows treats
+        # "Collision" and "collision" as the same file. A case-sensitive check
+        # would let the pair through and silently overwrite one backup.
+        key = name.casefold()
+        if key in seen:
+            prior_index, prior_name = seen[key]
+            same_case = "" if prior_name == name else "（仅大小写不同，Windows 视为同一文件）"
             problems.append(
-                f"{label}：name「{name}」与第 {seen[name]} 项重复，"
+                f"{label}：name「{name}」与第 {prior_index} 项「{prior_name}」重复{same_case}，"
                 f"两者会写同一个 bundle 文件、后者覆盖前者。请改成唯一名字。"
             )
             continue
-        seen[name] = index
+        seen[key] = (index, name)
 
         repos.append(BackupRepo(name=name, path=path))
 
+    bundle_dest = _optional_path(base_dir, raw.get("bundle_dest"))
+    if repos and bundle_dest is None:
+        # Repos configured but nowhere to put the bundles. Without this the
+        # config reads as "disabled" and the job exits 0 -- the user believes
+        # these repos are backed up nightly and nothing is being written.
+        problems.append(
+            "[backup] 配置了 repos 却缺少 bundle_dest，bundle 无处可落。"
+            "补上 bundle_dest（建议指向随云同步的目录），或整段删掉以显式关闭。"
+        )
+
     return BackupConfig(
-        bundle_dest=_optional_path(base_dir, raw.get("bundle_dest")),
+        bundle_dest=bundle_dest,
         keep=max(1, int(raw.get("keep", 5) or 5)),
         stale_warn_days=max(1, int(raw.get("stale_warn_days", 3) or 3)),
         repos=repos,
