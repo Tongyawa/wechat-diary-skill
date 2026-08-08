@@ -4,6 +4,31 @@
 >
 > 约定：`$SkillRoot` = 本 skill 根目录；`$Workspace` = 含 `config.toml` 的工作区。所有 Python 入口默认从工作区当前目录读 `config.toml`，也可用 `--config` 显式指定。
 
+## 0. 共同前提与常见坑
+
+只收「跑流程会踩到」的运行事实。工程规格、版本考据、待办不在此处。
+
+**API 服务（路径 ①③ 的硬前提）**
+
+- WeFlow 必须在跑，且**手动开过一次**「设置 → API 服务」。
+- **Access Token 必须固定为非空**。「清空 token」那条路有 bug：UI 提示「已清除、允许无鉴权访问」，但服务仍返回 401，重启软件和 API 都无效。
+- **token 改动不热更**，改完要**重启 WeFlow 的 API 服务**才生效。
+- 症状不明先跑 `doctor.py`（§4）——它会区分「服务不通」和「服务通但读不到数据」。
+
+**公众号默认不导出**
+
+`[daily_export].skip_official_accounts` 默认 `true`，`gh_` 开头的会话连请求都不发。**产物里没有公众号是预期行为，不是漏导。**
+
+**手工调 API 排障时：日期参数只认 `YYYYMMDD`**
+
+传 `2026-06-01` 这种带连字符的格式会被**静默忽略并返回全量历史**，不报错也不告警。CLI 内部已归一化，只有你自己直接调接口时要注意——否则会把「全量」误读成「过滤失效」，或反过来误判 CLI 漏数据。
+
+**导出会话的目录名带类型前缀**
+
+`{私聊|群聊}_<会话名>[_<日期>]`。前缀是契约的一部分，归档库靠它做会话连续性，别在中途重命名。
+
+**同一时间只在一个工作区跑完整导出**（路径 ① 会归档轮转 live roots）。
+
 ## 1. 日常完整导出 `run_daily_export.ps1`
 
 ```powershell
@@ -19,10 +44,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$SkillRoot\scripts\run_dail
 
 **退出码**：`0` = 全部成功。非 `0` 有两种，看控制台措辞区分：
 
-- `Daily export completed with warnings.` → 聊天 diary 已正常产出，只是可选阶段（多为朋友圈）失败被跳过。列出的项可单独补跑，不必重跑整轮。
+- `Daily export completed with warnings.` → 整轮走完了，但**有阶段失败被跳过**。
 - `FAILED before export completed` → 导出没走完，产物不完整。
 
-单会话失败只隔离它自己，记进工作区根 `.export-state.json`；连续多个导出日失败会在收尾列出待审查清单。
+⚠️ **「with warnings」不等于「只是朋友圈失败」。** 失败清单里可能包含**几十个聊天会话**，也可能 sidecar 产出为 0。判断产物是否够用，**看控制台打印的实际计数**（`Diary processed files: N`、各类 sidecar 计数）和失败项清单，**不要凭「completed」三个字就假定聊天记录完整**。
+
+单会话失败只隔离它自己，不中断其余会话；失败记进工作区根 `.export-state.json`，连续多个导出日失败会在收尾列出待审查清单。
 
 ## 2. 处理已有 raw `process_existing_raw.py`
 
@@ -83,18 +110,25 @@ python "$SkillRoot\scripts\doctor.py"
 
 把换机备份、历史手工导出等旧目录摄取进长期归档库。
 
+> 🔴 **默认是「移动」，摄取成功后会 `rmtree` 删掉源目录。**
+> 不确定、或源目录是唯一副本时，**先加 `--keep-source` 跑一遍**（改为复制，源树原样保留），确认归档结果无误再决定要不要真的移动。
+
 ```powershell
-python "$SkillRoot\scripts\archive_exports.py" --raw-root <旧raw目录> --processed-root <旧processed目录>
+# 安全起步：先复制，不动源
+python "$SkillRoot\scripts\archive_exports.py" --raw-root <旧raw目录> --processed-root <旧processed目录> --keep-source
 ```
 
 | 参数 | 说明 |
 |---|---|
 | `--raw-root` | 要摄取的 raw 树 |
 | `--processed-root` | 要摄取的 processed 树 |
-| `--keep-source` | 保留源目录 |
+| `--keep-source` | **复制而非移动，源树原样保留。省略即为移动 + 删源** |
 | `--config` | 配置文件路径 |
 
-归档是「同路径新覆盖旧」的合并语义，所以**多个快照必须按时间从旧到新依次摄取**，否则旧内容会盖掉新内容。
+两条语义要记牢：
+
+1. 归档是「同路径新覆盖旧」的合并，所以**多个快照必须按时间从旧到新依次摄取**，否则旧内容会盖掉新内容。
+2. raw 摄取遇校验失败时会保留源目录（不删），这是兜底、不是可依赖的保护——**别拿它当 `--keep-source` 用**。
 
 ## 6. 打开产物 `Open-LatestInsights.ps1` / `Open-InsightsByDate.ps1`
 
@@ -102,13 +136,21 @@ python "$SkillRoot\scripts\archive_exports.py" --raw-root <旧raw目录> --proce
 powershell -NoProfile -ExecutionPolicy Bypass -File "$SkillRoot\scripts\Open-LatestInsights.ps1" -Workspace "$Workspace"
 ```
 
+`Open-LatestInsights.ps1` 参数：
+
 | 参数 | 说明 |
 |---|---|
 | `-Workspace` | 工作区路径；insights 根从其 `config.toml` 的 `[paths].insights` 解析 |
 | `-NoOpen` | 只打印「解析到的根 + 命中文件」，不启动编辑器。**排障与自动化验收入口** |
 | `-NoPause` | 结尾不等回车 |
 
-`Open-InsightsByDate.ps1` 参数相同，按日期挑选而非取最新。
+`Open-InsightsByDate.ps1` **参数并不相同**，多两个：
+
+| 参数 | 说明 |
+|---|---|
+| `-Date` | 要打开的日期 |
+| `-InsightsRoot` | 直接指定 insights 根，**绕过 config 解析**（config 不可用或想临时指向别处时用） |
+| `-Workspace` / `-NoOpen` / `-NoPause` | 同上 |
 
 ## 7. 备份本地 git 仓 `Backup-PrivateRepo.ps1`
 
