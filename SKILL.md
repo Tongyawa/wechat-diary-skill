@@ -10,7 +10,7 @@ description: 用 WeFlow 导出并清洗微信聊天记录，生成日记、DoneL
 - 把包含 `config.toml` 的目录视为**工作区**。所有 `WeFlow-*` 数据路径都从该配置解析；相对路径相对于工作区，绝不相对于本 skill 目录。
 - 把本文件所在目录视为**代码根**。调用脚本时使用代码根下的 `scripts/`，并显式传入工作区。
 - 若当前目录没有 `config.toml`，先在用户给出的项目目录中查找；仍无法确定时再询问工作区位置。
-- 真实 WeFlow GUI 自动化需要可见 Windows 桌面，Agent 执行时通常需要提权。
+- 默认导出后端是 WeFlow 本地 HTTP API，不做 GUI 点按，**不需要提权**；它要求 WeFlow 正在运行且已启用 API 服务。只有 legacy 的 GUI 自动化后端（仅 WeFlow ≤4.x）才需要可见 Windows 桌面与提权。
 
 ## 默认流程
 
@@ -31,6 +31,17 @@ description: 用 WeFlow 导出并清洗微信聊天记录，生成日记、DoneL
 
 4. processed 生成后，完整读取 [references/prompt-daily.md](references/prompt-daily.md)，严格按 Prompt 0–6 依次生成四份日产物并增量维护画像与主线。以下划线开头的 sidecar 目录交给其他 skill，不纳入公开 diary。
 5. 不手动执行长期归档；下一次 daily export 会把当前 raw/processed 合并进配置指定的 archived 根。
+6. **收尾：提交产物**。若 insights 根是 git 仓（存在 `.git`），把本 skill 写的产物提交一次：
+
+   ```powershell
+   git -C "<insights根>" add Diary DoneList Inspirations ExtraNotes Profile Threads
+   git -C "<insights根>" commit -m "diary: <yyyy-mm-dd> 产物"
+   ```
+
+   - **只 add 上面这些自己的产物目录**，不要 `add -A`——下划线开头的 sidecar 目录属于其他 skill，由它们各自提交。
+   - 无改动时 `commit` 以「nothing to commit」退出，属正常，不是错误。
+   - insights 根没有 `.git` 时整步跳过，不提示、不创建仓库。
+   - 目的是给长线产物一份本地版本历史与「哪天变了什么」的增量标记；这个仓由用户自行决定是否建、是否加远端。
 
 ## 单会话总结
 
