@@ -24,6 +24,8 @@ WeChat Diary 是一个本地微信日记工作流：通过 WeFlow 导出微信�
 - `Profile/自我画像.md`：长期自我画像，增量维护。
 - `Threads/<yyyy>.md`：年度主线脉络，增量维护。
 
+日产物的文件名带当天标题与关键词（形如 `2026-06-15 <当天标题> #关键词1 #关键词2.md`），便于在文件管理器里直接扫读和检索，不必逐个打开。
+
 ## 目录结构
 
 ```text
@@ -68,8 +70,10 @@ WeFlow-insights/             # 日记、DoneList、灵感、画像、主线等�
 
    - `[export_backend].backend`：默认 `weflow_api`（WeFlow 5.x 本地 HTTP API）；已有 canonical raw、只想离线处理时可设为 `manual`。`weflow` 仅保留给 WeFlow ≤4.x 的 legacy GUI 自动化。
    - `[export_backend.weflow_api]`：确认 `base_url`，并在 WeFlow「设置 → API 服务」生成一个固定非空 Access Token 写入 `access_token`。token 不热更新，修改后要重启 API 服务；首次启用 API 服务仍需手动打开一次。
+     超时分两个键、量纲不同，不要只调一个：`request_timeout_sec`（控制面，探活与会话/联系人/朋友圈列表，默认 120）保持短，好让「服务半死不活」几秒内报错；`message_request_timeout_sec`（数据面，仅消息拉取，默认 600）要长，带媒体的大群单次请求可达百秒量级，跨月全量建议 900。
    - `[export_backend.weflow].weflow_exe`：API 不可达时可用于普通启动 WeFlow，也是 legacy GUI 后端的可执行文件路径；API 后端不会停止用户自己打开的 WeFlow。旧 `[automation]` 配置仍兼容，运行时会提示迁移。
    - `[asr].engine`：空字符串表示关闭并写明确的语音转写失败占位；设为 `sensevoice` 时，还要让 `worker_python` 指向独立 uv 项目的 Python。模型在首次语音时才由常驻 worker 加载；路径缺失或 worker 崩溃只降级语音，不阻断聊天导出，也不会向全局 Python 安装重依赖。
+   - `[daily_export].skip_official_accounts`：默认 `true`，跳过 `gh_` 开头的公众号，连请求都不发。公众号推送目前只能落成 `[链接]` 占位，对日记没有价值；想要就设 `false`。**导出结果里找不到公众号是预期行为，不是漏导。**
    - `[paths]`：raw、processed、archived、insights 的落点。
    - `[user].self_wxids`：自己的 wxid / 文件传输助手，用于识别收集箱。
    - `[skills].daily`：默认包含 `wechat-diary-skill`。
@@ -102,6 +106,50 @@ python "$SkillRoot\scripts\process_existing_raw.py" --raw-root WeFlow-raw-export
 Pop-Location
 ```
 
+### 按需导出单个会话
+
+日常导出面向「昨天的全部会话」。想单独拿某个会话的某段历史（复盘一次合作、回顾一段时间的联系），用按需通道——它只写你指定的输出目录，**不碰日常的 raw / processed / 归档**：
+
+```powershell
+Push-Location $Workspace
+python "$SkillRoot\scripts\export_on_demand.py" --session 张三 --start 2026-05-01 --end 2026-05-31 --out .\临时导出
+Pop-Location
+```
+
+`--session` 接受 wxid 或显示名子串；拿不准就先 `--list-sessions 关键词` 列候选。日期两种写法都行（`2026-05-01` / `20260501`）。常用开关：`--merged` 额外产出整段合并 markdown，`--group-window` 对群聊启用上下文窗口筛选（默认全量），`--no-asr` 跳过语音转写，`--no-media-copy` 不把媒体复制到 markdown 旁。
+
+### 把历史导出并入长期归档
+
+手上有旧的导出快照（换机备份、以前手工导出的目录）时，可以直接摄取进归档库：
+
+```powershell
+Push-Location $Workspace
+python "$SkillRoot\scripts\archive_exports.py" --raw-root <旧raw目录> --processed-root <旧processed目录>
+Pop-Location
+```
+
+归档是「同路径新覆盖旧」的合并语义，所以**多个快照必须按时间从旧到新依次摄取**，否则旧内容会盖掉新内容。
+
+### 打开当天产物
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File "$SkillRoot\scripts\Open-LatestInsights.ps1" -Workspace $Workspace
+powershell -NoProfile -ExecutionPolicy Bypass -File "$SkillRoot\scripts\Open-InsightsByDate.ps1" -Workspace $Workspace
+```
+
+insights 根从 `-Workspace` 指向的 `config.toml` 的 `[paths].insights` 解析。加 `-NoOpen` 只打印「解析到的根 + 命中文件」而不启动编辑器，用于排障。
+
+## 一轮跑完之后：怎么读结果
+
+退出码 `0` 表示全部阶段成功。非 `0` 有两种，控制台措辞可以区分：
+
+- **`Daily export completed with warnings.`** —— 聊天 diary 已经正常产出，只是某些可选阶段（多为朋友圈）失败并被跳过。列出的项可以在修复后单独补跑，不必重跑整轮。
+- **`FAILED before export completed`** —— 导出本身没走完，产物不完整。
+
+单个会话导出失败**只隔离它自己**，不会中断其余几百个会话。失败会记进工作区根的 `.export-state.json`（按导出目标日期去重计数，同一天重跑不累加）；某个会话连续多个导出日都失败时，收尾阶段会列出待审查清单，交互式运行会问你要不要忽略它，忽略名单也存在同一个文件里。会话一旦重新导出成功，就自动从这两组里清除。
+
+控制台只显示阶段和核心错误，完整日志在工作区根的 `.runlog/`。
+
 ## 二次加工怎么发生
 
 当前仓库没有统一的一键二次加工脚本。日常导出完成后，由 Agent 在同一工作目录按 `config.toml [skills].daily` 顺序执行 skills。
@@ -132,4 +180,6 @@ python -m unittest discover -s tests
 - 群聊默认经过上下文窗口过滤，保留和用户相关的片段；需要完整语料时可将
   `preprocessing.group_context_window.enabled` 设为 `false`，此时群聊保留全量消息流。私聊始终保留全量消息流。
 - 图片可走本地 OCR，微信表情目录会跳过，语音转文字失败默认只记录警告。
+- 非文本消息按**证据**渲染，不按类型硬猜：附件类消息只有在原始数据里确实带文件名字段时才渲染成 `[文件：<名称> (<大小>)]`，没有该字段的就保持中性占位，不会编出一个不存在的文件名。引用消息会同时保留被引用的原文与本次回复。
 - 长期归档采用合并覆盖语义：相同相对路径下，新导出覆盖旧导出，用于避免重复运行产生重复文件。
+- 导出映射是按当前 WeFlow 5.0.x 的响应契约实现的。升级 WeFlow 之后，建议先跑一次 `doctor.py`，再挑一个已归档的日期重导一遍、和归档里的旧产物比对，确认字段与顺序没有漂移，然后再恢复日常链路。
