@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 import copy
@@ -237,10 +237,23 @@ class BackupConfig:
     keep: int
     stale_warn_days: int
     repos: list[BackupRepo]
+    #: Config errors found while parsing ``repos``. Never silently dropped --
+    #: a repo the user meant to back up but that got discarded is precisely the
+    #: "believed backed up, actually not" failure this feature exists to prevent.
+    problems: list[str] = field(default_factory=list)
 
     @property
     def enabled(self) -> bool:
         return self.bundle_dest is not None and bool(self.repos)
+
+    @property
+    def configured(self) -> bool:
+        """True when the user tried to configure backups at all.
+
+        Distinct from ``enabled``: a section whose every entry is malformed is
+        configured-but-unusable, and must warn rather than stay silent.
+        """
+        return self.enabled or bool(self.problems)
 
     @property
     def state_file(self) -> Path | None:
@@ -493,18 +506,62 @@ def _optional_int(value: Any) -> int | None:
     return None if value is None else int(value)
 
 
+#: A bundle name becomes a filename prefix, so it must not carry path
+#: separators or characters Windows rejects.
+_ILLEGAL_NAME_CHARS = set('\\/:*?"<>|')
+
+
 def _build_backup_config(raw: dict[str, Any], base_dir: Path) -> BackupConfig:
+    """Parse ``[backup]``, collecting problems instead of silently dropping entries.
+
+    Nothing here raises: ``load_config`` backs every entry point, and a malformed
+    *backup* section must not stop ``doctor.py`` from running -- that is exactly
+    when you need the diagnosis. Problems are carried on the config and surfaced
+    by every consumer; the orchestrator refuses to run while any exist.
+
+    Silence is the one thing this must never do: a dropped or overwritten repo
+    means a backup the user believes exists and does not.
+    """
     repos: list[BackupRepo] = []
-    for entry in raw.get("repos") or []:
+    problems: list[str] = []
+    seen: dict[str, int] = {}
+
+    for index, entry in enumerate(raw.get("repos") or [], start=1):
+        label = f"[backup].repos 第 {index} 项"
         if not isinstance(entry, dict):
+            problems.append(f"{label}：不是一个表（应形如 {{ name = \"...\", path = \"...\" }}）。")
             continue
+
         path_text = str(entry.get("path") or "").strip()
         if not path_text:
+            problems.append(f"{label}：缺少 path，无法备份。补上 path，或整条删掉。")
             continue
         path = _resolve_path(base_dir, path_text)
+
         # Default the bundle name to the repo directory's leaf, matching
         # Backup-GitRepo.ps1's own default so both entry points agree.
         name = str(entry.get("name") or "").strip() or path.name
+        if not name:
+            problems.append(f"{label}：name 为空且无法从 path 推断，请显式指定。")
+            continue
+
+        illegal = sorted(set(name) & _ILLEGAL_NAME_CHARS)
+        if illegal:
+            problems.append(
+                f"{label}：name「{name}」含不能作为文件名的字符 {''.join(illegal)}。"
+            )
+            continue
+
+        if name in seen:
+            # Same name = same bundle filename = the later run overwrites the
+            # earlier one while both report success. Refuse instead.
+            problems.append(
+                f"{label}：name「{name}」与第 {seen[name]} 项重复，"
+                f"两者会写同一个 bundle 文件、后者覆盖前者。请改成唯一名字。"
+            )
+            continue
+        seen[name] = index
+
         repos.append(BackupRepo(name=name, path=path))
 
     return BackupConfig(
@@ -512,4 +569,5 @@ def _build_backup_config(raw: dict[str, Any], base_dir: Path) -> BackupConfig:
         keep=max(1, int(raw.get("keep", 5) or 5)),
         stale_warn_days=max(1, int(raw.get("stale_warn_days", 3) or 3)),
         repos=repos,
+        problems=problems,
     )

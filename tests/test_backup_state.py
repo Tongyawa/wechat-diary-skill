@@ -9,6 +9,7 @@ from pathlib import Path
 from wechat_diary_core.backup_state import (
     STATUS_DISABLED,
     STATUS_FAILED,
+    STATUS_MISCONFIGURED,
     STATUS_NEVER_RAN,
     STATUS_OK,
     STATUS_STALE,
@@ -195,12 +196,81 @@ class BackupConfigParsingTests(unittest.TestCase):
         self.assertEqual(self.workspace / "repo", backup.repos[0].path)
         self.assertEqual(self.workspace / "bundles" / "last-run.json", backup.state_file)
 
-    def test_entries_without_path_are_dropped(self) -> None:
+    def test_entry_without_path_is_reported_not_dropped(self) -> None:
+        """A dropped entry = a backup the user believes exists and does not.
+
+        The first version of this test asserted the *dropping* was correct,
+        which froze the bug into the suite. Silence is the failure mode this
+        whole feature exists to remove.
+        """
         backup = self._load(
             '[backup]\nbundle_dest = "bundles"\n'
             'repos = [ { name = "orphan" }, { path = "real" } ]\n'
         )
         self.assertEqual(["real"], [repo.name for repo in backup.repos])
+        self.assertEqual(1, len(backup.problems))
+        self.assertIn("缺少 path", backup.problems[0])
+        self.assertTrue(backup.configured)
+
+        status = evaluate_backup_state(backup)
+        self.assertEqual(STATUS_MISCONFIGURED, status.status)
+        self.assertTrue(status.needs_attention)
+
+    def test_duplicate_names_are_refused(self) -> None:
+        """Same name = same bundle filename: the later run overwrites the earlier.
+
+        Reproduced for real: both repos reported ``result="ok"`` while only one
+        bundle existed on disk, holding only the second repo's HEAD.
+        """
+        backup = self._load(
+            '[backup]\nbundle_dest = "bundles"\n'
+            'repos = [ { name = "collision", path = "a" },'
+            ' { name = "collision", path = "b" } ]\n'
+        )
+        self.assertEqual(1, len(backup.repos))
+        self.assertEqual(1, len(backup.problems))
+        self.assertIn("重复", backup.problems[0])
+        self.assertIn("覆盖", backup.problems[0])
+        self.assertEqual(STATUS_MISCONFIGURED, evaluate_backup_state(backup).status)
+
+    def test_name_with_path_separator_is_refused(self) -> None:
+        backup = self._load(
+            '[backup]\nbundle_dest = "bundles"\n'
+            'repos = [ { name = "bad/name", path = "a" } ]\n'
+        )
+        self.assertEqual([], backup.repos)
+        self.assertIn("不能作为文件名", backup.problems[0])
+
+    def test_misconfigured_never_reads_as_disabled(self) -> None:
+        """The dangerous confusion: broken config must not look like "off"."""
+        backup = self._load(
+            '[backup]\nbundle_dest = "bundles"\nrepos = [ { name = "orphan" } ]\n'
+        )
+        self.assertFalse(backup.enabled)  # no usable repo survived
+        self.assertTrue(backup.configured)  # but the user did configure it
+        self.assertEqual(STATUS_MISCONFIGURED, evaluate_backup_state(backup).status)
+
+    def test_structurally_wrong_state_json_does_not_crash(self) -> None:
+        """Valid JSON of the wrong shape must degrade, not raise.
+
+        ``[]`` / ``null`` / a bare string all parse fine and would then blow up
+        on ``.get`` -- crashing doctor and getting swallowed by the daily
+        export's catch-all, i.e. failing silently in both channels at once.
+        """
+        for body in ("[]", "null", '"nope"', '{"repos": {"a": 1}}'):
+            with self.subTest(body=body):
+                dest = Path(self.workspace) / "bundles"
+                dest.mkdir(parents=True, exist_ok=True)
+                (dest / "last-run.json").write_text(body, encoding="utf-8")
+                backup = BackupConfig(
+                    bundle_dest=dest,
+                    keep=5,
+                    stale_warn_days=3,
+                    repos=[BackupRepo(name="r", path=Path(self.workspace) / "r")],
+                )
+                status = evaluate_backup_state(backup)
+                self.assertEqual(STATUS_UNREADABLE, status.status)
+                self.assertTrue(status.needs_attention)
 
     def test_defaults_when_keys_omitted(self) -> None:
         backup = self._load(

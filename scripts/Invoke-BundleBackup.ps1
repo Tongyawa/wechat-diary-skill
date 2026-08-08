@@ -43,6 +43,14 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# Write-Error 在 $ErrorActionPreference = "Stop" 下是**终止性**错误：脚本会当场
+# 结束，后面的 `exit 2` 根本执行不到，实际退出码变成 1。文档承诺的是 2，两者
+# 必须一致——否则调用方按文档判断退出码会判错。故统一走这个函数。
+function Fail-Fast([string]$Message, [int]$Code = 2) {
+  [Console]::Error.WriteLine($Message)
+  exit $Code
+}
+
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $skillRoot = Split-Path -Parent $scriptDir
 $backupScript = Join-Path $scriptDir "Backup-GitRepo.ps1"
@@ -52,27 +60,43 @@ if (-not $Workspace) { $Workspace = (Get-Location).Path }
 if (-not $Config) { $Config = Join-Path $Workspace "config.toml" }
 
 if (-not (Test-Path $Config)) {
-  Write-Error "找不到 config.toml：$Config。用 -Workspace 或 -Config 指定工作区。"
-  exit 2
+  Fail-Fast "找不到 config.toml：$Config。用 -Workspace 或 -Config 指定工作区。"
 }
 
 # --- 读配置（复用项目自己的 TOML 解析，禁止在 ps1 里手写）---------------------
-# 原生命令写 stderr 时不应升级为终止性错误，故此处局部降级。
-$configJson = $null
+# 🔴 stdout 必须保持纯 JSON：load_config 在遇到旧 [automation] 段时会向 **stderr**
+# 打一次迁移提示（这是现役支持的 legacy 路径）。早先这里用 `2>&1`，把提示混进
+# JSON，ConvertFrom-Json 必然失败且不写状态文件——即「配置合法却整轮静默失效」。
+# 因此两条流分文件捕获，stderr 只在 Python 非零时作为错误详情呈现。
+$stdoutFile = [System.IO.Path]::GetTempFileName()
+$stderrFile = [System.IO.Path]::GetTempFileName()
 try {
-  $ErrorActionPreference = "Continue"
-  $configJson = & python $readConfig --config $Config 2>&1
-  $readExit = $LASTEXITCODE
+  $proc = Start-Process -FilePath "python" `
+    -ArgumentList @($readConfig, "--config", $Config) `
+    -NoNewWindow -Wait -PassThru `
+    -RedirectStandardOutput $stdoutFile -RedirectStandardError $stderrFile
+  $readExit = $proc.ExitCode
+  $configJson = (Get-Content -LiteralPath $stdoutFile -Raw -Encoding UTF8)
+  $configErr = (Get-Content -LiteralPath $stderrFile -Raw -Encoding UTF8)
 } finally {
-  $ErrorActionPreference = "Stop"
+  Remove-Item -LiteralPath $stdoutFile, $stderrFile -Force -ErrorAction SilentlyContinue
 }
 
 if ($readExit -ne 0) {
-  Write-Error "读取 [backup] 配置失败（退出码 $readExit）：$configJson"
-  exit 2
+  Fail-Fast "读取 [backup] 配置失败（退出码 $readExit）：$configErr"
 }
 
-$backup = $configJson | ConvertFrom-Json
+try {
+  $backup = $configJson | ConvertFrom-Json
+} catch {
+  Fail-Fast "解析 [backup] 配置失败：$($_.Exception.Message)`n原始输出：$configJson"
+}
+
+# 配置有误时拒绝运行：备份一部分却报成功，正是本功能要根除的失败形态。
+if ($backup.problems -and $backup.problems.Count -gt 0) {
+  $detail = ($backup.problems | ForEach-Object { "  - $_" }) -join "`n"
+  Fail-Fast "[backup] 配置有误，拒绝运行（否则受影响的仓会被静默漏备）：`n$detail"
+}
 
 if (-not $backup.enabled) {
   Write-Host "[skip] [backup] 未配置（缺 bundle_dest 或 repos 为空），无事可做。"

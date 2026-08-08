@@ -23,6 +23,7 @@ from .config import BackupConfig
 
 # Ordered worst-first: callers that surface a single line report the first hit.
 STATUS_DISABLED = "disabled"
+STATUS_MISCONFIGURED = "misconfigured"
 STATUS_NEVER_RAN = "never_ran"
 STATUS_UNREADABLE = "unreadable"
 STATUS_FAILED = "failed"
@@ -46,6 +47,7 @@ class BackupStatus:
         the previous backup failure went unnoticed for a month.
         """
         return self.status in {
+            STATUS_MISCONFIGURED,
             STATUS_NEVER_RAN,
             STATUS_UNREADABLE,
             STATUS_FAILED,
@@ -83,6 +85,15 @@ def evaluate_backup_state(
     skill_root: Path | None = None,
 ) -> BackupStatus:
     """Judge whether the bundle cold backup is actually running."""
+    if backup.problems:
+        # Configured but broken. Must never read as "disabled" -- the user
+        # believes these repos are being backed up.
+        detail = "；".join(backup.problems)
+        return BackupStatus(
+            STATUS_MISCONFIGURED,
+            f"[backup] 配置有误，受影响的仓不会被备份：{detail}",
+        )
+
     if not backup.enabled:
         return BackupStatus(STATUS_DISABLED, "bundle 冷备未配置（[backup] 未启用），跳过检查。")
 
@@ -108,13 +119,28 @@ def evaluate_backup_state(
             f"bundle 冷备状态文件读不出（{state_file}）：{exc}。{hint}",
         )
 
+    # Valid JSON is not the same as the shape we expect. `[]`, `null` and bare
+    # strings all parse fine and would then blow up on `.get` -- crashing doctor
+    # and getting swallowed by the daily export's catch-all.
+    if not isinstance(payload, dict):
+        return BackupStatus(
+            STATUS_UNREADABLE,
+            f"bundle 冷备状态文件结构不对（{state_file}）：顶层应为对象。{hint}",
+        )
+    repos_raw = payload.get("repos")
+    if repos_raw is not None and not isinstance(repos_raw, list):
+        return BackupStatus(
+            STATUS_UNREADABLE,
+            f"bundle 冷备状态文件结构不对（{state_file}）：repos 应为数组。{hint}",
+        )
+
     finished = _parse_timestamp(payload.get("finishedAt"))
     now = now or datetime.now(timezone.utc)
     age_days = None if finished is None else (now - finished).total_seconds() / 86400
 
     failed = [
         str(item.get("name") or "?")
-        for item in payload.get("repos") or []
+        for item in repos_raw or []
         if isinstance(item, dict) and item.get("result") != "ok"
     ]
     if payload.get("overall") != "ok" or failed:

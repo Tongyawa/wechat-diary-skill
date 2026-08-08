@@ -58,7 +58,7 @@ python "$SkillRoot\scripts\export_on_demand.py" --session <wxid或显示名子�
 **⑤ 归档摄取** `python "$SkillRoot\scripts\archive_exports.py" --raw-root <旧raw> --processed-root <旧processed>`
 **⑥ 打开产物** `powershell ... -File "$SkillRoot\scripts\Open-LatestInsights.ps1" -Workspace "$Workspace"`（按日期挑用 `Open-InsightsByDate.ps1`）
 **⑦ bundle 备份（单个仓）** `powershell ... -File "$SkillRoot\scripts\Backup-GitRepo.ps1" -RepoPath <仓> -Destination <落点>`
-**⑧ 批量 bundle 冷备** `powershell ... -File "$SkillRoot\scripts\Invoke-BundleBackup.ps1" -Workspace "$Workspace"`（按 `config.toml [backup]` 逐仓备份并落状态；成功静默、失败弹报告）
+**⑧ 批量 bundle 冷备** `powershell ... -File "$SkillRoot\scripts\Invoke-BundleBackup.ps1" -Workspace "$Workspace"`（按 `config.toml [backup]` 逐仓备份并落状态；成功不弹窗、失败弹报告）
 
 ## 二次加工
 

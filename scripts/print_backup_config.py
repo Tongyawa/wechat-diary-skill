@@ -37,6 +37,7 @@ def main(argv: list[str] | None = None) -> int:
 
     payload = {
         "enabled": backup.enabled,
+        "problems": list(backup.problems),
         "bundleDest": str(backup.bundle_dest) if backup.bundle_dest else "",
         "stateFile": str(backup.state_file) if backup.state_file else "",
         "keep": backup.keep,

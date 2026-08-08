@@ -155,7 +155,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$SkillRoot\scripts\Backup-G
 powershell -NoProfile -ExecutionPolicy Bypass -File "$SkillRoot\scripts\Invoke-BundleBackup.ps1" -Workspace $Workspace
 ```
 
-它**成功时完全静默，失败时弹出一个停留的报告窗口**并写 `<bundle_dest>/last-run.json`。这个不对称是刻意的：一个成功和失败长得一样的闪窗只会让人学会忽略它。备份是否还在跑，`doctor.py` 和日常导出收尾都会检查，陈旧时给出补跑命令。
+它**成功时不弹窗（命令行下仍打印一行结果），失败时弹出一个停留的报告窗口**并写 `<bundle_dest>/last-run.json`。这个不对称是刻意的：一个成功和失败长得一样的闪窗只会让人学会忽略它。备份是否还在跑，`doctor.py` 和日常导出收尾都会检查，陈旧时给出补跑命令。
 
 ## 一轮跑完之后：怎么读结果
 
