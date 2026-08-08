@@ -16,7 +16,7 @@
 2. **读取 config.toml**：获取 `[user].self_wxids`（用户自己的 wxid 列表，通常含 filehelper）。匹配这些 wxid 的会话是用户的「收集箱」——用户给自己 / 文件传输助手发的消息，是最直接的一手素材。
 
 3. **读取 processed exports**：用 Glob 工具列出 `WeFlow-processed-exports/*/{yesterday}.md`。
-   - **跳过**下划线前缀目录（`_gf/`、`_targets/` 等）——这些是其他 skill 的旁路通道，diary 不读。
+   - **跳过**任何下划线前缀目录（`_targets/` 等）——这些是其他 skill 的旁路通道，diary 不读。
    - 对每个文件用 Read 工具读取内容。
    - 文件名格式：`私聊_<联系人>/<yyyy-mm-dd>.md` 或 `群聊_<群名>/<yyyy-mm-dd>.md`。
    - 内容格式：极简聊天流，每条消息 `发送者：内容`，「我」= 用户本人。
