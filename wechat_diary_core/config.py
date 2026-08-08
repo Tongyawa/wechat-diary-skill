@@ -569,6 +569,15 @@ def _build_backup_config(raw: dict[str, Any], base_dir: Path) -> BackupConfig:
         repos.append(BackupRepo(name=name, path=path))
 
     bundle_dest = _optional_path(base_dir, raw.get("bundle_dest"))
+    raw_repos = raw.get("repos") or []
+    if bundle_dest is not None and not raw_repos:
+        # A destination with nothing to put in it. Reading this as "disabled"
+        # would exit 0 nightly while the user believes backups are running --
+        # the same believed-safe-but-isn't failure as every other case here.
+        problems.append(
+            "[backup] 配置了 bundle_dest 却没有 repos，不会备份任何东西。"
+            "补上 repos，或整段删掉以显式关闭。"
+        )
     if repos and bundle_dest is None:
         # Repos configured but nowhere to put the bundles. Without this the
         # config reads as "disabled" and the job exits 0 -- the user believes

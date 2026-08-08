@@ -63,9 +63,22 @@ class BackupStateTests(unittest.TestCase):
         # would train users to ignore this channel.
         self.assertFalse(state.needs_attention)
 
-    def test_disabled_when_dest_set_but_no_repos(self) -> None:
-        cfg = BackupConfig(bundle_dest=self.dest, keep=5, stale_warn_days=3, repos=[])
-        self.assertEqual(STATUS_DISABLED, evaluate_backup_state(cfg).status)
+    def test_dest_set_but_no_repos_is_misconfigured_not_disabled(self) -> None:
+        """A destination with nothing to put in it is a config error, not "off".
+
+        Reading it as disabled exits 0 nightly while the user believes backups
+        are running. Previously asserted the opposite, freezing the bug in.
+        """
+        cfg = BackupConfig(
+            bundle_dest=self.dest,
+            keep=5,
+            stale_warn_days=3,
+            repos=[],
+            problems=["[backup] 配置了 bundle_dest 却没有 repos，不会备份任何东西。"],
+        )
+        status = evaluate_backup_state(cfg)
+        self.assertEqual(STATUS_MISCONFIGURED, status.status)
+        self.assertTrue(status.needs_attention)
 
     def test_never_ran_when_state_file_missing(self) -> None:
         state = evaluate_backup_state(_config(self.dest))
@@ -176,9 +189,13 @@ class BackupConfigParsingTests(unittest.TestCase):
         self.assertIsNone(backup.bundle_dest)
         self.assertEqual([], backup.repos)
 
-    def test_dest_without_repos_stays_disabled(self) -> None:
+    def test_dest_without_repos_is_reported(self) -> None:
         backup = self._load('[backup]\nbundle_dest = "bundles"\n')
         self.assertFalse(backup.enabled)
+        self.assertTrue(backup.configured)
+        self.assertEqual(1, len(backup.problems))
+        self.assertIn("没有 repos", backup.problems[0])
+        self.assertEqual(STATUS_MISCONFIGURED, evaluate_backup_state(backup).status)
 
     def test_name_defaults_to_directory_leaf(self) -> None:
         backup = self._load(

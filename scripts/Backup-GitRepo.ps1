@@ -72,7 +72,12 @@ if ($Slot -gt 0) {
   $stamp = Get-Date -Format "yyyyMMdd"
   $bundlePath = Join-Path $Destination "$Name-$stamp.bundle"
 }
-if (Test-Path -LiteralPath $bundlePath) { Remove-Item -LiteralPath $bundlePath -Force }
+# Build into a temp file beside the target, then swap it in only after verify
+# passes. Deleting the target first and creating in place would mean a failed
+# run destroys the previous restore point -- a backup tool must never leave you
+# with less than you started with. The temp lives in $Destination so the final
+# move stays on one volume, where Move-Item -Force is an atomic replace.
+$tempPath = "$bundlePath.tmp-$PID"
 
 # Native commands write progress and even success notices to stderr -- `git
 # bundle verify` reports "<file> is okay" there. The file-level "Stop"
@@ -83,15 +88,23 @@ if (Test-Path -LiteralPath $bundlePath) { Remove-Item -LiteralPath $bundlePath -
 $previousErrorAction = $ErrorActionPreference
 $ErrorActionPreference = "Continue"
 try {
-  git -C $RepoPath bundle create $bundlePath --all
+  if (Test-Path -LiteralPath $tempPath) { Remove-Item -LiteralPath $tempPath -Force }
+
+  git -C $RepoPath bundle create $tempPath --all
   if ($LASTEXITCODE -ne 0) { throw "git bundle create failed for $RepoPath" }
 
-  # --- Verify integrity -------------------------------------------------------
-  git -C $RepoPath bundle verify $bundlePath *> $null
-  if ($LASTEXITCODE -ne 0) { throw "git bundle verify failed: $bundlePath" }
+  # --- Verify integrity before it becomes the live copy -----------------------
+  git -C $RepoPath bundle verify $tempPath *> $null
+  if ($LASTEXITCODE -ne 0) { throw "git bundle verify failed: $RepoPath" }
+
+  # Atomic on a single volume: the old bundle stays intact until this instant.
+  Move-Item -LiteralPath $tempPath -Destination $bundlePath -Force
 }
 finally {
   $ErrorActionPreference = $previousErrorAction
+  # A leftover temp means we failed before the swap; the previous bundle (if
+  # any) is still the valid restore point and must be left alone.
+  if (Test-Path -LiteralPath $tempPath) { Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue }
 }
 $sizeKB = [Math]::Round((Get-Item -LiteralPath $bundlePath).Length / 1KB, 1)
 Write-Host "[OK] bundle created + verified: $bundlePath ($sizeKB KB)"
