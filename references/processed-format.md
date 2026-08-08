@@ -51,10 +51,6 @@
 - `[图片]`（无冒号）：图片存在但 OCR 不可用、也没有可读的本地文件。
 - `[视频：<相对路径>]`：视频，只出现在 `preserve_paths` 类产物里。
 
-> 权威实现：`wechat_diary_core/archiving.py` 的 `image_mode` 参数，默认 `"ocr_inline"`，sidecar 管线传 `"preserve_paths"`。
->
-> ⚠️ 本节曾于 2026-08-08 写反（声称所有 `[图片：…]` 都是路径），会导致 agent 拿 OCR 文本当路径去读。改本节前务必**按会话类型分段抽样**，不要从单一样本归纳。
-
 ### 3.3 语音
 
 | 形态 | 含义 |
@@ -84,8 +80,6 @@
 | `[文件]` | 附件，但原始数据没有文件名字段——**不要编造文件名** |
 
 文件名往往有实质信息（课程名、截止日期、材料名），值得读进 DoneList / ExtraNotes。
-
-> 权威实现：`wechat_diary_core/backends/weflow_api/mapper.py` 的文件占位分支。
 
 其余应用类：
 
@@ -135,3 +129,5 @@ python -c "import re,collections,pathlib,sys; r=pathlib.Path(sys.argv[1]); c=col
 ```
 
 **两个根都要扫**：live processed 反映现役映射，归档 processed 反映历史形态，两者并集才是消费方实际会遇到的全集。
+
+**而且必须按产物类型分段扫**（聊天流 / 朋友圈 / sidecar 各扫一遍），不要把全树混在一起看样例——同一个占位在不同产物里含义可能相反（见 §3.2 的图片），混扫后从单一样例归纳会得出完全错误的结论。
