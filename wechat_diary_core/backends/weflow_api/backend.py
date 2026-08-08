@@ -50,6 +50,7 @@ class WeflowApiBackend:
                 api.base_url,
                 api.access_token,
                 timeout=api.request_timeout_sec,
+                message_timeout=api.message_request_timeout_sec,
             )
         return self._client
 
@@ -148,6 +149,7 @@ class WeflowApiBackend:
                     asr_unavailable_reason=reason,
                     emit_emotion=self.config.asr.emit_emotion,
                     require_media=self.config.export_backend.weflow_api.media_localize,
+                    appmsg_text_max_chars=self.config.export_backend.weflow_api.appmsg_text_max_chars,
                 )
                 published_sessions += 1
                 self._record_session_success(state, talker, display_name)

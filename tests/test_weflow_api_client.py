@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 import io
+import socket
 import unittest
 from datetime import date
 from pathlib import Path
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlparse
 
 from wechat_diary_core.backends.weflow_api.client import WeflowApiClient, WeflowApiError
@@ -26,6 +27,90 @@ class _Response:
 
 
 class WeflowApiClientTests(unittest.TestCase):
+    def test_control_plane_timeout_guides_api_restart_without_date_advice(self) -> None:
+        def opener(request, timeout):
+            raise TimeoutError("timed out")
+
+        client = WeflowApiClient("http://127.0.0.1:5031", "token-placeholder", timeout=42, opener=opener)
+        with self.assertRaises(WeflowApiError) as captured:
+            client.validate_token()
+
+        message = str(captured.exception)
+        self.assertIn("控制面超时", message)
+        self.assertIn("42 秒", message)
+        self.assertIn("重启 WeFlow API 服务", message)
+        self.assertNotIn("缩小日期范围", message)
+        self.assertIn("request_timeout_sec", message)
+
+    def test_message_data_timeout_uses_long_limit_and_date_range_advice(self) -> None:
+        def opener(request, timeout):
+            self.assertEqual(timeout, 642)
+            raise TimeoutError("timed out")
+
+        client = WeflowApiClient(
+            "http://127.0.0.1:5031",
+            "token-placeholder",
+            timeout=42,
+            message_timeout=642,
+            opener=opener,
+        )
+        with self.assertRaises(WeflowApiError) as captured:
+            client.fetch_messages(
+                "wxid_contact_placeholder",
+                start=date(2026, 8, 6),
+                end=date(2026, 8, 6),
+            )
+
+        message = str(captured.exception)
+        self.assertIn("消息数据超时", message)
+        self.assertIn("642 秒", message)
+        self.assertIn("缩小日期范围", message)
+        self.assertIn("message_request_timeout_sec", message)
+
+    def test_control_and_message_requests_apply_separate_timeouts(self) -> None:
+        seen = []
+
+        def opener(request, timeout):
+            path = urlparse(request.full_url).path
+            seen.append((path, timeout))
+            if path == "/api/v1/sessions":
+                return _Response({"success": True, "count": 0, "sessions": []})
+            return _Response({"success": True, "hasMore": False, "messages": []})
+
+        client = WeflowApiClient(
+            "http://127.0.0.1:5031",
+            "token-placeholder",
+            timeout=17,
+            message_timeout=617,
+            opener=opener,
+        )
+        client.validate_token()
+        client.fetch_messages(
+            "wxid_contact_placeholder",
+            start=date(2026, 8, 6),
+            end=date(2026, 8, 6),
+        )
+
+        self.assertEqual(seen, [("/api/v1/sessions", 17), ("/api/v1/messages", 617)])
+
+    def test_non_timeout_connection_error_keeps_connection_message(self) -> None:
+        def opener(request, timeout):
+            raise URLError("connection refused")
+
+        client = WeflowApiClient("http://127.0.0.1:5031", "token-placeholder", opener=opener)
+        with self.assertRaisesRegex(WeflowApiError, "无法连接 WeFlow API") as captured:
+            client.validate_token()
+
+        self.assertNotIn("超时而非服务不可达", str(captured.exception))
+
+    def test_url_error_wrapping_socket_timeout_uses_timeout_message(self) -> None:
+        def opener(request, timeout):
+            raise URLError(socket.timeout("timed out"))
+
+        client = WeflowApiClient("http://127.0.0.1:5031", "token-placeholder", timeout=9, opener=opener)
+        with self.assertRaisesRegex(WeflowApiError, "控制面超时"):
+            client.validate_token()
+
     def test_http_500_includes_weflow_error_reason(self) -> None:
         reason = "创建游标失败: -3（消息数据库未找到）"
 

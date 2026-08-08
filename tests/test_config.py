@@ -6,7 +6,7 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
-from wechat_diary_core.config import load_config
+from wechat_diary_core.config import WeflowApiConfig, load_config
 
 
 class ConfigTests(unittest.TestCase):
@@ -19,6 +19,9 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(cfg.export_backend.weflow_api.access_token, "")
         self.assertTrue(cfg.export_backend.weflow_api.media_localize)
         self.assertEqual(cfg.export_backend.weflow_api.message_format, "json")
+        self.assertEqual(cfg.export_backend.weflow_api.request_timeout_sec, 120)
+        self.assertEqual(cfg.export_backend.weflow_api.message_request_timeout_sec, 600)
+        self.assertEqual(cfg.export_backend.weflow_api.appmsg_text_max_chars, 300)
         self.assertEqual(cfg.asr.engine, "")
         self.assertIsNone(cfg.asr.worker_python)
         self.assertIsNone(cfg.asr.worker_script)
@@ -38,6 +41,9 @@ base_url = "http://127.0.0.1:6000/"
 access_token = "fixed-token"
 media_localize = false
 message_format = "json"
+request_timeout_sec = 42
+message_request_timeout_sec = 642
+appmsg_text_max_chars = 80
 
 [asr]
 engine = "sensevoice"
@@ -58,6 +64,9 @@ worker_request_timeout_sec = 90
         self.assertEqual(cfg.export_backend.weflow_api.base_url, "http://127.0.0.1:6000")
         self.assertEqual(cfg.export_backend.weflow_api.access_token, "fixed-token")
         self.assertFalse(cfg.export_backend.weflow_api.media_localize)
+        self.assertEqual(cfg.export_backend.weflow_api.request_timeout_sec, 42)
+        self.assertEqual(cfg.export_backend.weflow_api.message_request_timeout_sec, 642)
+        self.assertEqual(cfg.export_backend.weflow_api.appmsg_text_max_chars, 80)
         self.assertEqual(cfg.asr.engine, "sensevoice")
         self.assertEqual(cfg.asr.model, "local/model")
         self.assertEqual(cfg.asr.language, "yue")
@@ -66,6 +75,28 @@ worker_request_timeout_sec = 90
         self.assertEqual(cfg.asr.worker_script, config_path.parent / "custom_worker.py")
         self.assertEqual(cfg.asr.worker_startup_timeout_sec, 240)
         self.assertEqual(cfg.asr.worker_request_timeout_sec, 90)
+
+    def test_weflow_api_config_old_constructor_args_keep_appmsg_default(self) -> None:
+        cfg = WeflowApiConfig(
+            base_url="http://127.0.0.1:5031",
+            access_token="token-placeholder",
+            media_localize=True,
+            message_format="json",
+            request_timeout_sec=120,
+        )
+
+        self.assertEqual(cfg.appmsg_text_max_chars, 300)
+        self.assertEqual(cfg.message_request_timeout_sec, 600)
+
+    def test_rejects_appmsg_text_limit_below_one(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.toml"
+            config_path.write_text(
+                "[export_backend.weflow_api]\nappmsg_text_max_chars = 0",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "appmsg_text_max_chars 必须大于等于 1"):
+                load_config(config_path)
 
     def test_legacy_automation_maps_to_weflow_backend_with_one_hint(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

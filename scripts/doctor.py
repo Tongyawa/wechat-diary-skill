@@ -70,6 +70,7 @@ class ProbeDependencies:
         cfg.export_backend.weflow_api.base_url,
         cfg.export_backend.weflow_api.access_token,
         timeout=cfg.export_backend.weflow_api.request_timeout_sec,
+        message_timeout=cfg.export_backend.weflow_api.message_request_timeout_sec,
     )
 
 
@@ -116,6 +117,7 @@ def run_doctor(config_path: str | Path = "config.toml", *, deps: ProbeDependenci
         checks.append(_check_cdp(cfg, active.fetch_cdp_targets))
     elif cfg.export_backend.backend == "weflow_api":
         client = active.api_client_factory(cfg)
+        checks.append(_check_message_request_timeout(cfg))
         checks.append(_check_api_health(cfg, client))
         checks.append(_check_api_token(cfg))
         checks.append(_check_api_semantic(cfg, client))
@@ -165,6 +167,36 @@ def _has_config_key(source: dict[str, Any], dotted_key: str) -> bool:
             return False
         value = value[part]
     return value not in (None, "")
+
+
+def _check_message_request_timeout(cfg: Config) -> CheckResult:
+    api_source = cfg.source.get("export_backend", {}).get("weflow_api", {})
+    explicit = isinstance(api_source, dict) and "message_request_timeout_sec" in api_source
+    timeout = cfg.export_backend.weflow_api.message_request_timeout_sec
+    if explicit and timeout < 300:
+        return CheckResult(
+            id="weflow_api_message_timeout",
+            group="配置",
+            name="消息数据请求超时",
+            status="warning",
+            message=(
+                f"message_request_timeout_sec 当前显式设为 {timeout:g} 秒；"
+                "媒体密集会话真机实测需 104 秒以上，冷缓存时容易超时。"
+            ),
+            action=(
+                "把 config.toml 的 [export_backend.weflow_api]."
+                "message_request_timeout_sec 调到 600–900 后重试。"
+            ),
+            details={"explicit": True, "seconds": timeout},
+        )
+    return CheckResult(
+        id="weflow_api_message_timeout",
+        group="配置",
+        name="消息数据请求超时",
+        status="ready",
+        message=f"消息数据请求超时为 {timeout:g} 秒，可覆盖已知媒体密集会话。",
+        details={"explicit": explicit, "seconds": timeout},
+    )
 
 
 def _check_weflow_executable(cfg: Config) -> CheckResult:

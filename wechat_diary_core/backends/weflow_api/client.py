@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import socket
 from datetime import date
 from pathlib import Path
 from typing import Any, Callable, Iterator
@@ -30,11 +31,13 @@ class WeflowApiClient:
         access_token: str,
         *,
         timeout: float = 60.0,
+        message_timeout: float = 600.0,
         opener: Callable[..., Any] = urlopen,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.access_token = access_token.strip()
         self.timeout = timeout
+        self.message_timeout = message_timeout
         self._opener = opener
 
     def health(self) -> dict[str, Any]:
@@ -81,7 +84,7 @@ class WeflowApiClient:
         }
         if media:
             params.update({"media": 1, "image": 1, "voice": 1, "emoji": 1})
-        payload = self._request("/api/v1/messages", params)
+        payload = self._request("/api/v1/messages", params, timeout=self.message_timeout)
         self._list_field(payload, "messages")
         return payload
 
@@ -237,6 +240,7 @@ class WeflowApiClient:
         authenticated: bool = True,
         method: str = "GET",
         body: dict[str, Any] | None = None,
+        timeout: float | None = None,
     ) -> dict[str, Any]:
         query = urlencode({key: value for key, value in (params or {}).items() if value is not None})
         url = f"{self.base_url}{path}" + (f"?{query}" if query else "")
@@ -248,8 +252,9 @@ class WeflowApiClient:
             headers["Content-Type"] = "application/json"
             data = json.dumps(body, ensure_ascii=False).encode("utf-8")
         request = Request(url, data=data, headers=headers, method=method)
+        effective_timeout = self.timeout if timeout is None else timeout
         try:
-            response = self._opener(request, timeout=self.timeout)
+            response = self._opener(request, timeout=effective_timeout)
             with response:
                 raw = response.read()
         except HTTPError as exc:
@@ -264,6 +269,22 @@ class WeflowApiClient:
                 message += f" — {detail}"
             raise WeflowApiError(message, status=exc.code) from exc
         except (URLError, OSError, TimeoutError) as exc:
+            reason = exc.reason if isinstance(exc, URLError) else None
+            if isinstance(exc, TimeoutError) or isinstance(reason, (socket.timeout, TimeoutError)):
+                timeout_text = f"{effective_timeout:g}"
+                if path == "/api/v1/messages":
+                    raise WeflowApiError(
+                        f"请求 WeFlow API 消息数据超时：本次请求超过 {timeout_text} 秒。"
+                        "建议缩小日期范围，或调大 "
+                        "[export_backend.weflow_api].message_request_timeout_sec"
+                        f"（当前 {timeout_text} 秒）。"
+                    ) from exc
+                raise WeflowApiError(
+                    f"请求 WeFlow API 控制面超时：本次请求超过 {timeout_text} 秒。"
+                    "请检查 API 服务是否响应；如持续超时，请重启 WeFlow API 服务后重试。"
+                    "也可检查 [export_backend.weflow_api].request_timeout_sec"
+                    f"（当前 {timeout_text} 秒）。"
+                ) from exc
             raise WeflowApiError(f"无法连接 WeFlow API {self.base_url}：{exc}") from exc
         try:
             payload = json.loads(raw.decode("utf-8"))

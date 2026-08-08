@@ -117,12 +117,62 @@ worker_python = "{Path(sys.executable).as_posix()}"
             report = run_doctor(config, deps=deps)
 
         for check_id in (
+            "weflow_api_message_timeout",
             "weflow_api_health",
             "weflow_api_token",
             "weflow_api_semantic",
             "dependency_asr",
         ):
             self.assertEqual(_by_id(report, check_id).status, "ready", check_id)
+
+    def test_explicit_low_message_timeout_warns_with_exact_config_action(self) -> None:
+        class ApiClient:
+            def health(self):
+                return {"status": "ok"}
+
+            def semantic_probe(self):
+                return "wxid_placeholder", 1
+
+        for seconds, expected_status in ((120, "warning"), (600, "ready")):
+            with self.subTest(seconds=seconds), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                for name in ("raw", "processed", "archived", "insights"):
+                    (root / name).mkdir()
+                config = root / "config.toml"
+                config.write_text(
+                    f'''
+[paths]
+raw = "{(root / 'raw').as_posix()}"
+processed = "{(root / 'processed').as_posix()}"
+archived = "{(root / 'archived').as_posix()}"
+insights = "{(root / 'insights').as_posix()}"
+
+[export_backend]
+backend = "weflow_api"
+
+[export_backend.weflow_api]
+base_url = "http://127.0.0.1:5031"
+access_token = "token-placeholder"
+message_request_timeout_sec = {seconds}
+'''.strip(),
+                    encoding="utf-8",
+                )
+                report = run_doctor(
+                    config,
+                    deps=ProbeDependencies(
+                        api_client_factory=lambda cfg: ApiClient(),
+                        find_spec=lambda name: None,
+                        can_write=lambda path: True,
+                    ),
+                )
+
+            check = _by_id(report, "weflow_api_message_timeout")
+            self.assertEqual(check.status, expected_status)
+            if seconds < 300:
+                self.assertIn("104 秒以上", check.message)
+                self.assertIn("冷缓存", check.message)
+                self.assertIn("message_request_timeout_sec", check.action)
+                self.assertIn("600–900", check.action)
 
     def test_weflow_api_asr_missing_is_warning_not_error(self) -> None:
         class ApiClient:

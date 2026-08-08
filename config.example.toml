@@ -33,7 +33,9 @@ base_url = "http://127.0.0.1:5031"
 access_token = ""
 media_localize = true
 message_format = "json"
-request_timeout_sec = 120                # media localization may take tens of seconds
+request_timeout_sec = 120                 # control plane: health, token, sessions, contacts, and group members
+message_request_timeout_sec = 600         # data plane: /messages with media; 3613 messages took 104 seconds in a real run
+appmsg_text_max_chars = 300               # maximum title/description characters kept in canonical app-message content
 
 [export_backend.weflow]
 # Legacy WeFlow <=4.x GUI-automation settings.

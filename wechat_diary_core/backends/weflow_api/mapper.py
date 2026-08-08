@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import tempfile
 import uuid
@@ -16,6 +17,7 @@ from typing import Any
 
 from ...raw_schema import validate_moments_json, validate_session_json
 from ..weflow.naming import sanitize_session_name
+from .appmsg import AppmsgMeta, parse_appmsg
 from .type_map import resolve_message_type, unpack_local_type
 
 
@@ -44,6 +46,7 @@ def map_session_json(
     asr_unavailable_reason: str = "ASR未启用",
     emit_emotion: bool = True,
     require_media: bool = True,
+    appmsg_text_max_chars: int = 300,
 ) -> dict[str, Any]:
     """Map one talker; callable independently from the daily runner."""
 
@@ -86,6 +89,7 @@ def map_session_json(
             asr_unavailable_reason=asr_unavailable_reason,
             emit_emotion=emit_emotion,
             require_media=require_media,
+            appmsg_text_max_chars=appmsg_text_max_chars,
         )
         for message in ordered_messages
     ]
@@ -127,6 +131,7 @@ def write_session_export(
     asr_unavailable_reason: str = "ASR未启用",
     emit_emotion: bool = True,
     require_media: bool = True,
+    appmsg_text_max_chars: int = 300,
 ) -> Path:
     """Validate and atomically publish one complete canonical session directory."""
 
@@ -148,6 +153,7 @@ def write_session_export(
             asr_unavailable_reason=asr_unavailable_reason,
             emit_emotion=emit_emotion,
             require_media=require_media,
+            appmsg_text_max_chars=appmsg_text_max_chars,
         )
         json_path = staging_dir / f"{directory_name}.json"
         json_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -342,9 +348,10 @@ def _map_message(
     asr_unavailable_reason: str,
     emit_emotion: bool,
     require_media: bool,
+    appmsg_text_max_chars: int,
 ) -> dict[str, Any]:
     local_type = int(message.get("localType") or 0)
-    base, _app_type = unpack_local_type(local_type)
+    base, app_type = unpack_local_type(local_type)
     resolved = resolve_message_type(local_type)
     is_send = int(bool(message.get("isSend")))
     sender = str(message.get("senderUsername") or "")
@@ -364,7 +371,14 @@ def _map_message(
         sender_display = _display_name(sender_record, sender)
 
     relative_media = _localize_media(message, base, media_dir, require_media=require_media)
-    content = _message_content(message, resolved.placeholder, base, relative_media)
+    content = _message_content(
+        message,
+        resolved.placeholder,
+        base,
+        app_type,
+        relative_media,
+        appmsg_text_max_chars,
+    )
     emotion: dict[str, list[str]] | None = None
     if base == 34:
         content, emotion = _voice_content(
@@ -417,16 +431,99 @@ def _message_content(
     message: Mapping[str, Any],
     placeholder: str,
     base: int,
+    app_type: int,
     relative_media: str,
+    appmsg_text_max_chars: int = 300,
 ) -> str:
     if base in {3, 47}:
         return relative_media or placeholder
     if base in {1, 50, 10000}:
         return str(message.get("content") or message.get("rawContent") or placeholder)
-    # App messages commonly contain XML in content/rawContent.  Until a richer
-    # default-format parser is specified, preserve canonical readability with
-    # the explicit type placeholder.
-    return placeholder or str(message.get("content") or "")
+    if base != 49:
+        return placeholder or str(message.get("content") or "")
+    content = str(message.get("content") or "")
+    if app_type == 57:
+        # 57 的 content 是回复正文纯文本、不是 XML；真机实测 title 命中率 0/4341。
+        return content or placeholder
+    meta = parse_appmsg(content, max_chars=appmsg_text_max_chars)
+    if meta is None:
+        return placeholder or content
+    return _render_appmsg(meta, app_type, placeholder)
+
+
+def _with_body(label: str, body: str) -> str:
+    return f"[{label}] {body}" if body else f"[{label}]"
+
+
+def _with_title_des(label: str, title: str, des: str, separator: str = "：") -> str:
+    if title and des:
+        return f"[{label}] {title}{separator}{des}"
+    return _with_body(label, title or des)
+
+
+MAX_FORMATTABLE_FILE_SIZE = (1 << 63) - 1
+
+
+def _format_file_size(total: int) -> str | None:
+    if total < 0 or total > MAX_FORMATTABLE_FILE_SIZE:
+        return None
+    if total < 1024:
+        return f"{total} B"
+    value = float(total)
+    for unit in ("KB", "MB", "GB"):
+        value /= 1024
+        if value < 1024 or unit == "GB":
+            return f"{value:.1f} {unit}"
+
+
+def _render_appmsg(meta: AppmsgMeta, app_type: int, placeholder: str) -> str:
+    if app_type in {8, 47}:
+        return placeholder
+    if app_type in {6, 74}:
+        filename = re.split(r"[\\/]", meta.title)[-1] if meta.title else ""
+        if not filename:
+            return "[文件]"
+        formatted_size = _format_file_size(meta.totallen) if meta.totallen is not None else None
+        if formatted_size is None:
+            return f"[文件：{filename}]"
+        return f"[文件：{filename}（{formatted_size}）]"
+    if app_type == 62:
+        return meta.title or placeholder
+    if app_type == 63:
+        return _with_body("视频号", meta.title)
+    if app_type == 53:
+        return _with_body("接龙", meta.title)
+    if app_type == 5:
+        return _with_title_des("链接", meta.title, meta.des)
+    if app_type == 51:
+        return _with_body("动态", meta.title)
+    if app_type == 33:
+        return _with_body("小程序", meta.title)
+    if app_type == 19:
+        return _with_title_des("合并转发", meta.title, meta.des)
+    if app_type == 4:
+        return _with_title_des("视频分享", meta.title, meta.des)
+    if app_type == 2000:
+        return _with_body("转账", meta.des)
+    if app_type == 2001:
+        return _with_body("红包", meta.des)
+    if app_type == 87:
+        return "[群公告]"
+    if app_type == 24:
+        return _with_body("收藏", meta.des)
+    if app_type == 1:
+        return _with_body("链接", meta.title)
+    if app_type == 36:
+        return _with_body("分享", meta.title)
+    if app_type == 3:
+        if meta.title and meta.des:
+            return f"[音乐] {meta.title} - {meta.des}"
+        return _with_body("音乐", meta.title or meta.des)
+    if app_type == 50:
+        return _with_body("视频号", meta.title)
+    if meta.title:
+        return f"[其他消息] {meta.title}"
+    return placeholder
 
 
 def _voice_content(

@@ -166,6 +166,20 @@ def _seed_failure_state(root: Path, wxid: str, *, ignored: bool = False) -> Path
 
 
 class WeflowApiBackendTests(unittest.TestCase):
+    def test_client_factory_receives_control_and_message_timeouts(self) -> None:
+        captured = {}
+
+        def factory(base_url, access_token, **kwargs):
+            captured.update(kwargs)
+            return _Client()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            backend = WeflowApiBackend(_config(Path(tmp)), client_factory=factory)
+            self.assertIsInstance(backend.client, _Client)
+
+        self.assertEqual(captured["timeout"], 120)
+        self.assertEqual(captured["message_timeout"], 600)
+
     def test_skip_official_accounts_controls_message_requests(self) -> None:
         sessions = [
             {"username": "gh_official_placeholder", "displayName": "公众号占位"},

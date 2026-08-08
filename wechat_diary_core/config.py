@@ -27,6 +27,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "media_localize": True,
             "message_format": "json",
             "request_timeout_sec": 120,
+            "message_request_timeout_sec": 600,
+            "appmsg_text_max_chars": 300,
         },
         "weflow": {
             "driver": "cdp",
@@ -150,6 +152,8 @@ class WeflowApiConfig:
     media_localize: bool
     message_format: str
     request_timeout_sec: float
+    appmsg_text_max_chars: int = 300
+    message_request_timeout_sec: float = 600
 
 
 @dataclass(frozen=True)
@@ -283,6 +287,9 @@ def _build_config(raw: dict[str, Any], base_dir: Path, *, source: dict[str, Any]
     message_format = str(weflow_api.get("message_format") or "json").strip().lower()
     if message_format != "json":
         raise ValueError("export_backend.weflow_api.message_format 本期只支持 json")
+    appmsg_text_max_chars = int(weflow_api.get("appmsg_text_max_chars", 300))
+    if appmsg_text_max_chars < 1:
+        raise ValueError("export_backend.weflow_api.appmsg_text_max_chars 必须大于等于 1")
     asr_engine = str(asr.get("engine") or "").strip().lower()
     if asr_engine not in {"", "sensevoice", "whisper"}:
         raise ValueError(f"Unsupported ASR engine: {asr_engine}")
@@ -332,6 +339,10 @@ def _build_config(raw: dict[str, Any], base_dir: Path, *, source: dict[str, Any]
                 media_localize=bool(weflow_api.get("media_localize", True)),
                 message_format=message_format,
                 request_timeout_sec=float(weflow_api.get("request_timeout_sec", 120)),
+                appmsg_text_max_chars=appmsg_text_max_chars,
+                message_request_timeout_sec=float(
+                    weflow_api.get("message_request_timeout_sec", 600)
+                ),
             ),
         ),
         automation=automation_config,

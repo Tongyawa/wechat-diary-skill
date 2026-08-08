@@ -21,7 +21,7 @@ def _fixture(name: str):
     return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
 
 
-def _config(root: Path) -> object:
+def _config(root: Path, *, appmsg_text_max_chars: int = 300) -> object:
     config_path = root / "config.toml"
     config_path.write_text(
         f"""
@@ -40,6 +40,7 @@ backend = "weflow_api"
 [export_backend.weflow_api]
 access_token = "fixture-token"
 media_localize = true
+appmsg_text_max_chars = {appmsg_text_max_chars}
 
 [preprocessing.group_context_window]
 enabled = true
@@ -70,7 +71,7 @@ class FixtureClient:
 
     def fetch_group_members(self, chatroom_id):
         self.calls.append(("group-members", chatroom_id))
-        return [{"wxid": "wxid_group_member", "nickname": "群成员占位"}]
+        return [{"wxid": "wxid_group_member_placeholder", "nickname": "群成员占位"}]
 
     def fetch_messages(self, talker, **kwargs):
         self.calls.append(("messages", talker, kwargs))
@@ -99,7 +100,7 @@ def _group_messages() -> list[dict]:
                 "serverId": f"group-server-{index}",
                 "createTime": int((start + timedelta(minutes=index)).timestamp()),
                 "isSend": int(index == 5),
-                "senderUsername": "wxid_self_placeholder" if index == 5 else "wxid_group_member",
+                "senderUsername": "wxid_self_placeholder" if index == 5 else "wxid_group_member_placeholder",
                 "content": content,
             }
         )
@@ -108,6 +109,13 @@ def _group_messages() -> list[dict]:
 
 
 class ExportOnDemandTests(unittest.TestCase):
+    def test_make_client_carries_both_timeout_planes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            client = module._make_client(_config(Path(tmp)))
+
+        self.assertEqual(client.timeout, 120)
+        self.assertEqual(client.message_timeout, 600)
+
     def test_session_resolution_exact_display_name_and_ambiguous_exit(self) -> None:
         sessions = [
             {"username": "wxid_alpha_placeholder", "displayName": "示例甲"},
@@ -159,6 +167,46 @@ class ExportOnDemandTests(unittest.TestCase):
             self.assertEqual(single.raw_session_dir.name, "私聊_示例联系人_20260805")
             self.assertEqual(ranged.output_session_dir.name, ranged.raw_session_dir.name)
             self.assertTrue(ranged.merged_file and ranged.merged_file.is_file())
+
+    def test_toml_appmsg_limit_flows_through_on_demand_entry_to_canonical_raw(self) -> None:
+        session = {"username": "wxid_contact_placeholder", "displayName": "联系人占位"}
+        # 结构源自真机 appmsg 骨架，文本为中性占位；内外 subtype 均为 53。
+        xml = (
+            "<msg><appmsg><title>配置贯通验证文本</title><des></des>"
+            "<type>53</type><appattach><totallen>0</totallen>"
+            "<fileext></fileext></appattach></appmsg></msg>"
+        )
+        message = {
+            "localId": 1,
+            "serverId": "server-placeholder",
+            "localType": (53 << 32) | 49,
+            "createTime": 1785921697,
+            "isSend": 0,
+            "senderUsername": session["username"],
+            "content": xml,
+            "rawContent": xml,
+            "parsedContent": "",
+            "replyToMessageId": "",
+            "quote": None,
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = _config(root, appmsg_text_max_chars=5)
+            result = module.export_on_demand(
+                cfg,
+                sessions=[session],
+                client=FixtureClient([session], {session["username"]: [message]}),
+                session_query=session["username"],
+                start=date(2026, 8, 5),
+                end=date(2026, 8, 5),
+                out_root=root / "out",
+                copy_media=False,
+                archive_fn=lambda *args, **kwargs: [],
+            )
+            canonical_path = next(result.raw_session_dir.glob("*.json"))
+            canonical = json.loads(canonical_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(canonical["messages"][0]["content"], "[接龙] 配置贯通验…")
 
     def test_repeated_out_keeps_ranges_isolated_and_removes_empty_staging(self) -> None:
         session = {"username": "wxid_contact_placeholder", "displayName": "示例联系人"}

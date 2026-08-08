@@ -172,6 +172,7 @@ def export_on_demand(
             asr_unavailable_reason=unavailable_reason,
             emit_emotion=active_cfg.asr.emit_emotion,
             require_media=api.media_localize,
+            appmsg_text_max_chars=api.appmsg_text_max_chars,
         )
         written = (archive_fn or archive)(
             staging_root,
@@ -250,7 +251,12 @@ def _config_for_on_demand(cfg: Config, *, group_window: bool) -> Config:
 
 def _make_client(cfg: Config) -> WeflowApiClient:
     api = cfg.export_backend.weflow_api
-    return WeflowApiClient(api.base_url, api.access_token, timeout=api.request_timeout_sec)
+    return WeflowApiClient(
+        api.base_url,
+        api.access_token,
+        timeout=api.request_timeout_sec,
+        message_timeout=api.message_request_timeout_sec,
+    )
 
 
 def _make_transcriber(
