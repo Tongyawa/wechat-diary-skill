@@ -111,6 +111,22 @@ if (-not $backup.enabled) {
 $dest = $backup.bundleDest
 if (-not (Test-Path $dest)) { New-Item -ItemType Directory -Force $dest | Out-Null }
 
+# 选本轮写哪个槽位：先补空缺，再覆盖最旧的一个。
+# 刻意**不**从 last-run.json 读上次的槽位——那样状态文件一丢就不知道该写哪，
+# 而按磁盘上的实际情况推断可以自愈。mtime 万一不可信，最坏也只是覆盖了一个
+# 不是最旧的槽位，其余 keep-1 份仍在。
+function Select-Slot([string]$Destination, [string]$Name, [int]$Keep) {
+  for ($i = 1; $i -le $Keep; $i++) {
+    $candidate = Join-Path $Destination "$Name-slot-$i.bundle"
+    if (-not (Test-Path -LiteralPath $candidate)) { return $i }
+  }
+  $oldest = Get-ChildItem -LiteralPath $Destination -Filter "$Name-slot-*.bundle" |
+    Where-Object { $_.BaseName -match "-slot-(\d+)$" -and [int]$Matches[1] -le $Keep } |
+    Sort-Object LastWriteTime | Select-Object -First 1
+  if ($oldest -and $oldest.BaseName -match "-slot-(\d+)$") { return [int]$Matches[1] }
+  return 1
+}
+
 # --- 逐仓备份 ----------------------------------------------------------------
 $startedAt = (Get-Date).ToString("o")
 $results = @()
@@ -132,10 +148,13 @@ foreach ($repo in $backup.repos) {
     continue
   }
 
+  $slot = Select-Slot $dest $repo.name $backup.keep
+  $entry['slot'] = $slot
+
   try {
     $ErrorActionPreference = "Continue"
     $output = & powershell -NoProfile -ExecutionPolicy Bypass -File $backupScript `
-      -RepoPath $repo.path -Destination $dest -Name $repo.name -Keep $backup.keep 2>&1
+      -RepoPath $repo.path -Destination $dest -Name $repo.name -Keep $backup.keep -Slot $slot 2>&1
     $code = $LASTEXITCODE
   } finally {
     $ErrorActionPreference = "Stop"
@@ -145,11 +164,12 @@ foreach ($repo in $backup.repos) {
     $entry['result'] = "failed"
     $entry['error'] = ($output | Out-String).Trim()
   } else {
-    $newest = Get-ChildItem $dest -Filter "$($repo.name)-*.bundle" -ErrorAction SilentlyContinue |
-      Sort-Object LastWriteTime -Descending | Select-Object -First 1
-    if ($newest) {
-      $entry['bundle'] = $newest.Name
-      $entry['bytes'] = $newest.Length
+    # 按确切的槽位文件名取，不按「最新」猜——同名前缀下还可能有历史日期命名的
+    # bundle 或一次性里程碑快照，按 mtime 排序会取错。
+    $written = Get-Item -LiteralPath (Join-Path $dest "$($repo.name)-slot-$slot.bundle") -ErrorAction SilentlyContinue
+    if ($written) {
+      $entry['bundle'] = $written.Name
+      $entry['bytes'] = $written.Length
     }
   }
   $results += $entry
@@ -159,14 +179,43 @@ foreach ($repo in $backup.repos) {
 $failed = @($results | Where-Object { $_['result'] -ne "ok" })
 $overall = "ok"
 if ($failed.Count -gt 0) { $overall = "failed" }
+$stateFile = $backup.stateFile
+$finishedAt = (Get-Date).ToString("o")
+
+# 槽位索引：跨轮累积「每个仓的每个槽位分别是什么时候写的」。
+# 必要性——槽位命名把日期从文件名里拿掉了，灾难恢复时人多半在网盘 web UI 里翻，
+# mtime 未必可靠。没有这份索引就答不出「该从哪个槽位还原」。
+# 只更新本轮真正写成功的槽位，其余原样保留。
+$slotIndex = [ordered]@{}
+if (Test-Path -LiteralPath $stateFile) {
+  try {
+    $prior = Get-Content -LiteralPath $stateFile -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($prior.slotIndex) {
+      foreach ($prop in $prior.slotIndex.PSObject.Properties) {
+        $inner = [ordered]@{}
+        foreach ($slotProp in $prop.Value.PSObject.Properties) { $inner[$slotProp.Name] = $slotProp.Value }
+        $slotIndex[$prop.Name] = $inner
+      }
+    }
+  } catch {
+    # 旧索引读不出就从空开始重建：宁可丢历史映射，也不能因此中断本轮备份。
+    $slotIndex = [ordered]@{}
+  }
+}
+foreach ($entry in $results) {
+  if ($entry['result'] -ne "ok") { continue }
+  if (-not $slotIndex.Contains($entry['name'])) { $slotIndex[$entry['name']] = [ordered]@{} }
+  $slotIndex[$entry['name']]["$($entry['slot'])"] = $finishedAt
+}
+
 $state = [ordered]@{
   startedAt  = $startedAt
-  finishedAt = (Get-Date).ToString("o")
+  finishedAt = $finishedAt
   overall    = $overall
   repos      = $results
+  slotIndex  = $slotIndex
 }
-$stateFile = $backup.stateFile
-$state | ConvertTo-Json -Depth 5 | Set-Content -Path $stateFile -Encoding UTF8
+$state | ConvertTo-Json -Depth 6 | Set-Content -Path $stateFile -Encoding UTF8
 
 $reportFile = Join-Path $dest "last-run-failure.txt"
 

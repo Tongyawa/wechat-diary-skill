@@ -157,6 +157,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$SkillRoot\scripts\Invoke-B
 
 它**成功时不弹窗（命令行下仍打印一行结果），失败时弹出一个停留的报告窗口**并写 `<bundle_dest>/last-run.json`。这个不对称是刻意的：一个成功和失败长得一样的闪窗只会让人学会忽略它。备份是否还在跑，`doctor.py` 和日常导出收尾都会检查，陈旧时给出补跑命令。
 
+批量模式按**固定槽位**写 `<仓名>-slot-1.bundle` … `-slot-<keep>.bundle`，先补空缺再覆盖最旧的一份。这样每个仓在备份目录里始终只占 `keep` 个文件名，而不是每天新增一个——云同步场景下本地清理未必会同步成远端删除，日期命名会无限累积。文件名因此不带日期，`last-run.json` 的 `slotIndex` 记录每个槽位对应的时间；还原时读它挑最新槽位，`git clone` 那个 bundle 即可。
+
 ## 一轮跑完之后：怎么读结果
 
 退出码 `0` 表示全部阶段成功。非 `0` 有两种，控制台措辞可以区分：

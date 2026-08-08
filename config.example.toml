@@ -159,7 +159,11 @@ restart_weflow = true
 # deletion, not disk failure.
 bundle_dest = ""
 
-# How many bundles to retain per repo before the oldest are pruned.
+# How many rotating slots to keep per repo. Each run writes
+# "<name>-slot-N.bundle", filling empty slots first, then overwriting the
+# oldest -- so a repo's remote footprint stays at exactly this many files
+# instead of growing by one every day. last-run.json records which slot holds
+# which date, since the filename no longer carries it.
 keep = 5
 
 # Warn once the last successful run is older than this many days. The warning

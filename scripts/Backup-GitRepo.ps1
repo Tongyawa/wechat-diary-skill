@@ -34,7 +34,8 @@ param(
   [string]$RepoPath = (Get-Location).Path,
   [Parameter(Mandatory = $true)][string]$Destination,
   [string]$Name,
-  [int]$Keep = 5
+  [int]$Keep = 5,
+  [int]$Slot = 0
 )
 
 $ErrorActionPreference = "Stop"
@@ -54,9 +55,23 @@ if (-not (Test-Path -LiteralPath $Destination)) {
 }
 $Destination = (Resolve-Path -LiteralPath $Destination).Path
 
-# --- Create the bundle (one snapshot per day; same-day re-run overwrites) ------
-$stamp = Get-Date -Format "yyyyMMdd"
-$bundlePath = Join-Path $Destination "$Name-$stamp.bundle"
+# --- Create the bundle --------------------------------------------------------
+# Two naming modes:
+#   default (-Slot 0) : "<Name>-<yyyyMMdd>.bundle", pruned to the newest -Keep.
+#   -Slot N           : "<Name>-slot-N.bundle", overwritten in place.
+#
+# Slot mode exists because date-stamped names grow without bound in a synced
+# cloud folder: local pruning does not reliably propagate as a remote delete, so
+# every daily run adds a filename that never goes away. A fixed set of slots
+# keeps the remote footprint constant. The cost is that the filename no longer
+# carries its date -- the caller is responsible for recording slot -> date
+# somewhere durable (the orchestrator writes it into last-run.json).
+if ($Slot -gt 0) {
+  $bundlePath = Join-Path $Destination "$Name-slot-$Slot.bundle"
+} else {
+  $stamp = Get-Date -Format "yyyyMMdd"
+  $bundlePath = Join-Path $Destination "$Name-$stamp.bundle"
+}
 if (Test-Path -LiteralPath $bundlePath) { Remove-Item -LiteralPath $bundlePath -Force }
 
 # Native commands write progress and even success notices to stderr -- `git
@@ -82,6 +97,15 @@ $sizeKB = [Math]::Round((Get-Item -LiteralPath $bundlePath).Length / 1KB, 1)
 Write-Host "[OK] bundle created + verified: $bundlePath ($sizeKB KB)"
 
 # --- Prune old bundles, keep the newest -Keep ---------------------------------
+# Slot mode does its own retention: the fixed set of slots IS the window, and
+# nothing else may be deleted. Pruning here would be actively wrong -- the
+# date-matching glob below does not match slot files, so a stray prune pass
+# would either no-op or, if the pattern ever loosened, eat live slots.
+if ($Slot -gt 0) {
+  Write-Host "[done] wrote slot $Slot in $Destination"
+  return
+}
+
 # Match only routine daily snapshots -- "<Name>-<yyyyMMdd>.bundle" exactly. A
 # looser "$Name-*" would also sweep up one-off milestone snapshots that happen
 # to share the prefix (e.g. "<Name>-pre-migration-20260704-2129.bundle") and
