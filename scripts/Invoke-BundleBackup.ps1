@@ -86,12 +86,15 @@ $proc = New-Object System.Diagnostics.Process
 $proc.StartInfo = $startInfo
 try {
   if (-not $proc.Start()) { throw "python 进程未能启动" }
+  # 必须先发起 stderr 的异步读取，再 drain stdout：如果子进程先把 stderr
+  # 管道写满，它会等待读取而不再关闭 stdout；同步依次 ReadToEnd 会与它互等。
+  $configErrTask = $proc.StandardError.ReadToEndAsync()
   $configJson = $proc.StandardOutput.ReadToEnd()
-  $configErr = $proc.StandardError.ReadToEnd()
+  $configErr = $configErrTask.Result
   $proc.WaitForExit()
   $readExit = $proc.ExitCode
 } catch {
-  Fail-Fast "读取 [backup] 配置失败：无法启动 Python 配置读取器。$($_.Exception.Message)"
+  Fail-Fast "读取 [backup] 配置失败：无法启动或读取 Python 配置读取器。$($_.Exception.Message)"
 } finally {
   $proc.Dispose()
 }

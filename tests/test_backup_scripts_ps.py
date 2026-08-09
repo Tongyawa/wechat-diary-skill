@@ -49,6 +49,45 @@ def _run_ps_command(command: str, env: dict[str, str]) -> tuple[int, str]:
     return completed.returncode, _decode(completed.stdout + b"\n" + completed.stderr)
 
 
+def _kill_process_tree(process: subprocess.Popen[bytes]) -> None:
+    """Kill PowerShell and any Python child left behind by a timed-out probe."""
+    subprocess.run(
+        ["taskkill.exe", "/PID", str(process.pid), "/T", "/F"],
+        cwd=ROOT,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    if process.poll() is None:
+        process.kill()
+
+
+def _run_ps_with_timeout(
+    script: Path,
+    *args: str,
+    env: dict[str, str] | None = None,
+    timeout: float,
+) -> tuple[int | None, str, bool]:
+    process = subprocess.Popen(
+        [str(POWERSHELL), "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script), *args],
+        cwd=ROOT,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+        return process.returncode, _decode(stdout + b"\n" + stderr), False
+    except subprocess.TimeoutExpired:
+        _kill_process_tree(process)
+        try:
+            stdout, stderr = process.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            stdout, stderr = process.communicate(timeout=10)
+        return process.returncode, _decode(stdout + b"\n" + stderr), True
+
+
 def _git(repo: Path, *args: str) -> str:
     completed = subprocess.run(
         ["git", "-C", str(repo), *args],
@@ -277,6 +316,99 @@ class BackupPowerShellRegressionTests(unittest.TestCase):
         self.assertTrue(self.bundle.is_file())
         state = json.loads((self.dest / "last-run.json").read_text(encoding="utf-8-sig"))
         self.assertEqual("ok", state["overall"])
+
+    def test_invoke_drains_large_config_stderr_without_pipe_deadlock(self) -> None:
+        """stderr must be drained while stdout is being read, not afterwards."""
+        scripts_dir = self.root / "injected scripts"
+        scripts_dir.mkdir()
+        invoke_copy = scripts_dir / self.invoke_script.name
+        shutil.copy2(self.invoke_script, invoke_copy)
+        shutil.copy2(self.backup_script, scripts_dir / self.backup_script.name)
+
+        stub = scripts_dir / "print_backup_config.py"
+        stub.write_text(
+            "import json\n"
+            "import os\n"
+            "import sys\n"
+            "sys.stderr.write('E' * 65536)\n"
+            "sys.stderr.flush()\n"
+            "print(json.dumps({\n"
+            "    'enabled': True,\n"
+            "    'problems': [],\n"
+            "    'bundleDest': os.environ['BUNDLE_TEST_DEST'],\n"
+            "    'stateFile': os.path.join(os.environ['BUNDLE_TEST_DEST'], 'last-run.json'),\n"
+            "    'keep': 1,\n"
+            "    'staleWarnDays': 30,\n"
+            "    'repos': [{'name': 'demo', 'path': os.environ['BUNDLE_TEST_REPO']}],\n"
+            "}))\n",
+            encoding="utf-8",
+        )
+        _write_config(self.config, self.repo, self.dest)
+        env = os.environ.copy()
+        env.update({"BUNDLE_TEST_DEST": str(self.dest), "BUNDLE_TEST_REPO": str(self.repo)})
+
+        fixed_code, fixed_output, fixed_timed_out = _run_ps_with_timeout(
+            invoke_copy,
+            "-Config",
+            str(self.config),
+            "-NoPopup",
+            env=env,
+            timeout=15,
+        )
+
+        # Prove the fixture detects the regression: run a copy with the old,
+        # sequential ReadToEnd order. This must time out, but the probe itself
+        # has a subprocess timeout and kills the complete child process tree.
+        source = invoke_copy.read_text(encoding="utf-8-sig")
+        async_reader = (
+            "  # 必须先发起 stderr 的异步读取，再 drain stdout：如果子进程先把 stderr\n"
+            "  # 管道写满，它会等待读取而不再关闭 stdout；同步依次 ReadToEnd 会与它互等。\n"
+            "  $configErrTask = $proc.StandardError.ReadToEndAsync()\n"
+            "  $configJson = $proc.StandardOutput.ReadToEnd()\n"
+            "  $configErr = $configErrTask.Result"
+        )
+        sequential_reader = (
+            "  $configJson = $proc.StandardOutput.ReadToEnd()\n"
+            "  $configErr = $proc.StandardError.ReadToEnd()"
+        )
+        self.assertIn(async_reader, source)
+        broken_copy = scripts_dir / "Invoke-BundleBackup-sequential.ps1"
+        broken_copy.write_text(source.replace(async_reader, sequential_reader, 1), encoding="utf-8-sig")
+        broken_code, broken_output, broken_timed_out = _run_ps_with_timeout(
+            broken_copy,
+            "-Config",
+            str(self.config),
+            "-NoPopup",
+            env=env,
+            timeout=8,
+        )
+
+        artifact_dir = ROOT / "tests" / "_artifacts" / "2026-08-09-bundle-fix6"
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        (artifact_dir / "large-stderr-pipe-report.json").write_text(
+            json.dumps(
+                {
+                    "fixed": {
+                        "returncode": fixed_code,
+                        "timed_out": fixed_timed_out,
+                        "bundle_exists": self.bundle.is_file(),
+                    },
+                    "sequential_regression": {
+                        "returncode": broken_code,
+                        "timed_out": broken_timed_out,
+                    },
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        self.assertFalse(fixed_timed_out, fixed_output)
+        self.assertEqual(0, fixed_code, fixed_output)
+        self.assertTrue(self.bundle.is_file(), fixed_output)
+        self.assertTrue(broken_timed_out, f"old sequential reader unexpectedly completed: {broken_output}")
 
     def test_pending_names_are_bounded_across_success_and_failure(self) -> None:
         def assert_pending_bound() -> None:
