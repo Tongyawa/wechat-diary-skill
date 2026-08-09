@@ -151,7 +151,9 @@ restart_weflow = true
 # whose .git directory your cloud client refuses to sync (many skip `.git`
 # wholesale, so the files get backed up but the history does not).
 #
-# Leave `repos` empty to disable: every related check then stays silent.
+# Leave both `repos` and `bundle_dest` empty to disable: every related check
+# then stays silent. Configuring only one side is an error and the backup entry
+# point will refuse to run until both are supplied.
 # Run it with scripts/Invoke-BundleBackup.ps1, ideally from a daily scheduler.
 [backup]
 # Where bundles are written. Point this at a cloud-synced folder or a different

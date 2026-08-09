@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   Rolling offline git-bundle backup of any local git repository.
 
@@ -72,39 +72,83 @@ if ($Slot -gt 0) {
   $stamp = Get-Date -Format "yyyyMMdd"
   $bundlePath = Join-Path $Destination "$Name-$stamp.bundle"
 }
-# Build into a temp file beside the target, then swap it in only after verify
-# passes. Deleting the target first and creating in place would mean a failed
-# run destroys the previous restore point -- a backup tool must never leave you
-# with less than you started with. The temp lives in $Destination so the final
-# move stays on one volume, where Move-Item -Force is an atomic replace.
-$tempPath = "$bundlePath.tmp-$PID"
+# Build into a fixed-name pending file beside the target, then swap it in only
+# after verify passes. A failed run must never destroy the previous restore
+# point. The pending file is not a valid restore point and must not be used for
+# recovery. Its fixed name keeps cloud-synced destinations bounded: interrupted
+# runs cannot create a new remote filename on every invocation.
+$tempPath = Join-Path $Destination "$Name.pending"
 
-# Native commands write progress and even success notices to stderr -- `git
-# bundle verify` reports "<file> is okay" there. The file-level "Stop"
-# preference escalates any stderr write into a terminating error, so a fully
-# successful backup would still exit non-zero (which a scheduled task reads as
-# failure). Drop to "Continue" around the native calls and rely on
-# $LASTEXITCODE for real failure detection; restore the preference afterwards.
-$previousErrorAction = $ErrorActionPreference
-$ErrorActionPreference = "Continue"
+# Serialize writers for this destination/name pair. The normalized key makes
+# equivalent Windows paths and names share one mutex. Global scope covers both
+# scheduled tasks and interactive sessions; restricted environments may reject
+# it, so fall back to Local scope with an explicit warning.
+$mutexKey = ($Destination.TrimEnd([char[]]"\/") + "|" + $Name).ToLowerInvariant()
+$hashAlgorithm = [System.Security.Cryptography.SHA256]::Create()
 try {
-  if (Test-Path -LiteralPath $tempPath) { Remove-Item -LiteralPath $tempPath -Force }
+  $digest = $hashAlgorithm.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($mutexKey))
+} finally {
+  $hashAlgorithm.Dispose()
+}
+$hashHex = [System.BitConverter]::ToString($digest).Replace("-", "").Substring(0, 16).ToLowerInvariant()
+$mutexName = "Global\wechat-diary-bundle-$hashHex"
+$mutex = $null
+$mutexAcquired = $false
+$previousErrorAction = $ErrorActionPreference
 
-  git -C $RepoPath bundle create $tempPath --all
-  if ($LASTEXITCODE -ne 0) { throw "git bundle create failed for $RepoPath" }
+try {
+  try {
+    $mutex = New-Object -TypeName System.Threading.Mutex -ArgumentList @($false, $mutexName)
+  } catch {
+    Write-Warning "[WARN] Global mutex unavailable; concurrency protection is degraded to Local scope: $($_.Exception.Message)"
+    $mutexName = "Local\wechat-diary-bundle-$hashHex"
+    $mutex = New-Object -TypeName System.Threading.Mutex -ArgumentList @($false, $mutexName)
+  }
 
-  # --- Verify integrity before it becomes the live copy -----------------------
-  git -C $RepoPath bundle verify $tempPath *> $null
-  if ($LASTEXITCODE -ne 0) { throw "git bundle verify failed: $RepoPath" }
+  try {
+    $mutexAcquired = $mutex.WaitOne(0)
+  } catch [System.Threading.AbandonedMutexException] {
+    # An abandoned mutex still transfers ownership to this waiter.
+    $mutexAcquired = $true
+  }
+  if (-not $mutexAcquired) {
+    throw "另一次备份正在写同一目标：$bundlePath。请等待它完成后再重试；若进程已退出，请确认没有残留任务再重跑。"
+  }
+
+  if (Test-Path -LiteralPath $tempPath) { Remove-Item -LiteralPath $tempPath -Force -ErrorAction Stop }
+
+  # Native commands write progress and even success notices to stderr -- `git
+  # bundle verify` reports "<file> is okay" there. The file-level "Stop"
+  # preference escalates any stderr write into a terminating error, so a fully
+  # successful backup would still exit non-zero. Drop to "Continue" only for
+  # the native calls and restore it before the PowerShell file replacement.
+  try {
+    $ErrorActionPreference = "Continue"
+    git -C $RepoPath bundle create $tempPath --all
+    if ($LASTEXITCODE -ne 0) { throw "git bundle create failed for $RepoPath" }
+
+    # --- Verify integrity before it becomes the live copy ---------------------
+    git -C $RepoPath bundle verify $tempPath *> $null
+    if ($LASTEXITCODE -ne 0) { throw "git bundle verify failed: $RepoPath" }
+  } finally {
+    $ErrorActionPreference = $previousErrorAction
+  }
 
   # Atomic on a single volume: the old bundle stays intact until this instant.
-  Move-Item -LiteralPath $tempPath -Destination $bundlePath -Force
+  # Stop is essential: a failed replacement must make the whole backup fail.
+  Move-Item -LiteralPath $tempPath -Destination $bundlePath -Force -ErrorAction Stop
 }
 finally {
   $ErrorActionPreference = $previousErrorAction
-  # A leftover temp means we failed before the swap; the previous bundle (if
-  # any) is still the valid restore point and must be left alone.
-  if (Test-Path -LiteralPath $tempPath) { Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue }
+  # A leftover pending file means we failed before the swap; the previous bundle
+  # (if any) is still the valid restore point and must be left alone.
+  if ($mutexAcquired -and (Test-Path -LiteralPath $tempPath)) {
+    Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
+  }
+  if ($mutexAcquired -and $mutex) {
+    try { $mutex.ReleaseMutex() } catch { }
+  }
+  if ($mutex) { $mutex.Dispose() }
 }
 $sizeKB = [Math]::Round((Get-Item -LiteralPath $bundlePath).Length / 1KB, 1)
 Write-Host "[OK] bundle created + verified: $bundlePath ($sizeKB KB)"

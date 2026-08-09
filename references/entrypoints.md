@@ -196,6 +196,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$SkillRoot\scripts\Invoke-B
 - **单仓失败不影响其余**，但整体退出码非零。
 - **配置里的仓路径不存在 = 硬失败**，不会静默跳过（这正是旧任务失效的原因）。
 - 真正未配置（既无 `repos` 也无 `bundle_dest`）时打一行 skip 后正常退出——这是唯一允许静默的情形。
+- 每个仓在写入目标槽位前使用固定名 `<仓名>.pending` 作为临时文件；它不是有效恢复点。相同落点与名字的并发写入由 Windows 命名 Mutex 串行化，第二个进程会失败并提示稍后重试。
 
 ### 槽位轮换：为什么文件名里没有日期
 
