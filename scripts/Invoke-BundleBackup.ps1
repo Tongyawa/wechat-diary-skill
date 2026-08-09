@@ -70,21 +70,30 @@ if (-not (Test-Path $Config)) {
 # 🔴 stdout 必须保持纯 JSON：load_config 在遇到旧 [automation] 段时会向 **stderr**
 # 打一次迁移提示（这是现役支持的 legacy 路径）。早先这里用 `2>&1`，把提示混进
 # JSON，ConvertFrom-Json 必然失败且不写状态文件——即「配置合法却整轮静默失效」。
-# 因此两条流分文件捕获，stderr 只在 Python 非零时作为错误详情呈现。
-$stdoutFile = [System.IO.Path]::GetTempFileName()
-$stderrFile = [System.IO.Path]::GetTempFileName()
+# 因此两条流分别捕获，stderr 只在 Python 非零时作为错误详情呈现。
+# 不用 Start-Process：Windows PowerShell 5.1 会把继承环境重建成大小写不敏感
+# 字典；父进程若带大写 PATH、机器环境又有 Path，会在启动前因重复键崩溃。
+# 直接使用 ProcessStartInfo 会原样继承环境块，也保留两条独立管道。
+$startInfo = New-Object System.Diagnostics.ProcessStartInfo
+$startInfo.FileName = "python"
+# Windows 路径不能含双引号，且这里两个值都是文件路径；显式引用即可同时保护空格。
+$startInfo.Arguments = "`"$readConfig`" --config `"$Config`""
+$startInfo.UseShellExecute = $false
+$startInfo.CreateNoWindow = $true
+$startInfo.RedirectStandardOutput = $true
+$startInfo.RedirectStandardError = $true
+$proc = New-Object System.Diagnostics.Process
+$proc.StartInfo = $startInfo
 try {
-  # -ArgumentList 会把各元素用空格拼成一整条命令行，**不会自动加引号**：
-  # 路径里只要有空格（"C:\My Files\config.toml"）就被拆成两个参数。故显式加引号。
-  $proc = Start-Process -FilePath "python" `
-    -ArgumentList @("`"$readConfig`"", "--config", "`"$Config`"") `
-    -NoNewWindow -Wait -PassThru `
-    -RedirectStandardOutput $stdoutFile -RedirectStandardError $stderrFile
+  if (-not $proc.Start()) { throw "python 进程未能启动" }
+  $configJson = $proc.StandardOutput.ReadToEnd()
+  $configErr = $proc.StandardError.ReadToEnd()
+  $proc.WaitForExit()
   $readExit = $proc.ExitCode
-  $configJson = (Get-Content -LiteralPath $stdoutFile -Raw -Encoding UTF8)
-  $configErr = (Get-Content -LiteralPath $stderrFile -Raw -Encoding UTF8)
+} catch {
+  Fail-Fast "读取 [backup] 配置失败：无法启动 Python 配置读取器。$($_.Exception.Message)"
 } finally {
-  Remove-Item -LiteralPath $stdoutFile, $stderrFile -Force -ErrorAction SilentlyContinue
+  $proc.Dispose()
 }
 
 if ($readExit -ne 0) {
@@ -110,6 +119,43 @@ if (-not $backup.enabled) {
 
 $dest = $backup.bundleDest
 if (-not (Test-Path $dest)) { New-Item -ItemType Directory -Force $dest | Out-Null }
+
+# 批量入口自己也要串行化：单仓 mutex 只保护 bundle/pending，保护不了共享的
+# last-run.json 与 last-run-failure.txt。两次批量运行重叠时，最后落笔者会覆盖
+# 状态，成功者还可能删掉失败者刚写的报告。重入不是失败——已有一轮正在完成
+# 同一目标，所以当前调用幂等 skip，不触碰任何状态或报告。
+$batchKey = $dest.TrimEnd([char[]]"\/").ToLowerInvariant()
+$hashAlgorithm = [System.Security.Cryptography.SHA256]::Create()
+try {
+  $digest = $hashAlgorithm.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($batchKey))
+} finally {
+  $hashAlgorithm.Dispose()
+}
+$hashHex = [System.BitConverter]::ToString($digest).Replace("-", "").Substring(0, 16).ToLowerInvariant()
+$batchMutexName = "Global\wechat-diary-batch-$hashHex"
+$batchMutex = $null
+$batchMutexAcquired = $false
+
+try {
+  $batchMutex = New-Object -TypeName System.Threading.Mutex -ArgumentList @($false, $batchMutexName)
+} catch {
+  Write-Warning "[WARN] Global batch mutex unavailable; concurrency protection is degraded to Local scope: $($_.Exception.Message)"
+  $batchMutexName = "Local\wechat-diary-batch-$hashHex"
+  $batchMutex = New-Object -TypeName System.Threading.Mutex -ArgumentList @($false, $batchMutexName)
+}
+
+try {
+  $batchMutexAcquired = $batchMutex.WaitOne(0)
+} catch [System.Threading.AbandonedMutexException] {
+  $batchMutexAcquired = $true
+}
+if (-not $batchMutexAcquired) {
+  Write-Host "[skip] 已有批量 bundle 冷备正在写同一目标，当前调用不重复执行：$dest"
+  $batchMutex.Dispose()
+  exit 0
+}
+
+try {
 
 # 选本轮写哪个槽位：先补空缺，再覆盖最旧的一个。
 # 刻意**不**从 last-run.json 读上次的槽位——那样状态文件一丢就不知道该写哪，
@@ -266,3 +312,10 @@ if (-not $NoPopup) {
   }
 }
 exit 1
+}
+finally {
+  if ($batchMutexAcquired -and $batchMutex) {
+    try { $batchMutex.ReleaseMutex() } catch { }
+  }
+  if ($batchMutex) { $batchMutex.Dispose() }
+}

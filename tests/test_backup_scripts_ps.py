@@ -21,10 +21,15 @@ def _decode(data: bytes) -> str:
     return "\n".join(data.decode(encoding, errors="replace") for encoding in ("utf-8", "gb18030", "cp936"))
 
 
-def _run_ps(script: Path, *args: str) -> tuple[int, str]:
+def _run_ps(
+    script: Path,
+    *args: str,
+    env: dict[str, str] | None = None,
+) -> tuple[int, str]:
     completed = subprocess.run(
         [str(POWERSHELL), "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script), *args],
         cwd=ROOT,
+        env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         check=False,
@@ -129,11 +134,31 @@ def _mutex_name(dest: Path, name: str = "demo") -> str:
     return f"Global\\wechat-diary-bundle-{digest}"
 
 
-def _start_mutex_holder(dest: Path, ready: Path, release: Path) -> subprocess.Popen[bytes]:
+def _batch_mutex_name(dest: Path) -> str:
+    key = str(dest.resolve()).rstrip("\\/").lower()
+    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
+    return f"Global\\wechat-diary-batch-{digest}"
+
+
+def _uppercase_path_environment() -> dict[str, str]:
+    """Model Agent/CI parents that expose PATH with a different key casing."""
+    env = os.environ.copy()
+    path_value = next(value for key, value in env.items() if key.lower() == "path")
+    for key in [key for key in env if key.lower() == "path"]:
+        del env[key]
+    env["PATH"] = path_value
+    return env
+
+
+def _start_named_mutex_holder(
+    mutex_name: str,
+    ready: Path,
+    release: Path,
+) -> subprocess.Popen[bytes]:
     env = os.environ.copy()
     env.update(
         {
-            "BUNDLE_TEST_MUTEX": _mutex_name(dest),
+            "BUNDLE_TEST_MUTEX": mutex_name,
             "BUNDLE_TEST_READY": str(ready),
             "BUNDLE_TEST_RELEASE": str(release),
         }
@@ -163,6 +188,10 @@ try {
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
+
+
+def _start_mutex_holder(dest: Path, ready: Path, release: Path) -> subprocess.Popen[bytes]:
+    return _start_named_mutex_holder(_mutex_name(dest), ready, release)
 
 
 @unittest.skipUnless(os.name == "nt" and POWERSHELL, "需要 Windows 上的 powershell.exe 5.1；当前环境不满足")
@@ -224,6 +253,31 @@ class BackupPowerShellRegressionTests(unittest.TestCase):
         self.assertEqual(old_sha, _sha256(self.bundle))
         self.assertTrue((self.dest / "last-run-failure.txt").is_file())
 
+    def test_invoke_reads_config_with_uppercase_path_environment(self) -> None:
+        """PowerShell 5.1 Start-Process crashes on inherited Path/PATH casing.
+
+        Agent and CI hosts commonly expose the key as uppercase ``PATH``. The
+        batch entry point must not require callers to rewrite their environment
+        before loading the skill.
+        """
+        _write_config(self.config, self.repo, self.dest)
+        uppercase_env = _uppercase_path_environment()
+        dual_case_env = uppercase_env.copy()
+        dual_case_env["Path"] = uppercase_env["PATH"]
+        for label, env in (("uppercase", uppercase_env), ("dual-case", dual_case_env)):
+            with self.subTest(environment=label):
+                code, output = _run_ps(
+                    self.invoke_script,
+                    "-Config",
+                    str(self.config),
+                    "-NoPopup",
+                    env=env,
+                )
+                self.assertEqual(0, code, output)
+        self.assertTrue(self.bundle.is_file())
+        state = json.loads((self.dest / "last-run.json").read_text(encoding="utf-8-sig"))
+        self.assertEqual("ok", state["overall"])
+
     def test_pending_names_are_bounded_across_success_and_failure(self) -> None:
         def assert_pending_bound() -> None:
             pending = sorted(path.name for path in self.dest.glob("*.pending"))
@@ -274,6 +328,118 @@ class BackupPowerShellRegressionTests(unittest.TestCase):
             except subprocess.TimeoutExpired:
                 holder.kill()
                 holder.wait(timeout=10)
+
+    def test_second_batch_run_skips_without_touching_shared_signals(self) -> None:
+        """A reentrant batch call must not race last-run state or its report."""
+        _write_config(self.config, self.repo, self.dest)
+        code, output = _run_ps(self.invoke_script, "-Config", str(self.config), "-NoPopup")
+        self.assertEqual(0, code, output)
+
+        state_path = self.dest / "last-run.json"
+        report_path = self.dest / "last-run-failure.txt"
+        state_before = state_path.read_bytes()
+        report_path.write_text("sentinel-report", encoding="utf-8")
+
+        ready = self.root / "batch-mutex-ready.txt"
+        release = self.root / "batch-mutex-release.txt"
+        holder = _start_named_mutex_holder(_batch_mutex_name(self.dest), ready, release)
+        try:
+            deadline = time.monotonic() + 10
+            while not ready.exists() and time.monotonic() < deadline:
+                time.sleep(0.05)
+            self.assertTrue(ready.exists(), "batch mutex holder did not signal readiness")
+            self.assertEqual("READY", ready.read_text(encoding="utf-8"))
+
+            code, output = _run_ps(self.invoke_script, "-Config", str(self.config), "-NoPopup")
+            self.assertEqual(0, code, output)
+            self.assertIn("已有批量 bundle 冷备正在写同一目标", output)
+            self.assertEqual(state_before, state_path.read_bytes())
+            self.assertEqual("sentinel-report", report_path.read_text(encoding="utf-8"))
+        finally:
+            release.write_text("release", encoding="ascii")
+            try:
+                holder.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                holder.kill()
+                holder.wait(timeout=10)
+
+    def test_two_real_batch_processes_do_not_race_shared_signals(self) -> None:
+        """A real overlapping Invoke pair has one owner and one idempotent skip."""
+        _write_config(self.config, self.repo, self.dest)
+
+        # A size-based overlap probe is timing-dependent. Put a git.cmd shim
+        # first on PATH for the owner process: once it reaches ``bundle create``
+        # (therefore after acquiring the outer mutex), signal readiness and
+        # pause. The second process starts only after that observable boundary.
+        real_git = shutil.which("git")
+        self.assertIsNotNone(real_git)
+        shim_root = self.root / "git-shim"
+        shim_root.mkdir()
+        ready = self.root / "first-batch-ready.txt"
+        shim = shim_root / "git.cmd"
+        shim.write_text(
+            "@echo off\r\n"
+            'if /I "%~3"=="bundle" if /I "%~4"=="create" (\r\n'
+            '  > "%BUNDLE_TEST_GIT_READY%" echo READY\r\n'
+            '  powershell.exe -NoProfile -Command "Start-Sleep -Seconds 5"\r\n'
+            ")\r\n"
+            f'"{real_git}" %*\r\n',
+            encoding="ascii",
+        )
+        owner_env = os.environ.copy()
+        path_key = next(key for key in owner_env if key.lower() == "path")
+        owner_env[path_key] = str(shim_root) + os.pathsep + owner_env[path_key]
+        owner_env["BUNDLE_TEST_GIT_READY"] = str(ready)
+
+        command = [
+            str(POWERSHELL),
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(self.invoke_script),
+            "-Config",
+            str(self.config),
+            "-NoPopup",
+        ]
+        first = subprocess.Popen(
+            command,
+            cwd=ROOT,
+            env=owner_env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        first_communicated = False
+        try:
+            deadline = time.monotonic() + 15
+            while not ready.exists() and first.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertTrue(ready.exists(), "first batch did not reach the mutex-owned bundle stage")
+
+            second_code, second_output = _run_ps(
+                self.invoke_script,
+                "-Config",
+                str(self.config),
+                "-NoPopup",
+            )
+            self.assertEqual(0, second_code, second_output)
+            self.assertIn("已有批量 bundle 冷备正在写同一目标", second_output)
+
+            first_stdout, first_stderr = first.communicate(timeout=60)
+            first_communicated = True
+            first_output = _decode(first_stdout + b"\n" + first_stderr)
+            self.assertEqual(0, first.returncode, first_output)
+        finally:
+            if first.poll() is None:
+                first.kill()
+            if not first_communicated:
+                first.communicate(timeout=10)
+
+        state = json.loads((self.dest / "last-run.json").read_text(encoding="utf-8-sig"))
+        self.assertEqual("ok", state["overall"])
+        self.assertFalse((self.dest / "last-run-failure.txt").exists())
+        self.assertTrue(self.bundle.is_file())
+        self.assertFalse((self.dest / "demo.pending").exists())
 
 
 if __name__ == "__main__":
