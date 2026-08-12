@@ -209,7 +209,10 @@ class WeflowApiBackendTests(unittest.TestCase):
 
     def test_unignored_failure_still_warns_and_is_partial(self) -> None:
         sessions = [
-            {"username": "wxid_failed_placeholder", "displayName": "失败会话占位"},
+            {
+                "username": "wxid_failed_placeholder",
+                "displayName": "测试联系人 A（家庭）🙂",
+            },
             {"username": "wxid_ok_placeholder", "displayName": "成功会话占位"},
         ]
         with tempfile.TemporaryDirectory() as tmp:
@@ -222,7 +225,27 @@ class WeflowApiBackendTests(unittest.TestCase):
 
         self.assertEqual(backend.partial_failures, ["export_chat_session:wxid_failed_placeholder"])
         self.assertIn("[WARN]", errors.getvalue())
-        self.assertIn("wxid_failed_placeholder", errors.getvalue())
+        warning = errors.getvalue()
+        self.assertLess(warning.index("测试联系人 A（家庭）🙂"), warning.index("wxid_failed_placeholder"))
+        self.assertLess(len(warning), 240)
+
+    def test_session_failure_warning_does_not_repeat_missing_or_same_display_name(self) -> None:
+        cases = [
+            ("wxid_missing_name_placeholder", None),
+            ("wxid_same_name_placeholder", "wxid_same_name_placeholder"),
+        ]
+        for talker, display_name in cases:
+            with self.subTest(display_name=display_name):
+                with tempfile.TemporaryDirectory() as tmp:
+                    backend = WeflowApiBackend(_config(Path(tmp)))
+                    errors = io.StringIO()
+                    with redirect_stderr(errors):
+                        backend._record_session_failure(talker, "fixture failure", display_name)
+
+                warning = errors.getvalue()
+                self.assertEqual(warning.count(talker), 1)
+                self.assertLess(len(warning), 240)
+                self.assertEqual(backend.partial_failures, [f"export_chat_session:{talker}"])
 
     def test_ignored_failure_is_silent_partial_and_has_summary_and_runlog_detail(self) -> None:
         sessions = [{"username": "wxid_ignored_placeholder", "displayName": "忽略会话占位"}]

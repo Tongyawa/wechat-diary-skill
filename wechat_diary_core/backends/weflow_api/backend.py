@@ -111,7 +111,7 @@ class WeflowApiBackend:
         for session in sessions:
             talker = str(session.get("username") or "")
             if not talker:
-                self._record_session_failure("unknown", "会话缺少 username")
+                self._record_session_failure("unknown", "会话缺少 username", None)
                 continue
             if self.config.daily_export.skip_official_accounts and talker.startswith("gh_"):
                 skipped_official_accounts += 1
@@ -167,7 +167,7 @@ class WeflowApiBackend:
                     ignored_failures += 1
                     self._append_ignored_failure_detail(talker, display_name, str(exc))
                 else:
-                    self._record_session_failure(talker, str(exc))
+                    self._record_session_failure(talker, str(exc), display_name)
 
         self._save_failure_state()
         if skipped_official_accounts:
@@ -297,10 +297,14 @@ class WeflowApiBackend:
             self._asr_unavailable_reason = f"未知ASR引擎:{engine}"
         return self._transcriber, self._asr_unavailable_reason
 
-    def _record_session_failure(self, talker: str, reason: str) -> None:
+    def _record_session_failure(self, talker: str, reason: str, display_name: str | None = None) -> None:
         marker = f"export_chat_session:{talker}"
         self.partial_failures.append(marker)
-        print(f"[WARN] 会话导出失败，已隔离 {talker}: {reason}", file=sys.stderr)
+        if display_name and display_name != talker:
+            session_label = f"会话「{display_name}」({talker})"
+        else:
+            session_label = f"会话 {talker}"
+        print(f"[WARN] {session_label} 导出失败，已隔离: {reason}", file=sys.stderr)
 
     def _load_failure_state(self) -> SessionFailureState:
         state_path = self.config.base_dir / ".export-state.json"
