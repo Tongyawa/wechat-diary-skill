@@ -330,6 +330,41 @@ class PowerShellWorkspaceDiscoveryTests(unittest.TestCase):
         self.assertIn(WORKSPACE_ENV_VAR, failure_output)
         self.assertIn("-Workspace", failure_output)
 
+    def test_environment_workspace_smoke_from_arbitrary_directory_across_entrypoints(self) -> None:
+        """文档承诺的环境变量发现必须同时穿过 Python 与 ps1 真入口。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            unrelated = root / "unrelated"
+            unrelated.mkdir()
+            workspace = _workspace_from_example(root / "workspace", "smoke")
+            env = os.environ.copy()
+            env[WORKSPACE_ENV_VAR] = str(workspace)
+
+            doctor = subprocess.run(
+                [sys.executable, str(ROOT / "scripts" / "doctor.py"), "--json"],
+                cwd=unrelated,
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                check=False,
+                timeout=30,
+            )
+            latest = self._run_latest(unrelated, env)
+            latest_output = self._decode(latest.stdout + b"\n" + latest.stderr)
+
+        self.assertNotEqual(2, doctor.returncode, doctor.stdout + doctor.stderr)
+        self.assertEqual(0, latest.returncode, latest_output)
+        payload = json.loads(doctor.stdout)
+        raw_check = next(check for check in payload["checks"] if check["id"] == "path_raw")
+        self.assertEqual(
+            raw_check["details"]["path"],
+            str((workspace / "raw-smoke").resolve()),
+        )
+        self.assertIn(str((workspace / "insights-smoke").resolve()), latest_output)
+
     def test_daily_explicit_workspace_bootstraps_config_in_powershell_51(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

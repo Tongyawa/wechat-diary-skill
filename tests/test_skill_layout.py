@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import unittest
 from pathlib import Path
 
@@ -15,7 +16,6 @@ INTERNAL_SCRIPTS = {
     "print_config_path.py",  # 供 ps1 侧读 config，禁止在 ps1 手写 TOML 解析
     "print_backup_config.py",  # 同上，以 JSON 输出 [backup] 段给 Invoke-BundleBackup.ps1
     "sensevoice_worker.py",  # 语音转写常驻 worker，由导出链路自动拉起
-    "init_worktree_config.py",  # 开发用：worktree 数据根指回主工作区
     "validate_weflow_automation.py",  # legacy GUI 后端校验
 }
 
@@ -93,6 +93,21 @@ class SkillLayoutTests(unittest.TestCase):
         existing = {path.name for path in (ROOT / "scripts").iterdir() if path.is_file()}
         stale = sorted(INTERNAL_SCRIPTS - existing)
         self.assertEqual([], stale, f"INTERNAL_SCRIPTS 里有已不存在的脚本：{stale}")
+
+    def test_entrypoint_docs_do_not_exempt_scripts(self) -> None:
+        """入口参数详表中的脚本必须受 SKILL 路由守卫，而非人工豁免。"""
+        entrypoints = (ROOT / "references" / "entrypoints.md").read_text(
+            encoding="utf-8"
+        )
+        documented = set(re.findall(r"`([\w-]+\.(?:py|ps1|psm1))`", entrypoints))
+        overlaps = sorted(documented & INTERNAL_SCRIPTS)
+        self.assertEqual(
+            [],
+            overlaps,
+            "references/entrypoints.md 已把这些脚本列为可调用入口，却又在 "
+            f"INTERNAL_SCRIPTS 中豁免了 SKILL 路由检查：{overlaps}。"
+            "请从豁免表移除并补入 SKILL.md，或从入口参数详表移除。",
+        )
 
 
 if __name__ == "__main__":

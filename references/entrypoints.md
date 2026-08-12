@@ -217,14 +217,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$SkillRoot\scripts\Invoke-B
 
 配置样例见 `config.example.toml` 的 `[backup]` 段。备份是否还在跑，`doctor.py`（§4）和日常导出（§1）收尾都会检查并在陈旧时给出补跑命令。
 
-## 9. 内部脚本（不面向用户，路由表不收）
+## 9. 初始化 Git worktree 配置 `init_worktree_config.py`
 
-| 脚本 | 用途 |
+在**目标 worktree 根目录**运行。脚本自动从当前 Git worktree 发现主工作区，并生成本 worktree 的 gitignored `config.toml`：代码继续取当前 worktree，四个数据根与可选本地 voice fallback 路径则全部指向主工作区。不要在这之后顺手跑完整导出；完整导出会轮转主工作区的真实数据。
+
+```powershell
+python "$SkillRoot\scripts\init_worktree_config.py"
+```
+
+| 参数 | 说明 |
 |---|---|
-| `print_config_path.py` | 供 PowerShell 侧读 config 路径（复用 `load_config`）。**禁止在 ps1 里手写 TOML 解析** |
-| `print_backup_config.py` | 同上，以 JSON 输出 `[backup]` 段，供 §8 使用 |
-| `sensevoice_worker.py` | 语音转写常驻 worker，由导出链路自动拉起 |
-| `init_worktree_config.py` | 开发用：为 git worktree 生成指回主工作区数据根的 config |
-| `validate_weflow_automation.py` | legacy GUI 后端的校验脚本 |
-| `process_existing_raw.ps1` | §2 的 PowerShell 包装 |
-| `run_daily_export.py` | §1 的 Python 主体，由 ps1 调用 |
+| `--main-root` | 主工作区根目录。自动发现失败或需要指定其他主工作区时才传 |
+| `--force` | 已有本 worktree 的 `config.toml` 时覆盖它 |

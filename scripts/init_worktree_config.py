@@ -38,7 +38,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--main-root",
         default="",
-        help="Main workspace root. Defaults to the first entry of `git worktree list`.",
+        help=(
+            "Main data-workspace root. Defaults to the nearest ancestor with "
+            "config.toml, then the first entry of `git worktree list`."
+        ),
     )
     parser.add_argument(
         "--force",
@@ -48,8 +51,13 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        main_root = Path(args.main_root).resolve() if args.main_root else _detect_main_root()
-        target = init_worktree_config(ROOT, main_root, force=args.force)
+        worktree_root = _detect_current_worktree_root()
+        main_root = (
+            Path(args.main_root).resolve()
+            if args.main_root
+            else _detect_main_root(worktree_root)
+        )
+        target = init_worktree_config(worktree_root, main_root, force=args.force)
     except (RuntimeError, FileNotFoundError) as exc:
         print(f"FAILED: {exc}", file=sys.stderr)
         return 1
@@ -60,10 +68,29 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _detect_main_root() -> Path:
+def _detect_current_worktree_root() -> Path:
+    result = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"],
+        cwd=Path.cwd(),
+        capture_output=True,
+        text=True,
+        check=True,
+        encoding="utf-8",
+    )
+    return Path(result.stdout.strip()).resolve()
+
+
+def _detect_main_root(worktree_root: Path) -> Path:
+    # In the three-repository layout, a public-skill worktree lives under the
+    # private data workspace. Its Git main tree is the public skill repository,
+    # not the workspace whose config owns the real data roots.
+    for ancestor in worktree_root.parents:
+        if (ancestor / "config.toml").is_file():
+            return ancestor.resolve()
+
     result = subprocess.run(
         ["git", "worktree", "list", "--porcelain"],
-        cwd=ROOT,
+        cwd=worktree_root,
         capture_output=True,
         text=True,
         check=True,
