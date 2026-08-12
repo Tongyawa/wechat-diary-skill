@@ -2,7 +2,7 @@
 
 > `SKILL.md` 的路由表决定**走哪条**，本文件给**每条怎么调**。只在需要具体参数时读本文件。
 >
-> 约定：`$SkillRoot` = 本 skill 根目录；`$Workspace` = 含 `config.toml` 的工作区。所有 Python 入口默认从工作区当前目录读 `config.toml`，也可用 `--config` 显式指定。
+> 约定：`$SkillRoot` = 本 skill 根目录；`$Workspace` = 含 `config.toml` 的工作区。入口统一按“显式 `--config` / `-Workspace` → 当前目录 → `WECHAT_DIARY_WORKSPACE` 指向的目录”发现 `config.toml`。显式路径是硬约束，写错时不会降级到 CWD 或环境变量；只有完整导出的显式目标允许配置尚不存在，以便从模板创建并进入首启引导。全部落空时直接报错并列出探测路径，不会静默使用默认配置。
 
 ## 0. 共同前提与常见坑
 

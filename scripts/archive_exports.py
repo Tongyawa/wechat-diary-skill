@@ -16,6 +16,7 @@ from wechat_diary_core.archiving import strip_date_suffix
 from wechat_diary_core.config import load_config
 from wechat_diary_core.raw_schema import RawSchemaError, validate_moments_json, validate_session_json
 from wechat_diary_core.workspace import merge_raw_exports_into_archive, merge_tree
+from wechat_diary_core.workspace_discovery import WorkspaceResolutionError, resolve_config_path
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -29,7 +30,7 @@ def main(argv: list[str] | None = None) -> int:
             "[paths].archived. Per-session, same-name files: newer wins."
         )
     )
-    parser.add_argument("--config", default="config.toml", help="Path to the local config file.")
+    parser.add_argument("--config", default=None, help="Path to the local config file.")
     parser.add_argument("--raw-root", default="", help="A raw export tree to ingest into archived/raw/.")
     parser.add_argument(
         "--processed-root", default="", help="A processed tree to ingest into archived/processed/."
@@ -44,9 +45,11 @@ def main(argv: list[str] | None = None) -> int:
     if not args.raw_root and not args.processed_root:
         parser.error("Pass at least one of --raw-root / --processed-root.")
 
-    config_path = Path(args.config)
-    if not config_path.is_absolute():
-        config_path = (Path.cwd() / config_path).resolve()
+    try:
+        config_path = resolve_config_path(args.config)
+    except WorkspaceResolutionError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     cfg = load_config(config_path)
     move = not args.keep_source
     raw_validation_failures: list[tuple[Path, str]] = []

@@ -239,15 +239,32 @@ class DailyExportScriptTests(unittest.TestCase):
 
         self.assertEqual(captured, [f"SCRIPT={expected_script}", f"WORKSPACE={expected_workspace}"])
 
-    def test_python_entrypoints_resolve_relative_config_from_workspace(self) -> None:
+    def test_python_entrypoints_use_shared_workspace_discovery(self) -> None:
         for path in (
             Path("scripts/run_daily_export.py"),
             Path("scripts/process_existing_raw.py"),
             Path("scripts/archive_exports.py"),
+            Path("scripts/export_on_demand.py"),
+            Path("scripts/doctor.py"),
         ):
             script = path.read_text(encoding="utf-8")
-            self.assertIn("Path.cwd() / config_path", script, path.as_posix())
+            self.assertIn("resolve_config_path", script, path.as_posix())
+            self.assertNotIn("Path.cwd() / config_path", script, path.as_posix())
             self.assertNotIn("ROOT / config_path", script, path.as_posix())
+
+    def test_powershell_entrypoints_use_shared_workspace_discovery(self) -> None:
+        for path in (
+            Path("scripts/run_daily_export.ps1"),
+            Path("scripts/process_existing_raw.ps1"),
+            Path("scripts/Open-LatestInsights.ps1"),
+            Path("scripts/Open-InsightsByDate.ps1"),
+            Path("scripts/Invoke-BundleBackup.ps1"),
+        ):
+            script = path.read_text(encoding="utf-8-sig")
+            self.assertIn("WorkspaceDiscovery.psm1", script, path.as_posix())
+            self.assertIn("Resolve-WeChatDiaryWorkspace", script, path.as_posix())
+            self.assertNotIn("$WorkspaceRoot = $CodeRoot", script, path.as_posix())
+            self.assertNotIn("$Workspace = $CodeRoot", script, path.as_posix())
 
     def test_powershell_wrapper_does_not_treat_native_stderr_as_fatal(self) -> None:
         script = Path("scripts/run_daily_export.ps1").read_text(encoding="utf-8")

@@ -29,6 +29,7 @@ from wechat_diary_core.config import Config, load_config
 from wechat_diary_core.preprocessing import archive_moments_for
 from wechat_diary_core.preprocessing import collect_voice_transcription_failures
 from wechat_diary_core.workspace import rotate_export_workspace
+from wechat_diary_core.workspace_discovery import WorkspaceResolutionError, resolve_config_path
 from scripts.process_existing_raw import archive_existing_processed
 
 
@@ -89,7 +90,7 @@ def main(argv: list[str] | None = None) -> int:
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
     parser = argparse.ArgumentParser(description="Run the local WeFlow daily export pipeline through processed markdown.")
-    parser.add_argument("--config", default="config.toml", help="Path to the local config file.")
+    parser.add_argument("--config", default=None, help="Path to the local config file.")
     parser.add_argument(
         "--no-config-prompt",
         action="store_true",
@@ -97,13 +98,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    config_path = Path(args.config)
-    if not config_path.is_absolute():
-        config_path = (Path.cwd() / config_path).resolve()
-
     cfg: Config | None = None
     export_started = False
     try:
+        config_path = resolve_config_path(
+            args.config,
+            allow_missing_explicit_config=True,
+        )
         ensure_local_config(
             config_path=config_path,
             example_path=ROOT / "config.example.toml",
@@ -112,6 +113,9 @@ def main(argv: list[str] | None = None) -> int:
         cfg = load_config(config_path)
         export_started = True
         result = run_daily_export(cfg)
+    except WorkspaceResolutionError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     except DailyExportStageError as exc:
         print(f"\nFAILED at stage: {exc.stage}", file=sys.stderr)
         print(f"Reason: {exc.cause}", file=sys.stderr)

@@ -21,6 +21,7 @@ from wechat_diary_core.asr import SenseVoiceTranscriber
 from wechat_diary_core.backends.weflow_api.client import WeflowApiClient
 from wechat_diary_core.backends.weflow_api.mapper import write_session_export
 from wechat_diary_core.config import Config, load_config
+from wechat_diary_core.workspace_discovery import WorkspaceResolutionError, resolve_config_path
 
 
 DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -53,7 +54,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--start", help="起始日期，接受 yyyy-mm-dd 或 yyyymmdd。")
     parser.add_argument("--end", help="结束日期，接受 yyyy-mm-dd 或 yyyymmdd。")
     parser.add_argument("--out", help="本次导出的输出根目录。")
-    parser.add_argument("--config", default="config.toml", help="配置文件路径。")
+    parser.add_argument("--config", default=None, help="配置文件路径。")
     parser.add_argument("--group-window", action="store_true", help="开启群聊上下文窗口筛选。")
     parser.add_argument("--merged", action="store_true", help="额外产出整段合并 markdown。")
     parser.add_argument("--no-media-copy", action="store_true", help="不把媒体复制到 markdown 旁。")
@@ -70,9 +71,8 @@ def main(argv: list[str] | None = None) -> int:
 
     parser = build_parser()
     args = parser.parse_args(argv)
-    config_path = _resolve_config_path(args.config)
-
     try:
+        config_path = resolve_config_path(args.config)
         cfg = load_config(config_path)
         client = _make_client(cfg)
         sessions = client.fetch_sessions(limit=2000)
@@ -98,6 +98,9 @@ def main(argv: list[str] | None = None) -> int:
             copy_media=not args.no_media_copy,
             enable_asr=not args.no_asr,
         )
+    except WorkspaceResolutionError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     except SessionSelectionError as exc:
         print(str(exc), file=sys.stderr)
         return exc.exit_code
@@ -388,11 +391,6 @@ def _write_merged(session_dir: Path, diary_files: list[Path]) -> Path | None:
     destination = session_dir.parent / f"{session_dir.name}.md"
     destination.write_text(f"{body}\n" if body else "", encoding="utf-8")
     return destination
-
-
-def _resolve_config_path(value: str) -> Path:
-    path = Path(value).expanduser()
-    return path.resolve() if path.is_absolute() else (Path.cwd() / path).resolve()
 
 
 def _resolve_output_path(value: str) -> Path:

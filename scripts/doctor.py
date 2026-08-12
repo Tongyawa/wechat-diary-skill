@@ -20,6 +20,7 @@ from wechat_diary_core.backup_state import STATUS_DISABLED, evaluate_backup_stat
 from wechat_diary_core.asr import default_worker_script
 from wechat_diary_core.backends.weflow.cdp_driver import fetch_cdp_targets
 from wechat_diary_core.backends.weflow_api.client import WeflowApiClient
+from wechat_diary_core.workspace_discovery import WorkspaceResolutionError, resolve_config_path
 
 
 STATUS_ICON = {"ready": "✅", "warning": "⚠️", "error": "❌"}
@@ -662,11 +663,17 @@ def main(argv: list[str] | None = None) -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     parser = argparse.ArgumentParser(description="只读检查 WeChat Diary 当前数据入口与可选能力。")
-    parser.add_argument("--config", default="config.toml", help="config.toml 路径。")
+    parser.add_argument("--config", default=None, help="config.toml 路径。")
     parser.add_argument("--json", action="store_true", help="只输出结构化 JSON。")
     args = parser.parse_args(argv)
 
-    report = run_doctor(args.config)
+    try:
+        config_path = resolve_config_path(args.config)
+    except WorkspaceResolutionError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+    report = run_doctor(config_path)
     if args.json:
         print(json.dumps(report.to_dict(), ensure_ascii=False, indent=2))
     else:

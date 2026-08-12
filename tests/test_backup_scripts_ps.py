@@ -324,6 +324,7 @@ class BackupPowerShellRegressionTests(unittest.TestCase):
         invoke_copy = scripts_dir / self.invoke_script.name
         shutil.copy2(self.invoke_script, invoke_copy)
         shutil.copy2(self.backup_script, scripts_dir / self.backup_script.name)
+        shutil.copy2(ROOT / "scripts" / "WorkspaceDiscovery.psm1", scripts_dir / "WorkspaceDiscovery.psm1")
 
         stub = scripts_dir / "print_backup_config.py"
         stub.write_text(
@@ -383,7 +384,7 @@ class BackupPowerShellRegressionTests(unittest.TestCase):
             timeout=8,
         )
 
-        artifact_dir = ROOT / "tests" / "_artifacts" / "2026-08-09-bundle-fix6"
+        artifact_dir = ROOT / "tests" / "_artifacts" / "2026-08-12-workspace-discovery"
         artifact_dir.mkdir(parents=True, exist_ok=True)
         (artifact_dir / "large-stderr-pipe-report.json").write_text(
             json.dumps(

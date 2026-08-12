@@ -5,11 +5,15 @@
 
 $ErrorActionPreference = "Stop"
 $CodeRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$WorkspaceRoot = if ([string]::IsNullOrWhiteSpace($Workspace)) {
-  $CodeRoot
-} else {
-  (Resolve-Path -LiteralPath $Workspace).Path
+Import-Module (Join-Path $PSScriptRoot "WorkspaceDiscovery.psm1") -Force
+try {
+  $ResolvedWorkspace = Resolve-WeChatDiaryWorkspace -Workspace $Workspace -AllowMissingExplicitConfig
+} catch {
+  [Console]::Error.WriteLine($_.Exception.Message)
+  exit 2
 }
+$WorkspaceRoot = $ResolvedWorkspace.WorkspaceRoot
+$ConfigPath = $ResolvedWorkspace.ConfigPath
 Set-Location -LiteralPath $WorkspaceRoot
 
 chcp 65001 > $null
@@ -96,19 +100,25 @@ function ShouldShowDailyExportLine {
 }
 
 $ScriptPath = Join-Path $CodeRoot "scripts\run_daily_export.py"
-$CommandLine = '"python" -u "{0}" 2>&1' -f $ScriptPath
+$CommandLine = '"python" -u "{0}" --config "{1}" 2>&1' -f $ScriptPath, $ConfigPath
 
-cmd /d /c $CommandLine | ForEach-Object {
-  $Line = [string]$_
-  Add-Content -LiteralPath $LogPath -Encoding UTF8 -Value $Line
-  if ($Line -match '^Daily export completed with warnings\.') {
-    $script:CompletedWithWarnings = $true
+$PreviousErrorAction = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+try {
+  cmd /d /c $CommandLine | ForEach-Object {
+    $Line = [string]$_
+    Add-Content -LiteralPath $LogPath -Encoding UTF8 -Value $Line
+    if ($Line -match '^Daily export completed with warnings\.') {
+      $script:CompletedWithWarnings = $true
+    }
+    if (ShouldShowDailyExportLine $Line) {
+      Write-Host $Line
+    }
   }
-  if (ShouldShowDailyExportLine $Line) {
-    Write-Host $Line
-  }
+  $ExitCode = $LASTEXITCODE
+} finally {
+  $ErrorActionPreference = $PreviousErrorAction
 }
-$ExitCode = $LASTEXITCODE
 
 if ($EmptySessionSkips -gt 0) {
   Write-Host "[stage] $EmptySessionSkips 个空会话跳过（详见 runlog）"

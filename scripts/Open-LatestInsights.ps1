@@ -6,16 +6,19 @@
 
 $ErrorActionPreference = "Stop"
 $CodeRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$WorkspaceRoot = if ([string]::IsNullOrWhiteSpace($Workspace)) {
-  $CodeRoot
-} else {
-  (Resolve-Path -LiteralPath $Workspace).Path
+Import-Module (Join-Path $PSScriptRoot "WorkspaceDiscovery.psm1") -Force
+try {
+  $ResolvedWorkspace = Resolve-WeChatDiaryWorkspace -Workspace $Workspace
+} catch {
+  [Console]::Error.WriteLine($_.Exception.Message)
+  exit 2
 }
+$WorkspaceRoot = $ResolvedWorkspace.WorkspaceRoot
 function Resolve-InsightsRoot {
   param([string]$RootPath)
 
   $FallbackRoot = Join-Path $RootPath "WeFlow-insights"
-  $ConfigPath = Join-Path $RootPath "config.toml"
+  $ConfigPath = $ResolvedWorkspace.ConfigPath
   $ConfigReader = Join-Path $CodeRoot "scripts\print_config_path.py"
   # 原生命令往 stderr 写一个字，$ErrorActionPreference = "Stop" 就会把它升级成终止性
   # 错误。config 加载时的「建议迁移到 [export_backend.weflow]」提示正是走 stderr，真实
@@ -39,7 +42,7 @@ function Resolve-InsightsRoot {
     }
   }
 
-  Write-Host "无法读取 $ConfigPath 的 [paths].insights，已使用回退路径：$FallbackRoot。请在 -Workspace 指定的工作区中配置有效的 config.toml，并设置 [paths] 的 insights 后重新运行。"
+  Write-Host "无法读取 $ConfigPath 的 [paths].insights，已使用回退路径：$FallbackRoot。请对照 config.example.toml 修正配置后重试。"
   return $FallbackRoot
 }
 

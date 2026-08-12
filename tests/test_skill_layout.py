@@ -9,6 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 # 只被别的脚本调用、或纯开发用途，不需要出现在 SKILL.md 的路由表里。
 # 新增脚本默认视为面向用户：要么写进 SKILL.md，要么显式加进本表并说明理由。
 INTERNAL_SCRIPTS = {
+    "WorkspaceDiscovery.psm1",  # PowerShell 入口共享的工作区解析模块，不可独立运行
     "run_daily_export.py",  # 由 run_daily_export.ps1 调用
     "process_existing_raw.ps1",  # process_existing_raw.py 的 PowerShell 包装
     "print_config_path.py",  # 供 ps1 侧读 config，禁止在 ps1 手写 TOML 解析
@@ -74,7 +75,7 @@ class SkillLayoutTests(unittest.TestCase):
         scripts = {
             path.name
             for path in (ROOT / "scripts").iterdir()
-            if path.is_file() and path.suffix in {".py", ".ps1"}
+            if path.is_file() and path.suffix in {".py", ".ps1", ".psm1"}
         }
         user_facing = sorted(scripts - INTERNAL_SCRIPTS)
         self.assertTrue(user_facing, "scripts/ 下没扫到任何面向用户的入口，判据失效")

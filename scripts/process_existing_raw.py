@@ -22,6 +22,7 @@ from wechat_diary_core.config import Config, load_config
 from wechat_diary_core.preprocessing import archive_moments_for
 from wechat_diary_core.preprocessing import collect_voice_transcription_failures
 from wechat_diary_core.workspace import merge_tree
+from wechat_diary_core.workspace_discovery import WorkspaceResolutionError, resolve_config_path
 
 
 DAY_SUFFIX_RE = re.compile(r"_(\d{8})$")
@@ -65,7 +66,7 @@ def main(argv: list[str] | None = None) -> int:
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
     parser = argparse.ArgumentParser(description="Process existing WeFlow raw exports without starting WeFlow.")
-    parser.add_argument("--config", default="config.toml", help="Path to the local config file.")
+    parser.add_argument("--config", default=None, help="Path to the local config file.")
     parser.add_argument("--raw-root", default="", help="Existing raw export root. Defaults to config [paths].raw.")
     parser.add_argument("--day", default="", help="Day for downstream skills, yyyy-mm-dd. Auto-inferred for single-day raw.")
     parser.add_argument(
@@ -80,11 +81,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    config_path = Path(args.config)
-    if not config_path.is_absolute():
-        config_path = (Path.cwd() / config_path).resolve()
-
     try:
+        config_path = resolve_config_path(args.config)
         cfg = load_config(config_path)
         result = process_existing_raw(
             cfg,
@@ -93,6 +91,9 @@ def main(argv: list[str] | None = None) -> int:
             require_day=args.require_day,
             skip_voice_fallback=args.skip_voice_fallback,
         )
+    except WorkspaceResolutionError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     except ProcessExistingRawStageError as exc:
         print(f"\nFAILED at stage: {exc.stage}", file=sys.stderr)
         print(f"Reason: {exc.cause}", file=sys.stderr)

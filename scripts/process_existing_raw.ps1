@@ -1,7 +1,7 @@
-param(
+﻿param(
   [string]$RawRoot = "",
   [string]$Day = "",
-  [string]$Config = "config.toml",
+  [string]$Config = "",
   [string]$Workspace = "",
   [switch]$RequireDay,
   [switch]$SkipVoiceFallback,
@@ -10,11 +10,15 @@ param(
 
 $ErrorActionPreference = "Stop"
 $CodeRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$WorkspaceRoot = if ([string]::IsNullOrWhiteSpace($Workspace)) {
-  $CodeRoot
-} else {
-  (Resolve-Path -LiteralPath $Workspace).Path
+Import-Module (Join-Path $PSScriptRoot "WorkspaceDiscovery.psm1") -Force
+try {
+  $ResolvedWorkspace = Resolve-WeChatDiaryWorkspace -Workspace $Workspace -Config $Config
+} catch {
+  [Console]::Error.WriteLine($_.Exception.Message)
+  exit 2
 }
+$WorkspaceRoot = $ResolvedWorkspace.WorkspaceRoot
+$ConfigPath = $ResolvedWorkspace.ConfigPath
 Set-Location -LiteralPath $WorkspaceRoot
 
 chcp 65001 > $null
@@ -32,7 +36,7 @@ Write-Host "Processing existing raw exports from $WorkspaceRoot"
 Write-Host "Log: $LogPath"
 
 $ScriptPath = Join-Path $CodeRoot "scripts\process_existing_raw.py"
-$ArgsList = @("`"$ScriptPath`"", "--config", "`"$Config`"")
+$ArgsList = @("`"$ScriptPath`"", "--config", "`"$ConfigPath`"")
 if ($RawRoot) {
   $ArgsList += @("--raw-root", "`"$RawRoot`"")
 }
@@ -48,11 +52,17 @@ if ($SkipVoiceFallback) {
 
 $CommandLine = '"python" {0} 2>&1' -f ($ArgsList -join " ")
 
-cmd /d /c $CommandLine | ForEach-Object {
-  Write-Host $_
-  Add-Content -LiteralPath $LogPath -Encoding UTF8 -Value $_
+$PreviousErrorAction = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+try {
+  cmd /d /c $CommandLine | ForEach-Object {
+    Write-Host $_
+    Add-Content -LiteralPath $LogPath -Encoding UTF8 -Value $_
+  }
+  $ExitCode = $LASTEXITCODE
+} finally {
+  $ErrorActionPreference = $PreviousErrorAction
 }
-$ExitCode = $LASTEXITCODE
 
 if ($ExitCode -eq 0) {
   Write-Host "Existing raw processing finished successfully."

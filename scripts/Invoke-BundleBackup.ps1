@@ -58,13 +58,15 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $skillRoot = Split-Path -Parent $scriptDir
 $backupScript = Join-Path $scriptDir "Backup-GitRepo.ps1"
 $readConfig = Join-Path $scriptDir "print_backup_config.py"
+Import-Module (Join-Path $scriptDir "WorkspaceDiscovery.psm1") -Force
 
-if (-not $Workspace) { $Workspace = (Get-Location).Path }
-if (-not $Config) { $Config = Join-Path $Workspace "config.toml" }
-
-if (-not (Test-Path $Config)) {
-  Fail-Fast "找不到 config.toml：$Config。用 -Workspace 或 -Config 指定工作区。"
+try {
+  $ResolvedWorkspace = Resolve-WeChatDiaryWorkspace -Workspace $Workspace -Config $Config
+} catch {
+  Fail-Fast $_.Exception.Message
 }
+$Workspace = $ResolvedWorkspace.WorkspaceRoot
+$Config = $ResolvedWorkspace.ConfigPath
 
 # --- 读配置（复用项目自己的 TOML 解析，禁止在 ps1 里手写）---------------------
 # 🔴 stdout 必须保持纯 JSON：load_config 在遇到旧 [automation] 段时会向 **stderr**

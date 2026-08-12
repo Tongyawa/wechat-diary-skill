@@ -388,9 +388,12 @@ worker_python = "missing/python.exe"
         report = DoctorReport(
             [CheckResult("config", "配置", "config.toml", "ready", "ok")]
         )
-        stdout = io.StringIO()
-        with patch("scripts.doctor.run_doctor", return_value=report), contextlib.redirect_stdout(stdout):
-            exit_code = main(["--json"])
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / "config.toml"
+            config.write_text("", encoding="utf-8")
+            stdout = io.StringIO()
+            with patch("scripts.doctor.run_doctor", return_value=report), contextlib.redirect_stdout(stdout):
+                exit_code = main(["--config", str(config), "--json"])
 
         payload = json.loads(stdout.getvalue())
         self.assertEqual(exit_code, 0)
