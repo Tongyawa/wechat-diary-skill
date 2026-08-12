@@ -122,8 +122,13 @@ worker_python = "{Path(sys.executable).as_posix()}"
             "weflow_api_token",
             "weflow_api_semantic",
             "dependency_asr",
+            "voice_transcribe_stage",
         ):
             self.assertEqual(_by_id(report, check_id).status, "ready", check_id)
+        inline = _by_id(report, "voice_transcribe_stage")
+        self.assertIn("内联 SenseVoice", inline.message)
+        self.assertFalse(inline.details["separate_stage"])
+        self.assertNotIn("dependency_voice_transcribe", [check.id for check in report.checks])
 
     def test_explicit_low_message_timeout_warns_with_exact_config_action(self) -> None:
         class ApiClient:
@@ -382,7 +387,10 @@ worker_python = "missing/python.exe"
             fallback.write_text("# placeholder", encoding="utf-8")
             ready = run_doctor(config, deps=_deps())
 
-        self.assertEqual(_by_id(ready, "dependency_voice_fallback").status, "ready")
+        fallback_check = _by_id(ready, "dependency_voice_fallback")
+        self.assertEqual(fallback_check.status, "warning")
+        self.assertIn("不能仅凭脚本存在确认", fallback_check.message)
+        self.assertFalse(fallback_check.details["verified"])
 
     def test_json_mode_outputs_only_stable_structure(self) -> None:
         report = DoctorReport(

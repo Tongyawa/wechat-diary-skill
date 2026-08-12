@@ -568,7 +568,18 @@ def _check_optional_dependencies(cfg: Config, find_spec: Callable[[str], Any]) -
             )
         )
 
-    if cfg.user.voice_transcribe_usernames:
+    if cfg.export_backend.backend == "weflow_api":
+        checks.append(
+            CheckResult(
+                id="voice_transcribe_stage",
+                group="可选能力",
+                name="语音转写方式",
+                status="ready",
+                message="API 后端在消息导出时内联 SenseVoice；没有可独立调度的语音转写阶段。",
+                details={"backend": "weflow_api", "mode": "inline", "separate_stage": False},
+            )
+        )
+    elif cfg.export_backend.backend == "weflow" and cfg.user.voice_transcribe_usernames:
         checks.append(
             CheckResult(
                 id="dependency_voice_transcribe",
@@ -579,7 +590,7 @@ def _check_optional_dependencies(cfg: Config, find_spec: Callable[[str], Any]) -
                 details={"enabled": True},
             )
         )
-    else:
+    elif cfg.export_backend.backend == "weflow":
         checks.append(
             CheckResult(
                 id="dependency_voice_transcribe",
@@ -599,9 +610,13 @@ def _check_optional_dependencies(cfg: Config, find_spec: Callable[[str], Any]) -
                     id="dependency_voice_fallback",
                     group="可选能力",
                     name="语音 fallback",
-                    status="ready",
-                    message=f"脚本存在：{fallback}",
-                    details={"enabled": True, "path": str(fallback)},
+                    status="warning",
+                    message=(
+                        "脚本已配置；它将在导出后运行，但 doctor 不执行会改写 raw 的 fallback，"
+                        "因此不能仅凭脚本存在确认能处理本轮失败记录。"
+                    ),
+                    action="完成一次每日导出后，检查 voice_fallback 阶段输出是否实际处理了失败语音。",
+                    details={"enabled": True, "path": str(fallback), "verified": False},
                 )
             )
         else:
