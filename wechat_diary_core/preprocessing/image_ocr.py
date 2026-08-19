@@ -9,6 +9,7 @@ import logging
 import os
 
 from ..config import PreprocessingConfig
+from .image_vision import VisionDescriber, annotate_vision_descriptions, session_is_skipped
 
 
 LOGGER = logging.getLogger(__name__)
@@ -84,6 +85,9 @@ def annotate_image_messages(
     settings: PreprocessingConfig,
     engine: OcrEngine | None = None,
     image_mode: ImageMode = "ocr_inline",
+    cache_root: Path | None = None,
+    session: dict[str, Any] | None = None,
+    vision_describer: VisionDescriber | None = None,
 ) -> list[Message]:
     """Either run OCR on referenced images or just record their paths.
 
@@ -92,13 +96,32 @@ def annotate_image_messages(
     ``[图片：media/images/xxx.jpg]`` — a downstream Agent reads the image
     multimodally later (used by per-contact sidecar pipelines).
     """
+    image_messages = [message for message in messages if _message_image_paths(message, base_dir)]
+    for message in image_messages:
+        message["image_render_mode"] = image_mode
+
     if image_mode == "preserve_paths":
-        return _preserve_image_paths(messages, base_dir)
+        _preserve_image_paths(messages, base_dir)
+
+    vision = settings.image_vision
+    if vision.enabled and not session_is_skipped(session or {}, messages, vision.skip_usernames):
+        if cache_root is None:
+            raise ValueError("image vision requires a persistent cache_root")
+        annotate_vision_descriptions(
+            messages,
+            base_dir,
+            vision,
+            cache_root,
+            _message_image_paths,
+            describer=vision_describer,
+        )
+
+    if image_mode == "preserve_paths":
+        return list(messages)
 
     if not settings.image_ocr_enabled:
         return list(messages)
 
-    image_messages = [message for message in messages if _message_image_paths(message, base_dir)]
     if not image_messages:
         return list(messages)
 

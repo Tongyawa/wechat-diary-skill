@@ -59,6 +59,39 @@ def _post(
 
 
 class MomentsTests(unittest.TestCase):
+    def test_vision_description_appends_without_replacing_readable_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            raw = root / "raw" / "朋友圈导出_2026-05-15"
+            image = raw / "media" / "p1.jpg"
+            image.parent.mkdir(parents=True)
+            image.write_bytes(b"real-shape-image-placeholder")
+            _write_moments_file(
+                raw,
+                "朋友圈.json",
+                [_post(pid="a", content="动态正文", media=[{"localPath": "media/p1.jpg"}])],
+            )
+            config_path = root / "config.toml"
+            config_path.write_text(
+                f'''[paths]\nraw="{(root / 'raw').as_posix()}"\nprocessed="{(root / 'processed').as_posix()}"\narchived="{(root / 'archived').as_posix()}"\n[preprocessing.image_vision]\nenabled=true''',
+                encoding="utf-8",
+            )
+            cfg = load_config(config_path)
+
+            class Describer:
+                def describe(self, image_path: Path, context_text: str) -> str:
+                    self.context = context_text
+                    return "朋友圈视觉描述"
+
+            describer = Describer()
+            written = archive_moments_for(["wxid_target"], config=cfg, subroot="朋友圈_自己", vision_describer=describer)
+            body = written[0].read_text(encoding="utf-8")
+            token = next(line for line in body.splitlines() if line.startswith("[图片："))
+            self.assertEqual(token, "[图片：media/p1.jpg｜朋友圈视觉描述]")
+            path_text = token.removeprefix("[图片：").split("｜", 1)[0]
+            self.assertTrue((written[0].parent / path_text).is_file())
+            self.assertEqual(describer.context, "[发图人]：动态正文")
+
     def test_load_moments_export_returns_filter_and_posts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

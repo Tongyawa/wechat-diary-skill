@@ -87,6 +87,22 @@ image_ocr_min_confidence = 0.55
 # screenshots (e.g. full UI captures) otherwise dominate the chat flow.
 # 0 disables truncation. The raw OCR lines are still preserved on the message.
 image_ocr_max_inline_chars = 80
+
+# 图片视觉描述会把图片与脱敏后的相邻对话上传第三方；默认关闭。
+[preprocessing.image_vision]
+enabled = false
+provider = "doubao"
+model = "pro"
+max_inline_chars = 400
+concurrency = 4
+timeout_sec = 60
+max_tokens = 2000
+empty_retry_max_tokens = 16000
+cache_dir = ""
+skip_usernames = []
+context_messages = 2
+anonymize_speakers = true
+include_moment_comments = false
 # Install OCR dependency with: python -m pip install -r requirements.txt
 
 [preprocessing.group_context_window]

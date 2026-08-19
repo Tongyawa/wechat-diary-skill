@@ -7,6 +7,7 @@ from .cleaner import ProcessedChatExport, discover_chat_exports, preprocess_expo
 from .cleaner import collect_voice_transcription_failures
 from .exceptions import InvalidExportError, PreprocessingError
 from .image_ocr import ImageMode, OcrEngine
+from .image_vision import VisionDescriber
 from .moments import (
     MomentsExport,
     archive_moments_for,
@@ -21,12 +22,19 @@ def run(
     config: Config | None = None,
     ocr_engine: OcrEngine | None = None,
     image_mode: ImageMode = "ocr_inline",
+    vision_describer: VisionDescriber | None = None,
 ) -> list[ProcessedChatExport]:
     cfg = config or load_config()
     exports: list[ProcessedChatExport] = []
     with collect_voice_transcription_failures():
         for source_path in discover_chat_exports(raw_path):
-            processed = preprocess_export(source_path, config=cfg, ocr_engine=ocr_engine, image_mode=image_mode)
+            processed = preprocess_export(
+                source_path,
+                config=cfg,
+                ocr_engine=ocr_engine,
+                image_mode=image_mode,
+                vision_describer=vision_describer,
+            )
             if processed.data.get("messages"):
                 exports.append(processed)
     return exports
@@ -37,6 +45,7 @@ __all__ = [
     "InvalidExportError",
     "MomentsExport",
     "OcrEngine",
+    "VisionDescriber",
     "PreprocessingError",
     "ProcessedChatExport",
     "archive_moments_for",

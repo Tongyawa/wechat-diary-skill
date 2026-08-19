@@ -92,6 +92,8 @@
 | `platformMessageId` | string/integer | 否 | 被引用消息平台 id。 | 仅少一个追踪字段。 |
 | `image_ocr` | array | 否 | preprocessing 派生的图片 OCR 行。 | 图片引用无 OCR 文本时显示 `[图片]`。 |
 | `image_ocr_inline` | string | 否 | preprocessing 派生的图片 OCR 摘要或保留路径。 | 退回 `image_ocr` 或从 `content` 提取。 |
+| `image_vision` | array | 否 | preprocessing 派生的逐图视觉描述。 | 仅开启图片外传功能时出现。 |
+| `image_vision_inline` | string | 否 | preprocessing 派生的单行视觉描述。 | 渲染优先于 OCR；不属于 canonical raw。 |
 | `transcribe_failed` | boolean | 否 | preprocessing 派生的语音转写失败标记。 | 语音失败可能按原文本渲染。 |
 | `replyToMessageId` / `quotedContent` / `quotedSender` / `quotedSenderDisplayName` / `quotedIsSelf` / `replyContext` | mixed | 否 | 嵌套引用链路的兜底信息。 | 嵌套引用降级或不显示。 |
 

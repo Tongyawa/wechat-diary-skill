@@ -71,6 +71,21 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "image_ocr_enabled": True,
         "image_ocr_min_confidence": 0.55,
         "image_ocr_max_inline_chars": 80,
+        "image_vision": {
+            "enabled": False,
+            "provider": "doubao",
+            "model": "pro",
+            "max_inline_chars": 400,
+            "concurrency": 4,
+            "timeout_sec": 60,
+            "max_tokens": 2000,
+            "empty_retry_max_tokens": 16000,
+            "cache_dir": "",
+            "skip_usernames": [],
+            "context_messages": 2,
+            "anonymize_speakers": True,
+            "include_moment_comments": False,
+        },
         "group_context_window": {
             "enabled": True,
             "messages_before": 3,
@@ -194,6 +209,23 @@ class GroupContextWindowConfig:
 
 
 @dataclass(frozen=True)
+class ImageVisionConfig:
+    enabled: bool
+    provider: str
+    model: str
+    max_inline_chars: int
+    concurrency: int
+    timeout_sec: float
+    max_tokens: int
+    empty_retry_max_tokens: int
+    cache_dir: Path | None
+    skip_usernames: list[str]
+    context_messages: int
+    anonymize_speakers: bool
+    include_moment_comments: bool
+
+
+@dataclass(frozen=True)
 class PreprocessingConfig:
     skip_emoji_dir: bool
     voice_fail_log_only: bool
@@ -201,6 +233,7 @@ class PreprocessingConfig:
     image_ocr_enabled: bool
     image_ocr_min_confidence: float
     image_ocr_max_inline_chars: int
+    image_vision: ImageVisionConfig
     group_context_window: GroupContextWindowConfig
 
 
@@ -322,6 +355,7 @@ def _build_config(raw: dict[str, Any], base_dir: Path, *, source: dict[str, Any]
     automation = export_backend["weflow"]
     asr = raw["asr"]
     preprocessing = raw["preprocessing"]
+    image_vision = preprocessing["image_vision"]
     group_window = preprocessing["group_context_window"]
     template = automation["template_fallback"]
     geometry = automation["window_geometry"]
@@ -351,6 +385,35 @@ def _build_config(raw: dict[str, Any], base_dir: Path, *, source: dict[str, Any]
     worker_request_timeout_sec = float(asr.get("worker_request_timeout_sec", 120))
     if worker_startup_timeout_sec <= 0 or worker_request_timeout_sec <= 0:
         raise ValueError("asr worker timeout 必须大于 0 秒")
+    image_vision_max_inline_chars = int(image_vision.get("max_inline_chars", 400))
+    image_vision_concurrency = int(image_vision.get("concurrency", 4))
+    image_vision_timeout_sec = float(image_vision.get("timeout_sec", 60))
+    image_vision_max_tokens = int(image_vision.get("max_tokens", 2000))
+    image_vision_retry_tokens = int(image_vision.get("empty_retry_max_tokens", 16000))
+    image_vision_context_messages = int(image_vision.get("context_messages", 2))
+    if image_vision_max_inline_chars < 1:
+        raise ValueError("preprocessing.image_vision.max_inline_chars 必须大于等于 1")
+    if image_vision_concurrency < 1:
+        raise ValueError("preprocessing.image_vision.concurrency 必须大于等于 1")
+    if image_vision_timeout_sec <= 0:
+        raise ValueError("preprocessing.image_vision.timeout_sec 必须大于 0 秒")
+    if image_vision_max_tokens < 1 or image_vision_retry_tokens < 1:
+        raise ValueError("preprocessing.image_vision token 预算必须大于 0")
+    if image_vision_context_messages < 0:
+        raise ValueError("preprocessing.image_vision.context_messages 不得小于 0")
+    explicit_vision = ((source.get("preprocessing") or {}).get("image_vision") or {})
+    image_vision_provider = str(image_vision.get("provider") or "doubao").strip()
+    image_vision_model = str(image_vision.get("model") or "pro").strip()
+    if "max_tokens" not in explicit_vision and (
+        image_vision_provider.casefold() == "jisuan" and "qwen" in image_vision_model.casefold()
+    ):
+        image_vision_max_tokens = 8000
+    if (
+        image_vision_provider.casefold() == "jisuan"
+        and "qwen" in image_vision_model.casefold()
+        and image_vision_max_tokens < 8000
+    ):
+        raise ValueError("jisuan/qwen 系的 preprocessing.image_vision.max_tokens 不得低于 8000")
 
     automation_config = AutomationConfig(
         driver=driver,
@@ -418,6 +481,25 @@ def _build_config(raw: dict[str, Any], base_dir: Path, *, source: dict[str, Any]
             image_ocr_enabled=bool(preprocessing["image_ocr_enabled"]),
             image_ocr_min_confidence=float(preprocessing["image_ocr_min_confidence"]),
             image_ocr_max_inline_chars=int(preprocessing["image_ocr_max_inline_chars"]),
+            image_vision=ImageVisionConfig(
+                enabled=bool(image_vision.get("enabled", False)),
+                provider=image_vision_provider,
+                model=image_vision_model,
+                max_inline_chars=image_vision_max_inline_chars,
+                concurrency=image_vision_concurrency,
+                timeout_sec=image_vision_timeout_sec,
+                max_tokens=image_vision_max_tokens,
+                empty_retry_max_tokens=image_vision_retry_tokens,
+                cache_dir=_optional_path(base_dir, image_vision.get("cache_dir")),
+                skip_usernames=[
+                    str(value).strip()
+                    for value in image_vision.get("skip_usernames") or []
+                    if str(value).strip()
+                ],
+                context_messages=image_vision_context_messages,
+                anonymize_speakers=bool(image_vision.get("anonymize_speakers", True)),
+                include_moment_comments=bool(image_vision.get("include_moment_comments", False)),
+            ),
             group_context_window=GroupContextWindowConfig(
                 enabled=bool(group_window["enabled"]),
                 messages_before=int(group_window["messages_before"]),

@@ -17,6 +17,7 @@ from ..raw_schema import RawSchemaError, validate_session_json
 from .context_window import filter_group_context_window
 from .exceptions import InvalidExportError
 from .image_ocr import ImageMode, OcrEngine, annotate_image_messages
+from .image_vision import VisionDescriber
 from .time_compress import compress_nearby_messages
 
 
@@ -118,6 +119,7 @@ def preprocess_export(
     config: Config | None = None,
     ocr_engine: OcrEngine | None = None,
     image_mode: ImageMode = "ocr_inline",
+    vision_describer: VisionDescriber | None = None,
 ) -> ProcessedChatExport:
     with collect_voice_transcription_failures():
         return _preprocess_export(
@@ -125,6 +127,7 @@ def preprocess_export(
             config=config,
             ocr_engine=ocr_engine,
             image_mode=image_mode,
+            vision_describer=vision_describer,
         )
 
 
@@ -133,6 +136,7 @@ def _preprocess_export(
     config: Config | None = None,
     ocr_engine: OcrEngine | None = None,
     image_mode: ImageMode = "ocr_inline",
+    vision_describer: VisionDescriber | None = None,
 ) -> ProcessedChatExport:
     cfg = config or load_config()
     path = Path(source_path)
@@ -157,7 +161,16 @@ def _preprocess_export(
             anchor_keywords=window.anchor_keywords,
         )
 
-    messages = annotate_image_messages(messages, path.parent, cfg.preprocessing, engine=ocr_engine, image_mode=image_mode)
+    messages = annotate_image_messages(
+        messages,
+        path.parent,
+        cfg.preprocessing,
+        engine=ocr_engine,
+        image_mode=image_mode,
+        cache_root=cfg.paths.archived,
+        session=data.get("session") or {},
+        vision_describer=vision_describer,
+    )
     messages = resolve_reply_context(messages)
     messages = compress_nearby_messages(messages, cfg.preprocessing.time_compress_interval_sec)
 
@@ -201,6 +214,9 @@ def _reply_context_from(target: Message) -> Message:
         "platformMessageId",
         "image_ocr",
         "image_ocr_inline",
+        "image_vision",
+        "image_vision_inline",
+        "image_render_mode",
         "transcribe_failed",
         "replyToMessageId",
         "quotedContent",

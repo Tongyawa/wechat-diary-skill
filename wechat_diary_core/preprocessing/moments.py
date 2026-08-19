@@ -12,6 +12,7 @@ import shutil
 from ..config import Config, load_config
 from ..raw_schema import RawSchemaError, validate_moments_json
 from .exceptions import InvalidExportError
+from .image_vision import VisionDescriber, annotate_moment_vision
 
 
 Post = dict[str, Any]
@@ -93,6 +94,7 @@ def archive_moments_for(
     config: Config | None = None,
     subroot: str | Path = "_targets/moments",
     clear_first: bool = True,
+    vision_describer: VisionDescriber | None = None,
 ) -> list[Path]:
     """Archive Moments exports into ``<paths.processed>/<subroot>/<yyyy-mm-dd>.md``.
 
@@ -129,6 +131,13 @@ def archive_moments_for(
                 continue
             all_posts.append(_with_localized_media(post, export.source_path.parent, root / "media"))
 
+    annotate_moment_vision(
+        all_posts,
+        root,
+        cfg.preprocessing.image_vision,
+        cfg.paths.archived,
+        describer=vision_describer,
+    )
     by_day = _group_posts_by_day(all_posts)
     written: list[Path] = []
     for day, posts in sorted(by_day.items()):
@@ -153,7 +162,9 @@ def _render_single_post(post: Post) -> str:
         if suffix in {".mp4", ".mov", ".avi", ".mkv", ".webm"}:
             lines.append(f"[视频：{local_path}]")
         else:
-            lines.append(f"[图片：{local_path}]")
+            description = _safe(media.get("image_vision_inline"))
+            suffix_text = f"｜{description.replace('｜', ' ')}" if description else ""
+            lines.append(f"[图片：{local_path}{suffix_text}]")
 
     for comment in post.get("comments") or []:
         speaker = _safe(comment.get("nickname")) or "未知"

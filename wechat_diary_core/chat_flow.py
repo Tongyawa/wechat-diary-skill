@@ -84,7 +84,10 @@ def _base_message_content(message: Message) -> str:
     if message_type == "动画表情" or raw_content.strip() in {"[表情包]", "[表情]"}:
         return "[表情]"
 
-    if "图片" in message_type or message.get("image_ocr") or message.get("image_ocr_inline"):
+    if "图片" in message_type or any(
+        message.get(field)
+        for field in ("image_vision", "image_vision_inline", "image_ocr", "image_ocr_inline")
+    ):
         inline = _image_ocr_inline_for(message)
         return f"[图片：{inline}]" if inline else "[图片]"
 
@@ -99,7 +102,13 @@ def _base_message_content(message: Message) -> str:
 
 
 def _image_ocr_inline_for(message: Message) -> str:
-    """Return the OCR text to render inside ``[图片：...]`` — pre-truncated by preprocessing."""
+    """Return vision text first, then OCR text/path for ``[图片：...]``."""
+    vision = str(message.get("image_vision_inline") or "").strip()
+    path = str(message.get("image_ocr_inline") or "").strip()
+    if vision and path and message.get("image_render_mode") == "preserve_paths":
+        return f"{path}｜{vision}"
+    if vision:
+        return vision
     inline = str(message.get("image_ocr_inline") or "").strip()
     if inline:
         return inline
@@ -159,7 +168,7 @@ def _quote_text_for_target(target: Message) -> str:
 
 
 def _target_is_image(target: Message) -> bool:
-    if target.get("image_ocr") or target.get("image_ocr_inline"):
+    if any(target.get(field) for field in ("image_vision", "image_vision_inline", "image_ocr", "image_ocr_inline")):
         return True
     if "图片" in str(target.get("type") or ""):
         return True
