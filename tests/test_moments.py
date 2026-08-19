@@ -12,6 +12,7 @@ from wechat_diary_core.preprocessing.moments import (
     load_moments_export,
     render_moments_flow,
 )
+from wechat_diary_core.preprocessing.image_vision import MOMENT_FIXED_USER_INSTRUCTION
 
 
 def _moments_payload(posts: list[dict], usernames: list[str] | None = None) -> dict:
@@ -79,8 +80,15 @@ class MomentsTests(unittest.TestCase):
             cfg = load_config(config_path)
 
             class Describer:
-                def describe(self, image_path: Path, context_text: str) -> str:
+                def describe(
+                    self,
+                    image_path: Path,
+                    context_text: str,
+                    *,
+                    fixed_instruction: str,
+                ) -> str:
                     self.context = context_text
+                    self.fixed_instruction = fixed_instruction
                     return "朋友圈视觉描述"
 
             describer = Describer()
@@ -91,6 +99,7 @@ class MomentsTests(unittest.TestCase):
             path_text = token.removeprefix("[图片：").split("｜", 1)[0]
             self.assertTrue((written[0].parent / path_text).is_file())
             self.assertEqual(describer.context, "[发图人]：动态正文")
+            self.assertEqual(describer.fixed_instruction, MOMENT_FIXED_USER_INSTRUCTION)
 
     def test_load_moments_export_returns_filter_and_posts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

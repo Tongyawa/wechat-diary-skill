@@ -75,7 +75,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "enabled": False,
             "provider": "doubao",
             "model": "pro",
-            "max_inline_chars": 400,
+            "max_inline_chars": 1000,
             "concurrency": 4,
             "timeout_sec": 60,
             "max_tokens": 2000,
@@ -385,7 +385,7 @@ def _build_config(raw: dict[str, Any], base_dir: Path, *, source: dict[str, Any]
     worker_request_timeout_sec = float(asr.get("worker_request_timeout_sec", 120))
     if worker_startup_timeout_sec <= 0 or worker_request_timeout_sec <= 0:
         raise ValueError("asr worker timeout 必须大于 0 秒")
-    image_vision_max_inline_chars = int(image_vision.get("max_inline_chars", 400))
+    image_vision_max_inline_chars = int(image_vision.get("max_inline_chars", 1000))
     image_vision_concurrency = int(image_vision.get("concurrency", 4))
     image_vision_timeout_sec = float(image_vision.get("timeout_sec", 60))
     image_vision_max_tokens = int(image_vision.get("max_tokens", 2000))

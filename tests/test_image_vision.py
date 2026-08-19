@@ -16,8 +16,12 @@ from wechat_diary_core.archiving import archive
 from wechat_diary_core.chat_flow import render_message_content
 from wechat_diary_core.config import load_config
 from wechat_diary_core.preprocessing.image_vision import (
+    CHAT_FIXED_USER_INSTRUCTION,
     CheapApiVisionDescriber,
+    MOMENT_FIXED_USER_INSTRUCTION,
     MAX_IMAGE_BYTES,
+    PROMPT_VERSION,
+    SYSTEM_PROMPT,
     VisionError,
     annotate_vision_descriptions,
     build_chat_context,
@@ -30,7 +34,7 @@ class FakeDescriber:
         self.value = value
         self.calls: list[tuple[Path, str]] = []
 
-    def describe(self, image_path: Path, context_text: str) -> str:
+    def describe(self, image_path: Path, context_text: str, *, fixed_instruction: str = CHAT_FIXED_USER_INSTRUCTION) -> str:
         self.calls.append((image_path, context_text))
         return self.value
 
@@ -41,6 +45,49 @@ def _image_paths(message: dict, base_dir: Path) -> list[Path]:
 
 
 class ImageVisionTests(unittest.TestCase):
+    def test_v2_prompt_version_default_and_fixed_instructions(self) -> None:
+        self.assertEqual(PROMPT_VERSION, "img-v2")
+        self.assertIn("你没写出来的信息就永远丢失了", SYSTEM_PROMPT)
+        self.assertEqual(
+            CHAT_FIXED_USER_INSTRUCTION,
+            "以上是这张图出现时的对话片段，供你判断语境与描述重心。现在转写这张图片。",
+        )
+        self.assertEqual(
+            MOMENT_FIXED_USER_INSTRUCTION,
+            "以上是这张图所在动态的正文，供你判断语境与描述重心。现在转写这张图片。",
+        )
+
+    def test_chat_and_moment_fixed_instructions_are_sent_with_context(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            chat_image = root / "chat.jpg"
+            moment_image = root / "moment.jpg"
+            chat_image.write_bytes(b"chat-image")
+            moment_image.write_bytes(b"moment-image")
+            settings = replace(load_config(root / "missing.toml").preprocessing.image_vision, enabled=True)
+            prompts: list[str] = []
+
+            def runner(command, stdin, timeout):
+                prompts.append(stdin)
+                body = {"choices": [{"finish_reason": "stop", "message": {"content": "描述"}}]}
+                return type("Result", (), {"returncode": 0, "stdout": json.dumps(body).encode(), "stderr": b""})()
+
+            describer = CheapApiVisionDescriber(settings, root / "cache", runner=runner, api_script=root / "cheap_api.py")
+            describer.describe(chat_image, "[他人1]：聊天上下文")
+            describer.describe(
+                moment_image,
+                "[发图人]：动态正文",
+                fixed_instruction=MOMENT_FIXED_USER_INSTRUCTION,
+            )
+
+            self.assertEqual(
+                prompts,
+                [
+                    "[他人1]：聊天上下文\n" + CHAT_FIXED_USER_INSTRUCTION,
+                    "[发图人]：动态正文\n" + MOMENT_FIXED_USER_INSTRUCTION,
+                ],
+            )
+
     def test_three_entrypoints_emit_byte_identical_descriptions_from_same_raw(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -159,6 +206,7 @@ class ImageVisionTests(unittest.TestCase):
             root = Path(tmp)
             default = load_config(root / "missing.toml").preprocessing.image_vision
             self.assertFalse(default.enabled)
+            self.assertEqual(default.max_inline_chars, 1000)
             self.assertEqual((default.provider, default.model, default.max_tokens), ("doubao", "pro", 2000))
             path = root / "config.toml"
             path.write_text('[preprocessing.image_vision]\nprovider="jisuan"\nmodel="qwen35"', encoding="utf-8")
@@ -273,7 +321,7 @@ class ImageVisionTests(unittest.TestCase):
             self.assertEqual(describer.describe(image, "[发图人]：上下文"), "单行 描述")
             self.assertEqual(calls, 1)
             entry = json.loads(next((root / "cache" / "_image-descriptions").rglob("*.json")).read_text(encoding="utf-8"))
-            self.assertEqual(entry["prompt_version"], "img-v1")
+            self.assertEqual(entry["prompt_version"], "img-v2")
             self.assertNotEqual(entry["context_sha256"], "")
 
     def test_concurrent_identical_requests_are_single_flight(self) -> None:

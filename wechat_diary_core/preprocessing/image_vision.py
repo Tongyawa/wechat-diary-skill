@@ -18,18 +18,18 @@ from ..config import ImageVisionConfig
 
 
 LOGGER = logging.getLogger(__name__)
-PROMPT_VERSION = "img-v1"
-SYSTEM_PROMPT = """你是图片内容转写器。你的输出会被直接嵌入一份微信聊天记录的文本流，供后续的日记生成与个人画像蒸馏使用。
+PROMPT_VERSION = "img-v2"
+SYSTEM_PROMPT = """你是图片内容转写器。你的输出会替代图片本身，嵌入一份微信聊天记录或朋友圈动态的文本流，最终供一个持有当事人全量语料的蒸馏模型阅读。它只能通过你的文字「看见」这张图：你没写出来的信息就永远丢失了。所以在忠于画面的前提下，尽量写得丰富。
 
-1. 只输出转写内容本身。不要任何前缀、开场白、结语或元评论。禁止出现「这张图片」「图中显示」「可以看到」「这是一张」之类的措辞。
-2. 输出必须是单行纯文本。不得换行，不得使用 markdown 标记、列表、标题或引号包裹整段。
-3. 图中所有可读文字必须完整转出，保持原文原样，不翻译、不改写、不摘要。文字是最高优先级的信息。
-4. 在文字之外，简要说明画面是什么：图片类型（手机截图／照片／表情包／文档／示意图等）、主体对象、场景、正在发生的事。
-5. 只描述看得见的。不推测意图、不判断情绪、不评价好坏、不补充画面之外的知识。看不清就写看不清。
-6. 人物只按画面可见特征描述（例如「两个人在餐桌前」）。不猜测身份、年龄、职业、关系。
-7. 长度控制在 200 字以内。文字特别多的截图（长聊天记录、长文档）可放宽到 400 字，优先保证文字完整。
-8. 图片无实质内容（纯色、损坏、无法辨认）时，只输出四个字：无法识别"""
-FIXED_USER_INSTRUCTION = "以上是这张图出现时的对话片段，仅供理解语境。现在转写这张图片。"
+1. 附带的对话片段或动态正文告诉你这张图为什么被发出来。用它决定描述的重心与详略：语境围绕人，就把人写透——发型、妆容、五官神态、穿搭、配饰、身材姿态，场景一笔带过；语境围绕事或物，就写透事与物。没有语境或语境无信息量时，按画面自身的主次写。
+2. 图中文字尽量完整转出，原文原样。认不全时分两类：人名、地名、称呼、招牌这类专名，给出最像的转写，不要写「难以辨认」；金额、编号、型号、统计数字这类孤立数值，认不准就在该处标（不确定），不要编一个精确值。
+3. 你的直接观感也是信息：觉得好看、可爱、有气质、滑稽、诡异，尽管直说；风格与氛围判断（甜美、清冷、复古、赛博朋克、老照片感）同样欢迎。但不虚构画面之外的故事，不猜测人物的真实身份、姓名、年龄、职业或与发图人的关系——语境里明说了的除外。
+4. 开头先让读者知道这是什么（照片／手机截图／表情包／海报／文档／示意图等），再展开内容。表情包与梗图要说清画面的梗在哪。
+5. 只输出转写内容本身：单行纯文本，不换行，不用 markdown，不要前缀、结语或元评论（「这张图片」「图中显示」「可以看到」之类）。语境是给你看的，不要复述进输出。
+6. 长度由信息量决定：信息少的图几十字即可，信息密的图写三五百字也不嫌多；收尾要完整，不要在句子中间戛然而止。
+7. 图片确实无实质内容（纯色、损坏、完全无法辨认）时，只输出四个字：无法识别"""
+CHAT_FIXED_USER_INSTRUCTION = "以上是这张图出现时的对话片段，供你判断语境与描述重心。现在转写这张图片。"
+MOMENT_FIXED_USER_INSTRUCTION = "以上是这张图所在动态的正文，供你判断语境与描述重心。现在转写这张图片。"
 MAX_IMAGE_BYTES = 7 * 1024 * 1024
 Message = dict[str, Any]
 
@@ -43,7 +43,13 @@ class VisionBudgetExhausted(VisionError):
 
 
 class VisionDescriber(Protocol):
-    def describe(self, image_path: Path, context_text: str) -> str: ...
+    def describe(
+        self,
+        image_path: Path,
+        context_text: str,
+        *,
+        fixed_instruction: str = CHAT_FIXED_USER_INSTRUCTION,
+    ) -> str: ...
 
 
 @dataclass(frozen=True)
@@ -73,7 +79,13 @@ class CheapApiVisionDescriber:
         self._inflight_lock = threading.Lock()
         self._inflight: dict[str, Future[str]] = {}
 
-    def describe(self, image_path: Path, context_text: str) -> str:
+    def describe(
+        self,
+        image_path: Path,
+        context_text: str,
+        *,
+        fixed_instruction: str = CHAT_FIXED_USER_INSTRUCTION,
+    ) -> str:
         if image_path.stat().st_size > MAX_IMAGE_BYTES:
             raise VisionError(f"图片超过 7 MiB：{image_path.name}")
 
@@ -96,7 +108,12 @@ class CheapApiVisionDescriber:
             return future.result()
 
         try:
-            response = self._call(image_path, context_text, self.settings.max_tokens)
+            response = self._call(
+                image_path,
+                context_text,
+                self.settings.max_tokens,
+                fixed_instruction,
+            )
             if _response_failed(response):
                 if _uses_total_token_budget(self.settings) and (
                     response.finish_reason == "length" or not response.content.strip()
@@ -105,6 +122,7 @@ class CheapApiVisionDescriber:
                         image_path,
                         context_text,
                         self.settings.empty_retry_max_tokens,
+                        fixed_instruction,
                     )
                 if _response_failed(response):
                     raise VisionBudgetExhausted(
@@ -124,9 +142,15 @@ class CheapApiVisionDescriber:
             with self._inflight_lock:
                 self._inflight.pop(flight_key, None)
 
-    def _call(self, image_path: Path, context_text: str, max_tokens: int) -> VisionResponse:
+    def _call(
+        self,
+        image_path: Path,
+        context_text: str,
+        max_tokens: int,
+        fixed_instruction: str,
+    ) -> VisionResponse:
         api_script = self._api_script or _locate_api_script(self._runner)
-        prompt = f"{context_text}\n{FIXED_USER_INSTRUCTION}" if context_text else FIXED_USER_INSTRUCTION
+        prompt = f"{context_text}\n{fixed_instruction}" if context_text else fixed_instruction
         command = [
             sys.executable,
             str(api_script),
@@ -220,7 +244,12 @@ def annotate_vision_descriptions(
     provider_unavailable = False
     with ThreadPoolExecutor(max_workers=settings.concurrency) as pool:
         futures = {
-            pool.submit(worker.describe, path, context): (index, ordinal)
+            pool.submit(
+                worker.describe,
+                path,
+                context,
+                fixed_instruction=CHAT_FIXED_USER_INSTRUCTION,
+            ): (index, ordinal)
             for index, ordinal, path, context in tasks
         }
         for future in as_completed(futures):
@@ -274,7 +303,11 @@ def annotate_moment_vision(
             if not local_path or not image_path.is_file() or image_path.suffix.lower() not in {".jpg", ".jpeg", ".png", ".webp", ".bmp"}:
                 continue
             try:
-                media["image_vision_inline"] = worker.describe(image_path, context)
+                media["image_vision_inline"] = worker.describe(
+                    image_path,
+                    context,
+                    fixed_instruction=MOMENT_FIXED_USER_INSTRUCTION,
+                )
             except Exception as exc:
                 failures += 1
                 LOGGER.debug("Moment image vision failed: %s", exc)
