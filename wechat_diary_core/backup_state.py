@@ -5,8 +5,8 @@ Why this exists as its own module: the same judgement is surfaced in two places
 actually looks every day). Duplicating the staleness rule in both would let them
 drift apart, and a backup check that disagrees with itself is worse than none.
 
-The backup job that writes ``last-run.json`` is orchestrated by
-``scripts/Invoke-BundleBackup.ps1``.
+The deployment-level backup job that writes ``last-run.json`` lives outside
+this public skill; this module only evaluates that data file.
 """
 
 from __future__ import annotations
@@ -56,9 +56,8 @@ class BackupStatus:
 
 
 def _rerun_hint(skill_root: Path | None) -> str:
-    script = "Invoke-BundleBackup.ps1"
-    location = f'"{skill_root / "scripts" / script}"' if skill_root else f"<skill根>\\scripts\\{script}"
-    return f"手动补跑：powershell -NoProfile -ExecutionPolicy Bypass -File {location}"
+    del skill_root  # 兼容既有调用签名；备份入口已搬出公开 skill，不能再拼 skill 路径。
+    return "手动补跑：运行本机部署的 Invoke-BundleBackup.ps1 运维入口（本 skill 不再分发该脚本）"
 
 
 #: PowerShell's round-trip format emits 7 fractional digits

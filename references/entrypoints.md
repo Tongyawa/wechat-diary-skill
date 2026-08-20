@@ -156,72 +156,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$SkillRoot\scripts\Open-Lat
 | `-InsightsRoot` | 直接指定 insights 根，**绕过 config 解析**（config 不可用或想临时指向别处时用） |
 | `-Workspace` / `-NoOpen` / `-NoPause` | 同上 |
 
-## 7. 备份单个 git 仓 `Backup-GitRepo.ps1`
-
-把**任意**本地 git 仓打成单文件 bundle（全 history 快照，`git clone <bundle>` 即可还原，不依赖任何服务器）。
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File "$SkillRoot\scripts\Backup-GitRepo.ps1" -RepoPath <仓路径> -Destination <落点目录> -Name <名字>
-```
-
-| 参数 | 说明 |
-|---|---|
-| `-RepoPath` | 要备份的 git 仓。默认当前目录 |
-| `-Destination` | **必填**，bundle 落点目录 |
-| `-Name` | bundle 名字前缀。默认取仓目录名 |
-| `-Keep` | 滚动保留份数，默认 5 |
-| `-Slot N` | 写 `<Name>-slot-N.bundle` 并**原地覆盖**；跳过日期命名与滚动清理 |
-
-两种命名模式：
-
-- **默认**（不传 `-Slot`）：`<Name>-<yyyyMMdd>.bundle`，保留最新 `-Keep` 份。适合手工打一次性快照。
-- **槽位**（`-Slot N`）：`<Name>-slot-N.bundle`，固定文件名、原地覆盖。§8 的编排用这个，理由见那节。
-
-路径与名字全走参数，不硬编码。把 `-Destination` 指向**另一块物理盘或云同步目录**才算真正的离机备份；和仓在同一块盘只防误删、不防盘坏。
-
-## 8. 批量 bundle 冷备 `Invoke-BundleBackup.ps1`
-
-按 `config.toml` 的 `[backup]` 段逐个备份配置里的仓，并把结果写进 `<bundle_dest>/last-run.json`。适合交给计划任务每天跑一次。
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File "$SkillRoot\scripts\Invoke-BundleBackup.ps1" -Workspace "$Workspace"
-```
-
-| 参数 | 说明 |
-|---|---|
-| `-Workspace` | 工作区目录（含 `config.toml`）。默认当前目录 |
-| `-Config` | 直接指定 config 路径，优先于 `-Workspace` |
-| `-NoPopup` | 失败时不弹报告窗口。**无人值守/自动化用**；退出码与状态文件照常反映失败 |
-
-行为要点：
-
-- **成功不弹窗（CLI 下仍打印一行结果），失败弹出一个停留的报告窗口**。理由：一个成功和失败长得一模一样的闪窗只会训练人忽略它——旧计划任务正是这样连续失败一个月没被发现。交互调用该有反馈；计划任务里不闪窗，靠注册时的 `-WindowStyle Hidden` 保证。
-- **`[backup]` 配置有误时拒绝运行**，退出码 2 并逐条列出。判据：缺 `path`、缺 `bundle_dest`、`name` 重复（**含仅大小写不同**——Windows 视为同一文件）、`name` 含非法文件名字符。不会「备份一部分再报成功」。
-- **单仓失败不影响其余**，但整体退出码非零。
-- **配置里的仓路径不存在 = 硬失败**，不会静默跳过（这正是旧任务失效的原因）。
-- 真正未配置（既无 `repos` 也无 `bundle_dest`）时打一行 skip 后正常退出——这是唯一允许静默的情形。
-- 每个仓在写入目标槽位前使用固定名 `<仓名>.pending` 作为临时文件；它不是有效恢复点。相同落点与名字的并发写入由 Windows 命名 Mutex 串行化，第二个单仓进程会失败并提示稍后重试。
-- 同一 `bundle_dest` 的批量入口另有外层 Mutex。已有一轮在跑时，后来的调用会打印一行 skip、退出 0，且**不读写 `last-run.json`、不写或删除失败报告**；这是幂等去重，不是备份失败。
-
-### 槽位轮换：为什么文件名里没有日期
-
-每个仓写 `<仓名>-slot-1.bundle` … `-slot-<keep>.bundle`，**固定文件名、原地覆盖**，而不是每天新增一个带日期的文件。
-
-原因是云同步：**本地的滚动清理不一定会作为「删除」同步到云端**（实测有本地已删的 bundle 仍留在云上）。日期命名下，每天每仓新增一个永不消失的文件名——四个仓跑一年就是约 1460 个文件、近 1 GB，且只增不减。固定槽位把云端占用变成常数。
-
-选哪个槽位：**先补空缺，再覆盖最旧的一个**。刻意不从 `last-run.json` 读「上次写了哪个」——那样状态文件一丢就不知道该写哪；按磁盘实际情况推断可以自愈。
-
-代价是文件名不再带日期，所以 **`last-run.json` 里维护一份 `slotIndex`**，跨轮累积记录「每个仓的每个槽位分别是什么时候写的」：
-
-```json
-"slotIndex": { "<仓名>": { "1": "2026-08-05T21:00:00+08:00", "2": "2026-08-08T21:00:00+08:00" } }
-```
-
-**还原步骤**：读 `last-run.json` 的 `slotIndex` 挑时间最新的槽位 → `git clone <bundle_dest>\<仓名>-slot-N.bundle <目标目录>`。不需要解压，bundle 直接就是可 clone 的仓。
-
-配置样例见 `config.example.toml` 的 `[backup]` 段。备份是否还在跑，`doctor.py`（§4）和日常导出（§1）收尾都会检查并在陈旧时给出补跑命令。
-
-## 9. 初始化 Git worktree 配置 `init_worktree_config.py`
+## 7. 初始化 Git worktree 配置 `init_worktree_config.py`
 
 在**目标 worktree 根目录**运行。脚本自动从当前 Git worktree 发现主工作区，并生成本 worktree 的 gitignored `config.toml`：代码继续取当前 worktree，四个数据根与可选本地 voice fallback 路径则全部指向主工作区。不要在这之后顺手跑完整导出；完整导出会轮转主工作区的真实数据。
 

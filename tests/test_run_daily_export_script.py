@@ -258,7 +258,6 @@ class DailyExportScriptTests(unittest.TestCase):
             Path("scripts/process_existing_raw.ps1"),
             Path("scripts/Open-LatestInsights.ps1"),
             Path("scripts/Open-InsightsByDate.ps1"),
-            Path("scripts/Invoke-BundleBackup.ps1"),
         ):
             script = path.read_text(encoding="utf-8-sig")
             self.assertIn("WorkspaceDiscovery.psm1", script, path.as_posix())

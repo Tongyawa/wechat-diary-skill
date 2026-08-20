@@ -139,26 +139,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$SkillRoot\scripts\Open-Ins
 
 insights 根从 `-Workspace` 指向的 `config.toml` 的 `[paths].insights` 解析。加 `-NoOpen` 只打印「解析到的根 + 命中文件」而不启动编辑器，用于排障。
 
-### 冷备：把 git 仓打成单文件 bundle
-
-产物和归档能靠云同步保住，但**很多云客户端会整体跳过 `.git` 目录** —— 文件在，版本历史却没有离机副本。没有远端的仓尤其危险。
-
-`git bundle` 把整个仓（所有 ref + 全量 history）压成一个普通文件，`git clone <file>.bundle` 即可还原，不依赖任何服务器。单个仓：
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File "$SkillRoot\scripts\Backup-GitRepo.ps1" -RepoPath <仓路径> -Destination <落点目录>
-```
-
-在 `config.toml` 配好 `[backup]` 后，可以一条命令备份全部仓，适合交给计划任务每天跑：
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File "$SkillRoot\scripts\Invoke-BundleBackup.ps1" -Workspace $Workspace
-```
-
-它**成功时不弹窗（命令行下仍打印一行结果），失败时弹出一个停留的报告窗口**并写 `<bundle_dest>/last-run.json`。这个不对称是刻意的：一个成功和失败长得一样的闪窗只会让人学会忽略它。备份是否还在跑，`doctor.py` 和日常导出收尾都会检查，陈旧时给出补跑命令。
-
-批量模式按**固定槽位**写 `<仓名>-slot-1.bundle` … `-slot-<keep>.bundle`，先补空缺再覆盖最旧的一份。这样每个仓在备份目录里始终只占 `keep` 个文件名，而不是每天新增一个——云同步场景下本地清理未必会同步成远端删除，日期命名会无限累积。文件名因此不带日期，`last-run.json` 的 `slotIndex` 记录每个槽位对应的时间；还原时读它挑最新槽位，`git clone` 那个 bundle 即可。
-
 ## 一轮跑完之后：怎么读结果
 
 退出码 `0` 表示全部阶段成功。非 `0` 有两种，控制台措辞可以区分：

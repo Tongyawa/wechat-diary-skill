@@ -22,8 +22,6 @@ POWERSHELL_ENTRYPOINTS = {
     "run_daily_export.ps1",
     "Open-LatestInsights.ps1",
     "Open-InsightsByDate.ps1",
-    "Backup-GitRepo.ps1",
-    "Invoke-BundleBackup.ps1",
 }
 SCRIPT_RE = re.compile(r"`([\w-]+\.(?:py|ps1))`")
 SECTION_RE = re.compile(r"^## \d+\. .+$", re.MULTILINE)

@@ -27,9 +27,7 @@ description: 用 WeFlow 导出并清洗微信聊天记录，生成日记、DoneL
 | 跑不起来 / 环境体检 | ④ doctor | `references/entrypoints.md` §4 |
 | 把旧的导出快照并进长期归档 | ⑤ 归档摄取 | `references/entrypoints.md` §5 |
 | 打开某天的产物 | ⑥ 打开产物 | `references/entrypoints.md` §6 |
-| 备份单个本地 git 仓 | ⑦ bundle 备份 | `references/entrypoints.md` §7 |
-| 一次性备份配置里的全部仓 / 排查「备份是不是停了」 | ⑧ 批量 bundle 冷备 | `references/entrypoints.md` §8 |
-| 在 Git worktree 做实机验收前，让数据根指向主工作区 | ⑨ 初始化 worktree 配置 | `references/entrypoints.md` §9 |
+| 在 Git worktree 做实机验收前，让数据根指向主工作区 | ⑦ 初始化 worktree 配置 | `references/entrypoints.md` §7 |
 
 **读 processed 内容之前，先读 `references/processed-format.md`**——它是占位符（引用 / 媒体 / 表情 / 文件 / 链接…）的唯一事实源，路径 ①②③ 都要用。
 
@@ -60,9 +58,7 @@ python "$SkillRoot\scripts\export_on_demand.py" --session <wxid或显示名子�
 **④ 体检** `python "$SkillRoot\scripts\doctor.py"`
 **⑤ 归档摄取** `python "$SkillRoot\scripts\archive_exports.py" --raw-root <旧raw> --processed-root <旧processed>`
 **⑥ 打开产物** `powershell ... -File "$SkillRoot\scripts\Open-LatestInsights.ps1" -Workspace "$Workspace"`（按日期挑用 `Open-InsightsByDate.ps1`）
-**⑦ bundle 备份（单个仓）** `powershell ... -File "$SkillRoot\scripts\Backup-GitRepo.ps1" -RepoPath <仓> -Destination <落点>`
-**⑧ 批量 bundle 冷备** `powershell ... -File "$SkillRoot\scripts\Invoke-BundleBackup.ps1" -Workspace "$Workspace"`（按 `config.toml [backup]` 逐仓备份并落状态；成功不弹窗、失败弹报告）
-**⑨ 初始化 worktree 配置**（在目标 worktree 根目录运行）`python "$SkillRoot\scripts\init_worktree_config.py"`
+**⑦ 初始化 worktree 配置**（在目标 worktree 根目录运行）`python "$SkillRoot\scripts\init_worktree_config.py"`
 
 ## 二次加工
 

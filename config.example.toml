@@ -168,9 +168,9 @@ restart_weflow = true
 # wholesale, so the files get backed up but the history does not).
 #
 # Leave both `repos` and `bundle_dest` empty to disable: every related check
-# then stays silent. Configuring only one side is an error and the backup entry
-# point will refuse to run until both are supplied.
-# Run it with scripts/Invoke-BundleBackup.ps1, ideally from a daily scheduler.
+# then stays silent. This skill only reads `<bundle_dest>/last-run.json` for
+# freshness diagnostics; creating bundles is a deployment-level ops concern and
+# no backup runner is distributed from this public skill.
 [backup]
 # Where bundles are written. Point this at a cloud-synced folder or a different
 # physical disk -- a folder on the same disk only guards against accidental
