@@ -75,15 +75,19 @@ python "$SkillRoot\scripts\process_existing_raw.py" --raw-root <raw目录> --day
 
 ```powershell
 python "$SkillRoot\scripts\export_on_demand.py" --session <wxid或显示名子串> --start 2026-05-01 --end 2026-05-31 --out <输出目录>
+
+# 周期性追加到已有会话夹；省略 --start 时从目标夹最新分日 md 的日期起重导
+python "$SkillRoot\scripts\export_on_demand.py" --session <wxid或显示名子串> --merge-into <已有会话夹> [--end 2026-05-31]
 ```
 
 | 参数 | 说明 |
 |---|---|
 | `--session` | wxid，或显示名子串 |
 | `--list-sessions <关键词>` | 列出匹配候选并退出。**拿不准会话名时先用它** |
-| `--start` / `--end` | 日期，`2026-05-01` 或 `20260501` 都接受 |
-| `--out` | 本次导出的输出根目录 |
-| `--merged` | 额外产出整段合并 markdown |
+| `--start` / `--end` | 日期，`2026-05-01` 或 `20260501` 都接受。合并模式省略 `--start` 时取目标夹最新分日 md 的日期（边界日会重导），省略 `--end` 时取运行当天；一次性 `--out` 模式仍要求两者都提供 |
+| `--out` | 本次导出的输出根目录；与 `--merge-into` 互斥，一次性产物继续使用带日期范围的目录名 |
+| `--merge-into` | 增量合并进已有会话目录；目标必须已存在，分日 md 与媒体并入该显式目录，`_raw/` 仍按日期范围累积 |
+| `--merged` | 额外产出整段合并 markdown。合并模式会按目标夹全部分日 md 重建；若同名 merged md 已存在，即使未给此参数也会重建 |
 | `--group-window` | 群聊启用上下文窗口筛选。**默认关 = 保留全量** |
 | `--no-asr` | 关闭语音转写 |
 | `--no-media-copy` | 不把媒体复制到 markdown 旁 |

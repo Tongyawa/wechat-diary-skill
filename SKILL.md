@@ -55,6 +55,8 @@ python "$SkillRoot\scripts\process_existing_raw.py" --raw-root <raw目录> --day
 python "$SkillRoot\scripts\export_on_demand.py" --session <wxid或显示名子串> --start <起> --end <止> --out <输出目录>
 ```
 
+周期性追加到已有会话夹：改用 `--merge-into <已有会话夹>`；起始日可从已有分日产物自动推导，完整参数见 `references/entrypoints.md` §3。
+
 **④ 体检** `python "$SkillRoot\scripts\doctor.py"`
 **⑤ 归档摄取** `python "$SkillRoot\scripts\archive_exports.py" --raw-root <旧raw> --processed-root <旧processed>`
 **⑥ 打开产物** `powershell ... -File "$SkillRoot\scripts\Open-LatestInsights.ps1" -Workspace "$Workspace"`（按日期挑用 `Open-InsightsByDate.ps1`）

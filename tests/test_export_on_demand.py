@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import io
 import json
+import re
 import tempfile
 import unittest
 from contextlib import redirect_stderr
@@ -80,6 +81,19 @@ class FixtureClient:
 
 def _private_fixture_messages() -> list[dict]:
     return copy.deepcopy(_fixture("messages.json")["messages"])
+
+
+def _message_at(day: date, hour: int, minute: int, content: str, local_id: int) -> dict:
+    message = _private_fixture_messages()[0]
+    message.update(
+        {
+            "localId": local_id,
+            "serverId": f"server-placeholder-{local_id}",
+            "createTime": int(datetime(day.year, day.month, day.day, hour, minute).timestamp()),
+            "content": content,
+        }
+    )
+    return message
 
 
 def _group_messages() -> list[dict]:
@@ -272,6 +286,294 @@ class ExportOnDemandTests(unittest.TestCase):
                 ["私聊_示例联系人_20260512-20260514"],
             ])
             self.assertTrue(all(name.startswith("._od") and len(name) <= 8 for name, _ in archive_inputs))
+
+    def test_merge_into_reexports_boundary_day_and_rebuilds_existing_merged_from_all_days(self) -> None:
+        session = {"username": "wxid_contact_placeholder", "displayName": "示例联系人"}
+        contacts = _fixture("contacts.json")["contacts"]
+        first_day = date(2026, 8, 3)
+        boundary_day = date(2026, 8, 5)
+        next_day = date(2026, 8, 6)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = _config(root)
+            out = root / "exports"
+            initial = module.export_on_demand(
+                cfg,
+                sessions=[session],
+                client=FixtureClient(
+                    [session],
+                    {
+                        session["username"]: [
+                            _message_at(first_day, 9, 0, "早期日期标记", 3101),
+                            _message_at(boundary_day, 9, 0, "边界日上午标记", 3102),
+                        ]
+                    },
+                    contacts,
+                ),
+                session_query=session["username"],
+                start=first_day,
+                end=boundary_day,
+                out_root=out,
+            )
+            target = out / "手工稳定会话"
+            initial.output_session_dir.rename(target)
+            unchanged_before = (target / "2026-08-03.md").read_bytes()
+            merged_path = out / "手工稳定会话.md"
+            merged_path.write_text("过期合并内容", encoding="utf-8")
+
+            incremental_client = FixtureClient(
+                [session],
+                {
+                    session["username"]: [
+                        _message_at(boundary_day, 9, 0, "边界日上午标记", 3102),
+                        _message_at(boundary_day, 16, 30, "边界日下午新增标记", 3103),
+                        _message_at(next_day, 8, 0, "次日新增标记", 3104),
+                    ]
+                },
+                contacts,
+            )
+            result = module.export_on_demand(
+                cfg,
+                sessions=[session],
+                client=incremental_client,
+                session_query=session["username"],
+                start=module._derive_merge_start(target),
+                end=next_day,
+                out_root=out,
+                merge_into=target,
+            )
+
+            self.assertEqual(result.output_session_dir, target)
+            self.assertFalse((out / "私聊_示例联系人").exists())
+            self.assertEqual((target / "2026-08-03.md").read_bytes(), unchanged_before)
+            boundary_text = (target / "2026-08-05.md").read_text(encoding="utf-8")
+            self.assertIn("边界日上午标记", boundary_text)
+            self.assertIn("边界日下午新增标记", boundary_text)
+            self.assertIn("次日新增标记", (target / "2026-08-06.md").read_text(encoding="utf-8"))
+
+            message_call = next(call for call in incremental_client.calls if call[0] == "messages")
+            self.assertEqual(message_call[2]["start"], boundary_day)
+            self.assertEqual(message_call[2]["end"], next_day)
+            self.assertTrue((out / "_raw" / "私聊_示例联系人_20260805-20260806").is_dir())
+
+            payload = merged_path.read_bytes()
+            first_line_end = payload.index(b"\n")
+            blank_line_end = payload.index(b"\n", first_line_end + 1)
+            header = payload[:first_line_end].rstrip(b"\r")
+            body = payload[blank_line_end + 1 :]
+            self.assertIn("会话：示例联系人".encode("utf-8"), header)
+            self.assertIn("覆盖：2026-08-03 ~ 2026-08-06".encode("utf-8"), header)
+            self.assertIn("共 3 天".encode("utf-8"), header)
+            self.assertRegex(header.decode("utf-8"), r"生成于 \d{4}-\d{2}-\d{2} \d{2}:\d{2}$")
+
+            has_crlf = b"\r\n" in payload
+            has_bare_lf = re.search(rb"(?<!\r)\n", payload) is not None
+            self.assertFalse(has_crlf and has_bare_lf, "merged md 不得同时混用 CRLF 与裸 LF")
+
+            daily_files = [
+                target / "2026-08-03.md",
+                target / "2026-08-05.md",
+                target / "2026-08-06.md",
+            ]
+            legacy_dir = out / "legacy-contract"
+            legacy_dir.mkdir()
+            legacy_merged = module._write_merged(legacy_dir, daily_files)
+            self.assertIsNotNone(legacy_merged)
+            self.assertEqual(body, legacy_merged.read_bytes())
+
+    def test_merge_merged_file_creation_follows_flag_when_no_file_exists(self) -> None:
+        session = {"username": "wxid_contact_placeholder", "displayName": "联系人占位"}
+        day = date(2026, 8, 5)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = _config(root)
+            target = root / "稳定会话"
+            target.mkdir()
+            client = FixtureClient([session], {session["username"]: [_message_at(day, 10, 0, "消息标记", 3201)]})
+
+            without_merged = module.export_on_demand(
+                cfg,
+                sessions=[session],
+                client=client,
+                session_query=session["username"],
+                start=day,
+                end=day,
+                out_root=root,
+                merge_into=target,
+            )
+            self.assertIsNone(without_merged.merged_file)
+            self.assertFalse((root / "稳定会话.md").exists())
+
+            with_merged = module.export_on_demand(
+                cfg,
+                sessions=[session],
+                client=client,
+                session_query=session["username"],
+                start=date(2020, 1, 1),
+                end=day,
+                out_root=root,
+                merge_into=target,
+                merged=True,
+            )
+            self.assertEqual(with_merged.merged_file, root / "稳定会话.md")
+            self.assertTrue(with_merged.merged_file.is_file())
+            header = with_merged.merged_file.read_bytes().split(b"\n\n", 1)[0].decode("utf-8")
+            self.assertIn("覆盖：2026-08-05 ~ 2026-08-05", header)
+            self.assertNotIn("2020-01-01", header)
+
+    def test_merge_feature_preserves_out_mode_date_range_directory_name(self) -> None:
+        session = {"username": "wxid_contact_placeholder", "displayName": "联系人占位"}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = module.export_on_demand(
+                _config(root),
+                sessions=[session],
+                client=FixtureClient(
+                    [session],
+                    {session["username"]: [_message_at(date(2026, 8, 5), 10, 0, "一次性导出标记", 3251)]},
+                ),
+                session_query=session["username"],
+                start=date(2026, 8, 1),
+                end=date(2026, 8, 9),
+                out_root=root / "out",
+            )
+
+            self.assertEqual(result.output_session_dir.name, "私聊_联系人占位_20260801-20260809")
+            self.assertEqual(result.raw_session_dir.name, "私聊_联系人占位_20260801-20260809")
+            self.assertFalse((root / "out" / "私聊_联系人占位").exists())
+
+    def test_merge_media_copy_toggle_changes_target_layout(self) -> None:
+        session = {"username": "wxid_contact_placeholder", "displayName": "联系人占位"}
+        day = date(2026, 8, 5)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "fixture-image.jpg"
+            source.write_bytes(b"image-placeholder")
+            message = _message_at(day, 10, 0, "[图片]", 3301)
+            message.update(
+                {
+                    "localType": 3,
+                    "mediaLocalPath": str(source),
+                    "mediaFileName": "fixture-image.jpg",
+                    "mediaType": "image",
+                }
+            )
+            cfg = _config(root)
+            targets = {True: root / "with-copy", False: root / "without-copy"}
+            for target in targets.values():
+                target.mkdir()
+
+            for copy_media, target in targets.items():
+                module.export_on_demand(
+                    cfg,
+                    sessions=[session],
+                    client=FixtureClient([session], {session["username"]: [message]}),
+                    session_query=session["username"],
+                    start=day,
+                    end=day,
+                    out_root=root,
+                    merge_into=target,
+                    copy_media=copy_media,
+                )
+
+            self.assertTrue((targets[True] / "media" / "images" / "fixture-image.jpg").is_file())
+            self.assertFalse((targets[False] / "media").exists())
+
+    def test_merge_start_scans_only_top_level_daily_markdown(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "稳定会话"
+            target.mkdir()
+            (target / "2026-08-05.md").write_text("顶层产物", encoding="utf-8")
+            nested = target / "media"
+            nested.mkdir()
+            (nested / "2099-12-31.md").write_text("无关文件", encoding="utf-8")
+            (target / "2026-08-06.md.bak").write_text("无关文件", encoding="utf-8")
+
+            self.assertEqual(module._derive_merge_start(target), date(2026, 8, 5))
+
+    def test_main_merge_runtime_errors_are_chinese_and_do_not_create_targets(self) -> None:
+        session = {"username": "wxid_contact_placeholder", "displayName": "联系人占位"}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _config(root)
+            client = FixtureClient([session], {})
+            missing_target = root / "不存在会话"
+            stderr = io.StringIO()
+            with redirect_stderr(stderr), mock.patch.object(module, "_make_client", return_value=client):
+                missing_code = module.main(
+                    ["--config", str(root / "config.toml"), "--session", session["username"], "--merge-into", str(missing_target)]
+                )
+            self.assertEqual(missing_code, 1)
+            self.assertIn("合并目标必须是已有会话目录", stderr.getvalue())
+            self.assertFalse(missing_target.exists())
+
+            empty_target = root / "空会话"
+            empty_target.mkdir()
+            stderr = io.StringIO()
+            with redirect_stderr(stderr), mock.patch.object(module, "_make_client", return_value=client):
+                empty_code = module.main(
+                    ["--config", str(root / "config.toml"), "--session", session["username"], "--merge-into", str(empty_target)]
+                )
+            self.assertEqual(empty_code, 1)
+            self.assertIn("首次合并必须显式提供 --start", stderr.getvalue())
+
+    def test_main_merge_parameter_errors_use_argparse_exit_two(self) -> None:
+        stderr = io.StringIO()
+        with redirect_stderr(stderr), self.assertRaises(SystemExit) as conflict:
+            module.main(["--session", "wxid_placeholder", "--start", "20260805", "--end", "20260805", "--out", "out", "--merge-into", "target"])
+        self.assertEqual(conflict.exception.code, 2)
+        self.assertIn("--out 与 --merge-into 不能同时提供", stderr.getvalue())
+
+        stderr = io.StringIO()
+        with redirect_stderr(stderr), self.assertRaises(SystemExit) as missing_session:
+            module.main(["--merge-into", "target"])
+        self.assertEqual(missing_session.exception.code, 2)
+        self.assertIn("合并模式缺少参数：--session", stderr.getvalue())
+
+    def test_main_merge_derives_start_honors_explicit_override_and_defaults_end(self) -> None:
+        session = {"username": "wxid_contact_placeholder", "displayName": "联系人占位"}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _config(root)
+            target = root / "稳定会话"
+            target.mkdir()
+            (target / "2026-08-05.md").write_text("已有分日产物", encoding="utf-8")
+            fake_result = module.ExportOnDemandResult(session, root / "raw", target, [], None)
+            with mock.patch.object(module, "_make_client", return_value=FixtureClient([session], {})), mock.patch.object(
+                module, "export_on_demand", return_value=fake_result
+            ) as export_spy:
+                derived_code = module.main(
+                    [
+                        "--config",
+                        str(root / "config.toml"),
+                        "--session",
+                        session["username"],
+                        "--merge-into",
+                        str(target),
+                    ]
+                )
+                derived_kwargs = export_spy.call_args.kwargs
+                export_spy.reset_mock()
+                code = module.main(
+                    [
+                        "--config",
+                        str(root / "config.toml"),
+                        "--session",
+                        session["username"],
+                        "--start",
+                        "2026-08-01",
+                        "--merge-into",
+                        str(target),
+                    ]
+                )
+
+            self.assertEqual(derived_code, 0)
+            self.assertEqual(derived_kwargs["start"], date(2026, 8, 5))
+            self.assertEqual(derived_kwargs["end"], date.today())
+            self.assertEqual(code, 0)
+            self.assertEqual(export_spy.call_args.kwargs["start"], date(2026, 8, 1))
+            self.assertEqual(export_spy.call_args.kwargs["end"], date.today())
+            self.assertEqual(export_spy.call_args.kwargs["merge_into"], target.resolve())
 
     def test_long_path_oserror_returns_actionable_chinese_hint(self) -> None:
         session = {"username": "wxid_contact_placeholder", "displayName": "示例联系人"}

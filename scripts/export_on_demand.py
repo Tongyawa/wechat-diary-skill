@@ -21,12 +21,14 @@ from wechat_diary_core.asr import SenseVoiceTranscriber
 from wechat_diary_core.backends.weflow_api.client import WeflowApiClient
 from wechat_diary_core.backends.weflow_api.mapper import write_session_export
 from wechat_diary_core.config import Config, load_config
+from wechat_diary_core.workspace import merge_tree
 from wechat_diary_core.workspace_discovery import WorkspaceResolutionError, resolve_config_path
 
 
 DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 COMPACT_DAY_RE = re.compile(r"^\d{8}$")
 DATE_SUFFIX_RE = re.compile(r"_(\d{8})(?:-\d{8})?$")
+DAY_FILE_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})\.md$")
 WINDOWS_MAX_PATH = 260
 WINDOWS_PATH_WARNING_LENGTH = 240
 
@@ -54,6 +56,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--start", help="起始日期，接受 yyyy-mm-dd 或 yyyymmdd。")
     parser.add_argument("--end", help="结束日期，接受 yyyy-mm-dd 或 yyyymmdd。")
     parser.add_argument("--out", help="本次导出的输出根目录。")
+    parser.add_argument("--merge-into", help="增量合并进已有会话目录。")
     parser.add_argument("--config", default=None, help="配置文件路径。")
     parser.add_argument("--group-window", action="store_true", help="开启群聊上下文窗口筛选。")
     parser.add_argument("--merged", action="store_true", help="额外产出整段合并 markdown。")
@@ -71,6 +74,7 @@ def main(argv: list[str] | None = None) -> int:
 
     parser = build_parser()
     args = parser.parse_args(argv)
+    _require_export_arguments(parser, args)
     try:
         config_path = resolve_config_path(args.config)
         cfg = load_config(config_path)
@@ -80,9 +84,15 @@ def main(argv: list[str] | None = None) -> int:
             _print_session_candidates(sessions, args.list_sessions)
             return 0
 
-        _require_export_arguments(parser, args)
-        start = _parse_day(args.start)
-        end = _parse_day(args.end)
+        merge_target = _resolve_merge_target(args.merge_into) if args.merge_into else None
+        if merge_target is not None:
+            start = _parse_day(args.start) if args.start else _derive_merge_start(merge_target)
+            end = _parse_day(args.end) if args.end else date.today()
+            out_root = merge_target.parent
+        else:
+            start = _parse_day(args.start)
+            end = _parse_day(args.end)
+            out_root = _resolve_output_path(args.out)
         if start > end:
             parser.error("--start 不能晚于 --end。")
         result = export_on_demand(
@@ -92,7 +102,8 @@ def main(argv: list[str] | None = None) -> int:
             session_query=args.session,
             start=start,
             end=end,
-            out_root=_resolve_output_path(args.out),
+            out_root=out_root,
+            merge_into=merge_target,
             group_window=args.group_window,
             merged=args.merged,
             copy_media=not args.no_media_copy,
@@ -129,6 +140,7 @@ def export_on_demand(
     start: date,
     end: date,
     out_root: str | Path,
+    merge_into: str | Path | None = None,
     group_window: bool = False,
     merged: bool = False,
     copy_media: bool = True,
@@ -141,8 +153,11 @@ def export_on_demand(
     if not talker:
         raise SessionSelectionError("候选会话缺少 username，无法导出。")
 
+    merge_target = Path(merge_into).expanduser().resolve() if merge_into is not None else None
+    if merge_target is not None and not merge_target.is_dir():
+        raise RuntimeError(f"合并目标必须是已有会话目录：{merge_target}")
     active_cfg = _config_for_on_demand(cfg, group_window=group_window)
-    root = Path(out_root).expanduser().resolve()
+    root = merge_target.parent if merge_target is not None else Path(out_root).expanduser().resolve()
     raw_root = root / "_raw"
     raw_root.mkdir(parents=True, exist_ok=True)
     staging_root = _make_short_staging_root(root)
@@ -177,14 +192,24 @@ def export_on_demand(
             require_media=api.media_localize,
             appmsg_text_max_chars=api.appmsg_text_max_chars,
         )
+        processed_root = staging_root / "_processed" if merge_target is not None else root
         written = (archive_fn or archive)(
             staging_root,
             config=active_cfg,
-            output_root=root,
+            output_root=processed_root,
             image_mode="preserve_paths",
             clear_first=False,
         )
-        output_session_dir, diary_files = _restore_range_directory(root, staging_session_dir.name, written)
+        if merge_target is None:
+            output_session_dir, diary_files = _restore_range_directory(root, staging_session_dir.name, written)
+        else:
+            output_session_dir, diary_files = _merge_processed_session(
+                processed_root,
+                staging_session_dir,
+                merge_target,
+                written,
+                copy_media=copy_media,
+            )
         raw_session_dir = _publish_raw_session(staging_root, raw_root, staging_session_dir.name)
     finally:
         if transcriber is not None and hasattr(transcriber, "close"):
@@ -192,9 +217,17 @@ def export_on_demand(
         if staging_root.exists():
             shutil.rmtree(staging_root)
 
-    if copy_media:
+    if copy_media and merge_target is None:
         _copy_media_tree(raw_session_dir / "media", output_session_dir / "media")
-    merged_file = _write_merged(output_session_dir, diary_files) if merged else None
+    if merge_target is None:
+        merged_file = _write_merged(output_session_dir, diary_files) if merged else None
+    else:
+        existing_merged = output_session_dir.parent / f"{output_session_dir.name}.md"
+        merged_file = (
+            _write_merged_with_header(output_session_dir, _session_display_name(session))
+            if merged or existing_merged.exists()
+            else None
+        )
     return ExportOnDemandResult(
         session=session,
         raw_session_dir=raw_session_dir,
@@ -313,6 +346,32 @@ def _restore_range_directory(
     return target, diary_files
 
 
+def _merge_processed_session(
+    processed_root: Path,
+    raw_session_dir: Path,
+    merge_target: Path,
+    written: list[Path],
+    *,
+    copy_media: bool,
+) -> tuple[Path, list[Path]]:
+    source_name = DATE_SUFFIX_RE.sub("", raw_session_dir.name)
+    source = processed_root / source_name
+    if copy_media:
+        _copy_media_tree(raw_session_dir / "media", source / "media")
+    merge_tree(source, merge_target, move=True)
+
+    diary_files: list[Path] = []
+    for path in written:
+        try:
+            candidate = merge_target / Path(path).relative_to(source)
+        except ValueError:
+            continue
+        if candidate.is_file() and candidate not in diary_files:
+            diary_files.append(candidate)
+    diary_files.sort(key=lambda item: item.name)
+    return merge_target, diary_files
+
+
 def _publish_raw_session(staging_root: Path, raw_root: Path, session_name: str) -> Path:
     """Publish only this run's canonical raw session into the accumulating raw root."""
 
@@ -386,11 +445,59 @@ def _copy_media_tree(source: Path, target: Path) -> None:
 def _write_merged(session_dir: Path, diary_files: list[Path]) -> Path | None:
     if not diary_files:
         return None
-    chunks = [path.read_text(encoding="utf-8").rstrip() for path in diary_files]
-    body = "\n\n".join(chunk for chunk in chunks if chunk)
+    body = _build_merged_body(diary_files)
     destination = session_dir.parent / f"{session_dir.name}.md"
     destination.write_text(f"{body}\n" if body else "", encoding="utf-8")
     return destination
+
+
+def _build_merged_body(diary_files: list[Path]) -> str:
+    chunks = [path.read_text(encoding="utf-8").rstrip() for path in diary_files]
+    return "\n\n".join(chunk for chunk in chunks if chunk)
+
+
+def _write_merged_with_header(session_dir: Path, display_name: str) -> Path | None:
+    diary_files = _daily_markdown_files(session_dir)
+    if not diary_files:
+        return None
+    body = _build_merged_body(diary_files)
+    first_day = diary_files[0].stem
+    last_day = diary_files[-1].stem
+    generated_at = datetime.now().strftime("%Y-%m-%d %H:%M")
+    header = (
+        f"> 会话：{display_name}　覆盖：{first_day} ~ {last_day}　"
+        f"共 {len(diary_files)} 天　生成于 {generated_at}"
+    )
+    destination = session_dir.parent / f"{session_dir.name}.md"
+    destination.write_text(f"{header}\n\n{body}" + ("\n" if body else ""), encoding="utf-8")
+    return destination
+
+
+def _daily_markdown_files(session_dir: Path) -> list[Path]:
+    if not session_dir.is_dir():
+        return []
+    return sorted(
+        (path for path in session_dir.iterdir() if path.is_file() and DAY_FILE_RE.fullmatch(path.name)),
+        key=lambda path: path.name,
+    )
+
+
+def _derive_merge_start(merge_target: Path) -> date:
+    diary_files = _daily_markdown_files(merge_target)
+    if not diary_files:
+        raise ValueError("合并目标没有分日 markdown；首次合并必须显式提供 --start。")
+    return _parse_day(diary_files[-1].stem)
+
+
+def _resolve_merge_target(value: str) -> Path:
+    target = _resolve_output_path(value)
+    if not target.is_dir():
+        raise RuntimeError(f"合并目标必须是已有会话目录：{target}")
+    return target
+
+
+def _session_display_name(session: dict[str, Any]) -> str:
+    return str(session.get("displayName") or session.get("nickname") or session.get("username") or "未知会话")
 
 
 def _resolve_output_path(value: str) -> Path:
@@ -407,7 +514,7 @@ def _format_os_error(exc: OSError) -> str:
     ):
         return (
             "按需导出失败：输出路径过长（Windows 单路径上限 260 字符，"
-            f"当前 {path_length} 字符）。请改用更短的 --out 目录，"
+            f"当前 {path_length} 字符）。请改用更短的 --out 或 --merge-into 路径，"
             "或启用 Windows 长路径支持后重试。"
         )
     return f"按需导出失败：{exc}"
@@ -447,6 +554,14 @@ def _parse_day(value: str | None) -> date:
 
 
 def _require_export_arguments(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    if args.out and args.merge_into:
+        parser.error("--out 与 --merge-into 不能同时提供。")
+    if args.list_sessions is not None:
+        return
+    if args.merge_into:
+        if not args.session:
+            parser.error("合并模式缺少参数：--session")
+        return
     missing = [name for name in ("session", "start", "end", "out") if not getattr(args, name)]
     if missing:
         parser.error("导出模式缺少参数：" + ", ".join(f"--{name}" for name in missing))
