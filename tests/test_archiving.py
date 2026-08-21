@@ -292,6 +292,142 @@ class ArchivingTests(unittest.TestCase):
         self.assertNotIn("浪前", text)
         self.assertNotIn("消息0", text)
 
+    def test_recall_notice_uses_content_subject_for_group_system_messages(self) -> None:
+        from wechat_diary_core.chat_flow import render_chat_flow
+
+        messages = [
+            {
+                "createTime": 1778864900,
+                "formattedTime": "2026-05-16 09:08:20",
+                "type": "其他消息",
+                "content": "你撤回了一条消息",
+                "isSend": 0,
+                "senderUsername": "group-placeholder@chatroom",
+                "senderDisplayName": "群聊占位",
+                "senderNickname": "群聊占位",
+            },
+            {
+                "createTime": 1778864960,
+                "formattedTime": "2026-05-16 09:09:20",
+                "type": "系统消息",
+                "content": '"组织-群成员" 撤回了一条消息0',
+                "isSend": 0,
+                "senderUsername": "group-placeholder@chatroom",
+                "senderDisplayName": "群聊占位",
+                "senderNickname": "群聊占位",
+            },
+            {
+                "createTime": 1778865020,
+                "formattedTime": "2026-05-16 09:10:20",
+                "type": "系统消息",
+                "content": '"前缀-私聊成员" 撤回了一条消息0',
+                "isSend": 0,
+                "senderUsername": "private-placeholder",
+                "senderDisplayName": "前缀-私聊成员",
+            },
+        ]
+
+        text = render_chat_flow(messages)
+
+        self.assertIn("我 撤回了一条消息", text)
+        self.assertIn("群成员 撤回了一条消息", text)
+        self.assertIn("私聊成员 撤回了一条消息", text)
+        self.assertNotIn("群聊占位 撤回了一条消息", text)
+        self.assertNotIn("群成员：", text)
+        self.assertNotIn("消息0", text)
+
+    def test_recall_notice_uses_private_content_subject_when_sender_is_counterpart(self) -> None:
+        from wechat_diary_core.chat_flow import render_chat_flow
+
+        messages = [
+            {
+                "createTime": 1778865080,
+                "formattedTime": "2026-05-16 09:11:20",
+                "type": "系统消息",
+                "content": "你撤回了一条消息",
+                "isSend": 0,
+                "senderUsername": "private-counterpart-placeholder",
+                "senderDisplayName": "对方占位",
+                "senderNickname": "对方占位",
+            },
+        ]
+
+        text = render_chat_flow(messages)
+
+        self.assertIn("我 撤回了一条消息", text)
+        self.assertNotIn("对方占位 撤回了一条消息", text)
+
+    def test_text_message_matching_recall_pattern_renders_as_ordinary_message(self) -> None:
+        from wechat_diary_core.chat_flow import render_chat_flow
+
+        messages = [
+            {
+                "createTime": 1778865140,
+                "formattedTime": "2026-05-16 09:12:20",
+                "type": "文本消息",
+                "content": "你撤回了一条消息",
+                "isSend": 0,
+                "senderUsername": "counterpart-placeholder",
+                "senderDisplayName": "对方昵称",
+            },
+        ]
+
+        text = render_chat_flow(messages)
+
+        self.assertIn("对方昵称：撤回了一条消息", text)
+        self.assertNotIn("对方昵称 撤回了一条消息", text)
+        self.assertNotIn("我 撤回了一条消息", text)
+
+    def test_recall_notice_accepts_both_supported_message_types(self) -> None:
+        from wechat_diary_core.chat_flow import render_chat_flow
+
+        messages = [
+            {
+                "createTime": 1778865200,
+                "formattedTime": "2026-05-16 09:13:20",
+                "type": "系统消息",
+                "content": "你撤回了一条消息",
+                "isSend": 0,
+                "senderUsername": "system-placeholder",
+                "senderDisplayName": "系统占位",
+            },
+            {
+                "createTime": 1778865260,
+                "formattedTime": "2026-05-16 09:14:20",
+                "type": "其他消息",
+                "content": '"成员占位" 撤回了一条消息0',
+                "isSend": 0,
+                "senderUsername": "other-placeholder",
+                "senderDisplayName": "其他占位",
+            },
+        ]
+
+        text = render_chat_flow(messages)
+
+        self.assertIn("我 撤回了一条消息", text)
+        self.assertIn("成员占位 撤回了一条消息", text)
+        self.assertNotIn("系统占位：", text)
+        self.assertNotIn("其他占位：", text)
+
+    def test_recall_like_message_without_type_does_not_raise(self) -> None:
+        from wechat_diary_core.chat_flow import render_chat_flow
+
+        messages = [
+            {
+                "createTime": 1778865320,
+                "formattedTime": "2026-05-16 09:15:20",
+                "content": "你撤回了一条消息",
+                "isSend": 0,
+                "senderUsername": "missing-type-placeholder",
+                "senderDisplayName": "缺失类型占位",
+            },
+        ]
+
+        text = render_chat_flow(messages)
+
+        self.assertIn("缺失类型占位：撤回了一条消息", text)
+        self.assertNotIn("缺失类型占位 撤回了一条消息", text)
+
     def test_voice_fail_messages_collapse_to_voice_marker(self) -> None:
         from wechat_diary_core.chat_flow import render_chat_flow
 

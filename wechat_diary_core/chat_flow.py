@@ -16,7 +16,10 @@ VOICE_FAIL_PATTERN_RE = re.compile(r"^\[?语音消息\s*-\s*转文字失败.*\]?
 XML_TITLE_RE = re.compile(r"<title>(.*?)</title>", re.DOTALL | re.IGNORECASE)
 LINK_MARKER_RE = re.compile(r"^\[链接\]\s*(.+)$")
 LINK_URL_SUFFIX_RE = re.compile(r"\s*\|\s*https?://\S+\s*$")
-RECALL_NOTICE_RE = re.compile(r'^(?:(?:["“][^"”]+["”])|(?:你|我)|(?:[^\s：:]{1,80}))?\s*撤回了一条消息\d*$')
+RECALL_NOTICE_RE = re.compile(
+    r'^(?P<subject>(?:(?:["“][^"”]+["”])|(?:你|我)|(?:[^\s：:]{1,80}))?)\s*撤回了一条消息\d*$'
+)
+RECALL_NOTICE_TYPES = frozenset({"系统消息", "其他消息"})
 
 
 def render_chat_flow(messages: list[Message]) -> str:
@@ -38,7 +41,7 @@ def render_chat_flow(messages: list[Message]) -> str:
         content = render_message_content(message)
         if content:
             if _is_recall_notice(message, content):
-                lines.append(f"{sender} {content}")
+                lines.append(f"{_recall_sender_display_name(message, fallback=sender)} {content}")
             else:
                 lines.append(f"{sender}：{content}")
 
@@ -234,8 +237,24 @@ def _normalize_recall_notice(value: str) -> str:
     return "撤回了一条消息" if RECALL_NOTICE_RE.match(value.strip()) else ""
 
 
+def _recall_sender_display_name(message: Message, *, fallback: str) -> str:
+    """以 content 主体为准：撤回系统消息的 sender 不可靠，群聊为群自身，私聊也有本人/对方两种实例。"""
+    match = RECALL_NOTICE_RE.match(str(message.get("content") or "").strip())
+    if not match:
+        return fallback
+
+    subject = match.group("subject").strip()
+    if subject in {"你", "我"}:
+        return "我"
+    if len(subject) >= 2 and subject[0] in {'"', '“'} and subject[-1] in {'"', '”'}:
+        subject = subject[1:-1].strip()
+    return simplify_display_name(subject) if subject else fallback
+
+
 def _is_recall_notice(message: Message, content: str) -> bool:
     if content != "撤回了一条消息":
+        return False
+    if str(message.get("type") or "") not in RECALL_NOTICE_TYPES:
         return False
     return bool(_normalize_recall_notice(str(message.get("content") or "")))
 
