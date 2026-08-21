@@ -374,9 +374,74 @@ class ArchivingTests(unittest.TestCase):
 
         text = render_chat_flow(messages)
 
-        self.assertIn("对方昵称：撤回了一条消息", text)
+        self.assertIn("对方昵称：你撤回了一条消息", text)
         self.assertNotIn("对方昵称 撤回了一条消息", text)
         self.assertNotIn("我 撤回了一条消息", text)
+
+    def test_recall_like_text_preserves_subject_in_quote_target_and_compression(self) -> None:
+        from wechat_diary_core.chat_flow import render_chat_flow
+        from wechat_diary_core.preprocessing.time_compress import compress_nearby_messages
+
+        recalled_text = "你撤回了一条消息"
+        quoted_text = '"另一位成员" 撤回了一条消息0'
+        quoted_target = {
+            "createTime": 1778865140,
+            "formattedTime": "2026-05-16 09:12:20",
+            "type": "文本消息",
+            "content": recalled_text,
+            "isSend": 0,
+            "senderUsername": "counterpart-placeholder",
+            "senderDisplayName": "对方昵称",
+        }
+        quote = {
+            "createTime": 1778865200,
+            "formattedTime": "2026-05-16 09:13:20",
+            "type": "引用消息",
+            "content": "回复这条消息",
+            "isSend": 0,
+            "senderUsername": "counterpart-placeholder",
+            "senderDisplayName": "对方昵称",
+            "replyContext": quoted_target,
+        }
+        compressed = compress_nearby_messages(
+            [
+                quoted_target,
+                {
+                    "createTime": 1778865150,
+                    "formattedTime": "2026-05-16 09:12:30",
+                    "type": "文本消息",
+                    "content": quoted_text,
+                    "isSend": 0,
+                    "senderUsername": "counterpart-placeholder",
+                    "senderDisplayName": "对方昵称",
+                },
+            ]
+        )
+
+        quote_text = render_chat_flow([quote])
+        compressed_text = render_chat_flow(compressed)
+
+        self.assertIn("对方昵称：回复这条消息[引用 对方昵称：你撤回了一条消息]", quote_text)
+        self.assertIn('对方昵称：你撤回了一条消息 | "另一位成员" 撤回了一条消息0', compressed_text)
+
+    def test_recall_notice_without_subject_is_neutral_and_never_falls_back_to_sender(self) -> None:
+        from wechat_diary_core.chat_flow import render_chat_flow
+
+        text = render_chat_flow(
+            [
+                {
+                    "createTime": 1778865200,
+                    "formattedTime": "2026-05-16 09:13:20",
+                    "type": "系统消息",
+                    "content": "撤回了一条消息",
+                    "isSend": 0,
+                    "senderDisplayName": "不可信发送者",
+                }
+            ]
+        )
+
+        self.assertIn("\n撤回了一条消息\n", text)
+        self.assertNotIn("不可信发送者", text)
 
     def test_recall_notice_accepts_both_supported_message_types(self) -> None:
         from wechat_diary_core.chat_flow import render_chat_flow
@@ -425,7 +490,7 @@ class ArchivingTests(unittest.TestCase):
 
         text = render_chat_flow(messages)
 
-        self.assertIn("缺失类型占位：撤回了一条消息", text)
+        self.assertIn("缺失类型占位：你撤回了一条消息", text)
         self.assertNotIn("缺失类型占位 撤回了一条消息", text)
 
     def test_voice_fail_messages_collapse_to_voice_marker(self) -> None:

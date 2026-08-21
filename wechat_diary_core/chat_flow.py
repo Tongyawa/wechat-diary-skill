@@ -38,12 +38,13 @@ def render_chat_flow(messages: list[Message]) -> str:
             sender = f"{sender}【置顶消息】"
         elif message.get("is_self_related_pat"):
             sender = "拍一拍"
+        recall_subject = _parse_recall_event(message)
         content = render_message_content(message)
-        if content:
-            if _is_recall_notice(message, content):
-                lines.append(f"{_recall_sender_display_name(message, fallback=sender)} {content}")
-            else:
-                lines.append(f"{sender}：{content}")
+        if recall_subject is not None:
+            notice = "撤回了一条消息"
+            lines.append(f"{recall_subject} {notice}" if recall_subject else notice)
+        elif content:
+            lines.append(f"{sender}：{content}")
 
         previous_time = current_time
 
@@ -219,9 +220,6 @@ def _extract_xml_title(value: str) -> str:
 
 
 def _normalize_special_text(value: str) -> str:
-    recall = _normalize_recall_notice(value)
-    if recall:
-        return recall
     return _normalize_link_text(value)
 
 
@@ -233,30 +231,25 @@ def _normalize_link_text(value: str) -> str:
     return f"[链接：{title or '链接'}]"
 
 
-def _normalize_recall_notice(value: str) -> str:
-    return "撤回了一条消息" if RECALL_NOTICE_RE.match(value.strip()) else ""
+def _parse_recall_event(message: Message) -> str | None:
+    """Return a normalized recall subject, or ``None`` when this is not a recall event.
 
+    A blank string is a valid event without a trustworthy subject and must render as
+    a neutral notice; system-message senders cannot safely be used as a fallback.
+    """
+    if str(message.get("type") or "") not in RECALL_NOTICE_TYPES:
+        return None
 
-def _recall_sender_display_name(message: Message, *, fallback: str) -> str:
-    """以 content 主体为准：撤回系统消息的 sender 不可靠，群聊为群自身，私聊也有本人/对方两种实例。"""
     match = RECALL_NOTICE_RE.match(str(message.get("content") or "").strip())
     if not match:
-        return fallback
+        return None
 
     subject = match.group("subject").strip()
     if subject in {"你", "我"}:
         return "我"
     if len(subject) >= 2 and subject[0] in {'"', '“'} and subject[-1] in {'"', '”'}:
         subject = subject[1:-1].strip()
-    return simplify_display_name(subject) if subject else fallback
-
-
-def _is_recall_notice(message: Message, content: str) -> bool:
-    if content != "撤回了一条消息":
-        return False
-    if str(message.get("type") or "") not in RECALL_NOTICE_TYPES:
-        return False
-    return bool(_normalize_recall_notice(str(message.get("content") or "")))
+    return simplify_display_name(subject) if subject else ""
 
 
 def _extract_ocr_text(value: str) -> str:
