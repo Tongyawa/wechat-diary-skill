@@ -150,14 +150,22 @@ def main(argv: list[str] | None = None) -> int:
     _warn_if_backup_stale(cfg)
 
     if completed_with_warnings:
-        print(
-            "[WARN] 本轮以下可选阶段失败、已跳过: "
-            + ", ".join(result.partial_failures)
-            + "。聊天 diary 已正常产出；这些朋友圈可在修复/WeFlow 空闲后单独补跑。",
-            file=sys.stderr,
-        )
+        _print_partial_failure_summary(result.partial_failures)
         return 1
     return 0
+
+
+def _print_partial_failure_summary(partial_failures: list[str]) -> None:
+    print("[WARN] 本轮有阶段失败或媒体降级，成功部分已继续产出：", file=sys.stderr)
+    for failure in partial_failures:
+        readable = " ".join(str(failure).split())
+        if len(readable) > 210:
+            readable = readable[:207] + "..."
+        print(f"[WARN] - {readable}", file=sys.stderr)
+    print(
+        "[WARN] 对应的聊天或朋友圈可在修复数据源、或 WeFlow 空闲后按相应入口补跑。",
+        file=sys.stderr,
+    )
 
 
 def _warn_if_backup_stale(cfg: Config) -> None:

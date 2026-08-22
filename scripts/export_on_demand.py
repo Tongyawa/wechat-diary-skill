@@ -19,7 +19,7 @@ if str(ROOT) not in sys.path:
 from wechat_diary_core.archiving import archive
 from wechat_diary_core.asr import SenseVoiceTranscriber
 from wechat_diary_core.backends.weflow_api.client import WeflowApiClient
-from wechat_diary_core.backends.weflow_api.mapper import write_session_export
+from wechat_diary_core.backends.weflow_api.mapper import ImageMediaStats, write_session_export
 from wechat_diary_core.config import Config, load_config
 from wechat_diary_core.workspace import merge_tree
 from wechat_diary_core.workspace_discovery import WorkspaceResolutionError, resolve_config_path
@@ -48,6 +48,8 @@ class ExportOnDemandResult:
     output_session_dir: Path
     diary_files: list[Path]
     merged_file: Path | None
+    missing_image_paths: int = 0
+    missing_image_files: int = 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -128,6 +130,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"- {path}")
     if result.merged_file is not None:
         print(f"合并文件：{result.merged_file}")
+    if result.missing_image_paths or result.missing_image_files:
+        print(
+            f"[WARN] 图片已降级为 [图片]：缺少本地路径 {result.missing_image_paths} 条；"
+            f"路径指向的文件不存在 {result.missing_image_files} 条。导出已继续。",
+            file=sys.stderr,
+        )
     return 0
 
 
@@ -176,6 +184,7 @@ def export_on_demand(
         enabled=enable_asr,
         transcriber_factory=transcriber_factory or SenseVoiceTranscriber,
     )
+    image_media_stats = ImageMediaStats()
     try:
         staging_session_dir = write_session_export(
             staging_root,
@@ -191,6 +200,7 @@ def export_on_demand(
             emit_emotion=active_cfg.asr.emit_emotion,
             require_media=api.media_localize,
             appmsg_text_max_chars=api.appmsg_text_max_chars,
+            image_media_stats=image_media_stats,
         )
         processed_root = staging_root / "_processed" if merge_target is not None else root
         written = (archive_fn or archive)(
@@ -234,6 +244,8 @@ def export_on_demand(
         output_session_dir=output_session_dir,
         diary_files=diary_files,
         merged_file=merged_file,
+        missing_image_paths=image_media_stats.missing_image_paths,
+        missing_image_files=image_media_stats.missing_image_files,
     )
 
 

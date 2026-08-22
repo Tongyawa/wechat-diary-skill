@@ -7,16 +7,23 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import date
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from wechat_diary_core.backends.weflow_api.backend import WeflowApiBackend
 from wechat_diary_core.backends.weflow_api.client import WeflowApiError
 from wechat_diary_core.backends.weflow_api.failure_state import SessionFailureState
+from wechat_diary_core.backends.weflow_api.mapper import ImageMediaStats
 from wechat_diary_core.config import load_config
 from wechat_diary_core.raw_schema import validate_moments_json, validate_session_json
 
 
-def _config(root: Path, *, asr_engine: str = "", skip_official_accounts: bool = True):
+def _config(
+    root: Path,
+    *,
+    asr_engine: str = "",
+    skip_official_accounts: bool = True,
+    media_localize: bool = True,
+):
     path = root / "config.toml"
     path.write_text(
         f"""
@@ -35,6 +42,7 @@ backend = "weflow_api"
 [export_backend.weflow_api]
 base_url = "http://127.0.0.1:5031"
 access_token = "fixed-token"
+media_localize = {str(media_localize).lower()}
 
 [daily_export]
 self_moments_usernames = []
@@ -421,6 +429,125 @@ class WeflowApiBackendTests(unittest.TestCase):
         self.assertEqual(backend.partial_failures, ["export_chat_session:wxid_fail_placeholder"])
         self.assertEqual(len(exports), 1)
         validate_session_json(payload)
+
+    def test_missing_image_reasons_are_one_visible_partial_per_published_session(self) -> None:
+        class MissingImageClient(_Client):
+            def __init__(self, missing_file: Path):
+                super().__init__()
+                self.missing_file = missing_file
+
+            def fetch_sessions(self, *, limit):
+                return [{"username": "wxid_image_placeholder", "displayName": "图片会话占位"}]
+
+            def fetch_contacts(self, *, limit):
+                return [
+                    {
+                        "username": "wxid_image_placeholder",
+                        "displayName": "图片会话占位",
+                        "nickname": "图片会话占位",
+                    }
+                ]
+
+            def fetch_messages(self, talker, **kwargs):
+                base = {
+                    "localType": 3,
+                    "isSend": 0,
+                    "senderUsername": talker,
+                    "content": "",
+                    "rawContent": "",
+                    "parsedContent": "",
+                    "replyToMessageId": "",
+                    "quote": None,
+                }
+                return [
+                    {
+                        **base,
+                        "localId": 1,
+                        "serverId": "image-server-placeholder-1",
+                        "createTime": 1785921697,
+                        "mediaLocalPath": "",
+                    },
+                    {
+                        **base,
+                        "localId": 2,
+                        "serverId": "image-server-placeholder-2",
+                        "createTime": 1785921698,
+                        "mediaLocalPath": str(self.missing_file),
+                    },
+                ]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = _config(root)
+            backend = WeflowApiBackend(cfg)
+            backend._client = MissingImageClient(root / "absent-image.jpg")
+            errors = io.StringIO()
+            with redirect_stderr(errors):
+                backend.export_chats(date(2026, 8, 5))
+            export = next(cfg.paths.raw.glob("私聊_图片会话占位_20260805/*.json"))
+            payload = json.loads(export.read_text(encoding="utf-8"))
+
+        warning = errors.getvalue()
+        self.assertEqual(
+            backend.partial_failures,
+            ["export_chat_image_media:wxid_image_placeholder:missing_path=1:missing_file=1"],
+        )
+        self.assertEqual(warning.count("[WARN]"), 1)
+        self.assertIn("缺少本地路径 1 条", warning)
+        self.assertIn("路径指向的文件不存在 1 条", warning)
+        self.assertLess(len(warning), 240)
+        self.assertTrue(all(message["content"] == "[图片]" for message in payload["messages"]))
+        validate_session_json(payload)
+
+    def test_media_localize_disabled_does_not_count_absent_image_paths_or_mark_partial(self) -> None:
+        class MediaNotRequestedClient(_Client):
+            def fetch_sessions(self, *, limit):
+                return [{"username": "wxid_image_placeholder", "displayName": "图片会话占位"}]
+
+            def fetch_contacts(self, *, limit):
+                return [{"username": "wxid_image_placeholder", "displayName": "图片会话占位"}]
+
+            def fetch_messages(self, talker, **kwargs):
+                self.requested_media = kwargs["media"]
+                return [
+                    {
+                        "localId": index,
+                        "serverId": f"image-server-placeholder-{index}",
+                        "localType": 3,
+                        "createTime": 1785921697 + index,
+                        "isSend": 0,
+                        "senderUsername": talker,
+                        "content": "",
+                        "rawContent": "",
+                        "parsedContent": "",
+                        "replyToMessageId": "",
+                        "quote": None,
+                    }
+                    for index in range(5)
+                ]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = _config(root, media_localize=False)
+            client = MediaNotRequestedClient()
+            backend = WeflowApiBackend(cfg)
+            backend._client = client
+            image_media_stats = ImageMediaStats()
+            errors = io.StringIO()
+            with (
+                patch(
+                    "wechat_diary_core.backends.weflow_api.backend.ImageMediaStats",
+                    return_value=image_media_stats,
+                ),
+                redirect_stderr(errors),
+            ):
+                backend.export_chats(date(2026, 8, 5))
+
+        self.assertFalse(client.requested_media)
+        self.assertEqual(image_media_stats.missing_image_paths, 0)
+        self.assertEqual(image_media_stats.missing_image_files, 0)
+        self.assertEqual(backend.partial_failures, [])
+        self.assertNotIn("[WARN]", errors.getvalue())
 
     def test_moments_media_failure_is_partial_and_canonical_json_still_publishes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

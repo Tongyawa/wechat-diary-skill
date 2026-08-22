@@ -21,6 +21,12 @@ from .appmsg import AppmsgMeta, parse_appmsg
 from .type_map import resolve_message_type, unpack_local_type
 
 
+@dataclass
+class ImageMediaStats:
+    missing_image_paths: int = 0
+    missing_image_files: int = 0
+
+
 def session_date_suffix(start: date, end: date) -> str:
     first = start.strftime("%Y%m%d")
     last = end.strftime("%Y%m%d")
@@ -47,6 +53,7 @@ def map_session_json(
     emit_emotion: bool = True,
     require_media: bool = True,
     appmsg_text_max_chars: int = 300,
+    image_media_stats: ImageMediaStats | None = None,
 ) -> dict[str, Any]:
     """Map one talker; callable independently from the daily runner."""
 
@@ -75,6 +82,7 @@ def map_session_json(
         if bool(message.get("isSend")) and str(message.get("senderUsername") or "")
     ]
     effective_self_wxids = list(dict.fromkeys([*observed_self_wxids, *map(str, self_wxids)]))
+    active_image_media_stats = image_media_stats or ImageMediaStats()
     mapped_messages = [
         _map_message(
             message,
@@ -90,6 +98,7 @@ def map_session_json(
             emit_emotion=emit_emotion,
             require_media=require_media,
             appmsg_text_max_chars=appmsg_text_max_chars,
+            image_media_stats=active_image_media_stats,
         )
         for message in ordered_messages
     ]
@@ -132,6 +141,7 @@ def write_session_export(
     emit_emotion: bool = True,
     require_media: bool = True,
     appmsg_text_max_chars: int = 300,
+    image_media_stats: ImageMediaStats | None = None,
 ) -> Path:
     """Validate and atomically publish one complete canonical session directory."""
 
@@ -140,6 +150,7 @@ def write_session_export(
     staging_parent.mkdir(parents=True, exist_ok=True)
     directory_name = session_directory_name(session, start, end)
     staging_dir = Path(tempfile.mkdtemp(prefix=f"{directory_name}-", dir=staging_parent))
+    active_image_media_stats = image_media_stats or ImageMediaStats()
     try:
         media_dir = staging_dir / "media"
         data = map_session_json(
@@ -154,6 +165,7 @@ def write_session_export(
             emit_emotion=emit_emotion,
             require_media=require_media,
             appmsg_text_max_chars=appmsg_text_max_chars,
+            image_media_stats=active_image_media_stats,
         )
         json_path = staging_dir / f"{directory_name}.json"
         json_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -349,6 +361,7 @@ def _map_message(
     emit_emotion: bool,
     require_media: bool,
     appmsg_text_max_chars: int,
+    image_media_stats: ImageMediaStats,
 ) -> dict[str, Any]:
     local_type = int(message.get("localType") or 0)
     base, app_type = unpack_local_type(local_type)
@@ -370,7 +383,13 @@ def _map_message(
     else:
         sender_display = _display_name(sender_record, sender)
 
-    relative_media = _localize_media(message, base, media_dir, require_media=require_media)
+    relative_media = _localize_media(
+        message,
+        base,
+        media_dir,
+        require_media=require_media,
+        image_media_stats=image_media_stats,
+    )
     content = _message_content(
         message,
         resolved.placeholder,
@@ -564,18 +583,20 @@ def _localize_media(
     media_dir: Path | None,
     *,
     require_media: bool,
+    image_media_stats: ImageMediaStats,
 ) -> str:
     if base not in {3, 34, 47} or media_dir is None:
         return ""
     source_text = str(message.get("mediaLocalPath") or "")
     if not source_text:
         if base == 3 and require_media:
-            raise FileNotFoundError("图片消息缺少 mediaLocalPath")
+            image_media_stats.missing_image_paths += 1
         return ""
     source = Path(source_text)
     if not source.is_file():
+        # 声明了路径却找不到文件始终是异常；require_media=False 时正常响应不会进入此分支。
         if base == 3:
-            raise FileNotFoundError(f"图片媒体不存在：{source}")
+            image_media_stats.missing_image_files += 1
         return ""
     subdir = {3: "images", 34: "voices", 47: "emojis"}[base]
     filename = sanitize_session_name(
@@ -684,6 +705,7 @@ def _replace_directory(source: Path, destination: Path) -> None:
 
 
 __all__ = [
+    "ImageMediaStats",
     "MomentsExportResult",
     "map_moments_json",
     "map_session_json",

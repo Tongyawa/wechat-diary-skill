@@ -8,6 +8,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 from wechat_diary_core.backends.weflow_api.mapper import (
+    ImageMediaStats,
     map_moments_json,
     map_session_json,
     moments_filename,
@@ -156,6 +157,76 @@ class WeflowApiMapperTests(unittest.TestCase):
         self.assertNotEqual(mapped_by_local_id[2335]["content"], "[语音]")
         self.assertEqual(mapped_by_local_id[text_message["localId"]]["content"], text_message["content"])
 
+    def test_real_missing_image_shape_preserves_all_voice_transcripts_and_publishes(self) -> None:
+        class EchoWorker:
+            def transcribe(self, audio_path):
+                return {"text": f"完整转写 {audio_path.stem}"}
+
+        session = _fixture("sessions.json")["sessions"][0]
+        template = copy.deepcopy(_fixture("messages.json")["messages"][0])
+        images = []
+        voices = []
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for index in range(28):
+                image = copy.deepcopy(template)
+                image.update(
+                    {
+                        "localId": 3000 + index,
+                        "serverId": f"image-server-placeholder-{index}",
+                        "localType": 3,
+                        "createTime": 1785921000 + index,
+                        "content": "",
+                        "mediaLocalPath": "",
+                    }
+                )
+                images.append(image)
+            for index in range(21):
+                voice_file = root / f"voice-{index:02d}.wav"
+                voice_file.write_bytes(b"RIFF\x00\x00\x00\x00WAVE")
+                voice = copy.deepcopy(template)
+                voice.update(
+                    {
+                        "localId": 4000 + index,
+                        "serverId": f"voice-server-placeholder-{index}",
+                        "localType": 34,
+                        "createTime": 1785922000 + index,
+                        "content": "[语音]",
+                        "mediaLocalPath": str(voice_file),
+                        "mediaFileName": voice_file.name,
+                    }
+                )
+                voices.append(voice)
+
+            image_media_stats = ImageMediaStats()
+            destination = write_session_export(
+                root / "raw",
+                session,
+                [*images, *voices],
+                start=date(2026, 8, 5),
+                end=date(2026, 8, 5),
+                contacts=_fixture("contacts.json")["contacts"],
+                transcriber=EchoWorker(),
+                image_media_stats=image_media_stats,
+            )
+            payload = json.loads(
+                (destination / f"{destination.name}.json").read_text(encoding="utf-8")
+            )
+
+        validate_session_json(payload)
+        self.assertEqual(image_media_stats.missing_image_paths, 28)
+        self.assertEqual(image_media_stats.missing_image_files, 0)
+        self.assertEqual(set(payload), {"session", "messages", "weflow"})
+        self.assertEqual(sum(message["content"] == "[图片]" for message in payload["messages"]), 28)
+        voice_contents = [
+            message["content"] for message in payload["messages"] if message["type"] == "语音消息"
+        ]
+        self.assertEqual(len(voice_contents), 21)
+        self.assertEqual(
+            voice_contents,
+            [f"[语音转文字] 完整转写 voice-{index:02d}" for index in range(21)],
+        )
+
     def test_range_export_uses_type_prefix_and_range_suffix_and_validates(self) -> None:
         session = _fixture("sessions.json")["sessions"][0]
         messages = _fixture("messages.json")["messages"]
@@ -178,8 +249,6 @@ class WeflowApiMapperTests(unittest.TestCase):
 
     def test_session_failure_never_publishes_partial_live_directory(self) -> None:
         session = _fixture("sessions.json")["sessions"][0]
-        message = copy.deepcopy(_fixture("messages.json")["messages"][0])
-        message.update({"localType": 3, "mediaLocalPath": "Z:/missing/image.jpg", "mediaFileName": "image.jpg"})
         with tempfile.TemporaryDirectory() as tmp:
             raw = Path(tmp) / "raw"
             expected = raw / session_directory_name(session, date(2026, 8, 5), date(2026, 8, 5))
@@ -191,14 +260,14 @@ class WeflowApiMapperTests(unittest.TestCase):
                 end=date(2026, 8, 5),
                 contacts=_fixture("contacts.json")["contacts"],
             )
-            with self.assertRaises(FileNotFoundError):
+            with self.assertRaises(ValueError):
                 write_session_export(
                     raw,
                     session,
-                    [message],
+                    _fixture("messages.json")["messages"],
                     start=date(2026, 8, 5),
                     end=date(2026, 8, 5),
-                    contacts=_fixture("contacts.json")["contacts"],
+                    contacts=[{"username": f"contact-placeholder-{index}"} for index in range(100)],
                 )
             # A failed rerun leaves the previous complete live snapshot intact.
             self.assertTrue(expected.exists())

@@ -17,7 +17,7 @@ from ...asr import SenseVoiceTranscriber
 from ...config import Config
 from .client import WeflowApiClient, WeflowApiError
 from .failure_state import SessionFailureState
-from .mapper import write_moments_export, write_session_export
+from .mapper import ImageMediaStats, write_moments_export, write_session_export
 
 
 @dataclass
@@ -136,6 +136,7 @@ class WeflowApiBackend:
                 messages_found += 1
                 members = self.client.fetch_group_members(talker) if talker.endswith("@chatroom") else []
                 transcriber, reason = self._asr()
+                image_media_stats = ImageMediaStats()
                 write_session_export(
                     self.config.paths.raw,
                     session,
@@ -150,7 +151,22 @@ class WeflowApiBackend:
                     emit_emotion=self.config.asr.emit_emotion,
                     require_media=self.config.export_backend.weflow_api.media_localize,
                     appmsg_text_max_chars=self.config.export_backend.weflow_api.appmsg_text_max_chars,
+                    image_media_stats=image_media_stats,
                 )
+                if image_media_stats.missing_image_paths or image_media_stats.missing_image_files:
+                    marker = (
+                        f"export_chat_image_media:{talker}:"
+                        f"missing_path={image_media_stats.missing_image_paths}:"
+                        f"missing_file={image_media_stats.missing_image_files}"
+                    )
+                    self.partial_failures.append(marker)
+                    readable_name = _readable_error_summary(display_name, limit=60)
+                    print(
+                        f"[WARN] 会话「{readable_name}」有图片降级为 [图片]："
+                        f"缺少本地路径 {image_media_stats.missing_image_paths} 条；"
+                        f"路径指向的文件不存在 {image_media_stats.missing_image_files} 条。已继续导出。",
+                        file=sys.stderr,
+                    )
                 published_sessions += 1
                 self._record_session_success(state, talker, display_name)
             except Exception as exc:

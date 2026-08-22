@@ -6,7 +6,7 @@ import json
 import re
 import tempfile
 import unittest
-from contextlib import redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from unittest import mock
@@ -221,6 +221,88 @@ class ExportOnDemandTests(unittest.TestCase):
             canonical = json.loads(canonical_path.read_text(encoding="utf-8"))
 
         self.assertEqual(canonical["messages"][0]["content"], "[接龙] 配置贯通验…")
+
+    def test_missing_image_counts_flow_through_on_demand_without_schema_change(self) -> None:
+        session = {"username": "wxid_image_placeholder", "displayName": "图片会话占位"}
+        base = _private_fixture_messages()[0]
+        missing_path = {
+            **base,
+            "localId": 1,
+            "serverId": "image-server-placeholder-1",
+            "localType": 3,
+            "mediaLocalPath": "",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            missing_file = {
+                **base,
+                "localId": 2,
+                "serverId": "image-server-placeholder-2",
+                "localType": 3,
+                "mediaLocalPath": str(root / "absent-image.jpg"),
+            }
+            cfg = _config(root)
+            result = module.export_on_demand(
+                cfg,
+                sessions=[session],
+                client=FixtureClient([session], {session["username"]: [missing_path, missing_file]}),
+                session_query=session["username"],
+                start=date(2026, 8, 5),
+                end=date(2026, 8, 5),
+                out_root=root / "out",
+                copy_media=False,
+                enable_asr=False,
+                archive_fn=lambda *args, **kwargs: [],
+            )
+            canonical_path = next(result.raw_session_dir.glob("*.json"))
+            canonical = json.loads(canonical_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(result.missing_image_paths, 1)
+        self.assertEqual(result.missing_image_files, 1)
+        self.assertEqual(set(canonical), {"session", "messages", "weflow"})
+        self.assertEqual([message["content"] for message in canonical["messages"]], ["[图片]", "[图片]"])
+
+    def test_main_reports_nonzero_image_counts_but_returns_zero(self) -> None:
+        session = {"username": "wxid_image_placeholder", "displayName": "图片会话占位"}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _config(root)
+            fake_result = module.ExportOnDemandResult(
+                session,
+                root / "raw",
+                root / "out",
+                [],
+                None,
+                missing_image_paths=28,
+                missing_image_files=2,
+            )
+            output, errors = io.StringIO(), io.StringIO()
+            with (
+                mock.patch.object(module, "_make_client", return_value=FixtureClient([session], {})),
+                mock.patch.object(module, "export_on_demand", return_value=fake_result),
+                redirect_stdout(output),
+                redirect_stderr(errors),
+            ):
+                exit_code = module.main(
+                    [
+                        "--config",
+                        str(root / "config.toml"),
+                        "--session",
+                        session["username"],
+                        "--start",
+                        "2026-08-05",
+                        "--end",
+                        "2026-08-05",
+                        "--out",
+                        str(root / "out"),
+                    ]
+                )
+
+        warning = errors.getvalue()
+        self.assertEqual(exit_code, 0)
+        self.assertIn("缺少本地路径 28 条", warning)
+        self.assertIn("路径指向的文件不存在 2 条", warning)
+        self.assertLess(len(warning), 240)
 
     def test_repeated_out_keeps_ranges_isolated_and_removes_empty_staging(self) -> None:
         session = {"username": "wxid_contact_placeholder", "displayName": "示例联系人"}

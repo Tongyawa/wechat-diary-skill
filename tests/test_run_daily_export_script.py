@@ -677,6 +677,9 @@ driver = "uia"
         self.assertEqual(exit_code, 1)
         self.assertIn("Daily export completed with warnings.", out.getvalue())
         self.assertIn("export_self_moments", err.getvalue())
+        self.assertIn("聊天或朋友圈", err.getvalue())
+        self.assertNotIn("这些朋友圈", err.getvalue())
+        self.assertTrue(all(len(line) < 240 for line in err.getvalue().splitlines()))
 
     def test_main_returns_zero_when_ignored_failures_create_no_partial_failures(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
