@@ -42,8 +42,18 @@
 |---|---|---:|---|---|
 | `session` | object | 是 | 当前会话元信息。 | `load_chat_export()` 报错，不进入 preprocessing。 |
 | `messages` | array | 是 | 原始消息列表，按 WeFlow 导出顺序排列。 | `load_chat_export()` 报错。空数组合法，但 `preprocess_run()` 不产出 processed export。 |
-| `weflow` | object | 否 | WeFlow 元信息。当前下游不读取。 | 忽略。 |
+| `weflow` | object | 否 | WeFlow 元信息；归档摄取护栏读取下表中的血统与快照时间字段。 | 缺失时无法判断导出血统，异内容碰撞会保守拒绝。 |
 | `avatars` | object/array | 否 | 头像元信息。当前下游不读取。 | 忽略。 |
+
+`weflow`（字段均为可选；validator 不要求）：
+
+| 字段 | 类型 | 语义 | 摄取护栏行为 |
+|---|---|---|---|
+| `generator` | string | legacy GUI 生成器；真机值为 `WeFlow`。 | 精确值 `WeFlow` 标识 legacy 血统。未知值不猜测。 |
+| `version` | string | legacy GUI 版本，如 `1.0.3`。 | 不参与血统判定，版本变化不会被误判成跨代。 |
+| `exportedAt` | integer/string | legacy GUI 快照导出 Unix 时间戳。 | 双方均为有效正整数时，在消息集合检查通过后比较快照新旧；incoming 较旧为不可强制的回退证据。 |
+| `source` | string | 导出来源；HTTP API 真机值为 `http_api`。 | 精确值 `http_api` 标识 HTTP API 血统。 |
+| `format` | string | HTTP API 输出格式；当前为 `json`。 | 不参与血统或新旧判定。 |
 
 `session`：
 
@@ -165,7 +175,9 @@
 
 - `preprocessing.cleaner.load_chat_export()`：聊天 raw 校验失败时抛 `InvalidExportError`，消息包含具体文件路径与字段名。
 - `preprocessing.moments.load_moments_export()`：朋友圈 raw 校验失败时抛 `InvalidExportError`，消息包含具体文件路径与字段名。
-- `scripts/archive_exports.py`：摄取 raw 根前逐个 JSON 校验；坏 JSON 跳过，其余文件继续归档，结尾汇总失败清单并返回非零退出码。
+- `scripts/archive_exports.py`：摄取 raw 根前逐个 JSON 校验；坏 JSON 跳过，其余文件继续归档，结尾汇总失败清单并返回非零退出码。写入前还会对同路径聊天 JSON 做快照倒退检查：同代按 `(createTime, localId)` 多重集合，跨 legacy GUI / HTTP API 两代按非空 `platformMessageId` 多重集合；后者允许重复、按出现次数比较。严格子集、时间水位倒退或会话身份错配始终拒绝；空跨代 id 与零交集因不可比而默认拒绝。legacy 同代在上述检查通过后，双方有效的 `exportedAt` 还会作为快照版本水位：incoming 较旧强拒绝，较新可解释共同消息内容变化；缺失或无效时继续保守处理。
+
+`platformMessageId` 不是 canonical 必填字段，也不保证唯一。摄取护栏只在跨代比较时使用它，并在任一侧存在空值时 fail-closed；不要据此把它升级为 schema 主键。processed、媒体、朋友圈 JSON 等没有聊天消息集合身份契约，同路径异字节覆盖默认同样 fail-closed，只能由操作者明确确认 incoming 更新后放行。
 
 ## 字段梳理清单
 

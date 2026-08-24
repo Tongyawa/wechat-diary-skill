@@ -56,7 +56,7 @@ python "$SkillRoot\scripts\export_on_demand.py" --session <wxid或显示名子�
 周期性追加到已有会话夹：改用 `--merge-into <已有会话夹>`；起始日可从已有分日产物自动推导，完整参数见 `references/entrypoints.md` §3。
 
 **④ 体检** `python "$SkillRoot\scripts\doctor.py"`
-**⑤ 归档摄取** `python "$SkillRoot\scripts\archive_exports.py" --raw-root <旧raw> --processed-root <旧processed>`
+**⑤ 归档摄取** `python "$SkillRoot\scripts\archive_exports.py" --raw-root <旧raw> --processed-root <旧processed>`（默认复制保源；倒序覆盖会在整批写入前拒绝，移动与人工确认参数见 §5）
 **⑥ 打开产物** `powershell ... -File "$SkillRoot\scripts\Open-LatestInsights.ps1" -Workspace "$Workspace"`（按日期挑用 `Open-InsightsByDate.ps1`）
 **⑦ 初始化 worktree 配置**（在目标 worktree 根目录运行）`python "$SkillRoot\scripts\init_worktree_config.py"`
 

@@ -128,7 +128,9 @@ python "$SkillRoot\scripts\archive_exports.py" --raw-root <旧raw目录> --proce
 Pop-Location
 ```
 
-归档是「同路径新覆盖旧」的合并语义，所以**多个快照必须按时间从旧到新依次摄取**，否则旧内容会盖掉新内容。
+入口默认复制并保留源树；确需在成功后删除源树时，显式加 `--move-source`。旧 `--keep-source` 参数继续兼容。
+
+归档仍是「同路径 incoming 覆盖 archived」的合并语义，但写入前会整批检查：聊天快照若是严格子集、时间水位倒退或会话身份错配，直接拒绝且不写任何文件；legacy 快照还会在消息集合检查通过后用 `exportedAt` 判断共同消息内容变化的新旧。processed、媒体等无法从内容判断新旧的同路径冲突也默认拒绝。只有人工确认 incoming 更新后，才可用 `--force-overwrite` 放行“机器无法判断”的冲突；它不能推翻已经判定出的回退证据。多个快照仍建议按时间从旧到新依次摄取。
 
 ### 打开当天产物
 
