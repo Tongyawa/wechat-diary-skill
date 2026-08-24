@@ -28,6 +28,7 @@ from wechat_diary_core.backup_state import evaluate_backup_state
 from wechat_diary_core.config import Config, load_config
 from wechat_diary_core.preprocessing import archive_moments_for
 from wechat_diary_core.preprocessing import collect_voice_transcription_failures
+from wechat_diary_core.session_rename_alarm import update_session_rename_alarm
 from wechat_diary_core.workspace import rotate_export_workspace
 from wechat_diary_core.workspace_discovery import WorkspaceResolutionError, resolve_config_path
 from scripts.process_existing_raw import archive_existing_processed
@@ -474,6 +475,8 @@ def run_daily_export(
             else:
                 print("archive_target_moments skipped: export_target_moments did not complete.")
 
+    _warn_if_archive_session_names_split(cfg)
+
     return DailyExportResult(
         day=day_iso,
         rotation_target=getattr(rotation, "target", None),
@@ -483,6 +486,31 @@ def run_daily_export(
         sidecar_chat_files=list(sidecar_chat_files),
         sidecar_moment_files=list(sidecar_moment_files),
     )
+
+
+def _warn_if_archive_session_names_split(cfg: Config) -> None:
+    """Surface new archive identity splits without affecting the daily result."""
+
+    state_path = cfg.base_dir / ".session-rename-state.json"
+    try:
+        report = update_session_rename_alarm(cfg.paths.archived / "raw", state_path)
+    except Exception as exc:  # noqa: BLE001 - advisory checks must never gate export
+        print(f"[WARN] 会话归档身份检查未完成；请下次重试。原因：{str(exc)[:80]}", file=sys.stderr)
+        return
+
+    if report.new_conflicts:
+        print(
+            f"[WARN] 会话归档身份冲突新增 {len(report.new_conflicts)} 条，需要人工核对。",
+            file=sys.stderr,
+        )
+        print(
+            "[WARN] 请查看工作区 .session-rename-state.json，核对目录后按需合并历史；本提示不影响本轮导出。",
+            file=sys.stderr,
+        )
+    if report.scan_error_count:
+        print("[WARN] 会话归档身份检查未能完整扫描；请下次重试。", file=sys.stderr)
+    if report.state_error:
+        print("[WARN] 会话归档身份检查无法记住已提示项；下次可能重复提醒。", file=sys.stderr)
 
 
 def wait_for_raw_exports_stable(

@@ -19,6 +19,7 @@ Thumbs.db
 # ---- Local config (contains personal wxids) ----
 config.toml
 .export-state.json
+.session-rename-state.json
 
 # ---- Local engineering notes (kept on disk, not pushed) ----
 CLAUDE.md
