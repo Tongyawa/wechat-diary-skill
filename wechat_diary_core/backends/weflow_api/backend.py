@@ -330,9 +330,9 @@ class WeflowApiBackend:
 
     def _export_roster(self) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         if self._sessions_cache is None:
-            self._sessions_cache = self.client.fetch_sessions(limit=2000)
+            self._sessions_cache = self.client.fetch_sessions(limit=10000)
         if self._contacts_cache is None:
-            self._contacts_cache = self.client.fetch_contacts(limit=5000)
+            self._contacts_cache = self.client.fetch_contacts(limit=10000)
         return self._sessions_cache, self._contacts_cache
 
     def _configured_contact_targets(self) -> list[tuple[str, str]]:

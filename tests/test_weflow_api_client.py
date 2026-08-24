@@ -187,7 +187,9 @@ class WeflowApiClientTests(unittest.TestCase):
                     {
                         "success": True,
                         "talker": "wxid_contact_placeholder",
-                        "count": 2,
+                        # Real /messages responses declare this page's size,
+                        # not the total number of matching messages.
+                        "count": 1,
                         "hasMore": True,
                         "media": {"enabled": True, "exportPath": "C:/placeholder", "count": 0},
                         "messages": [{"localId": 2, "serverId": "server-2"}],
@@ -197,7 +199,7 @@ class WeflowApiClientTests(unittest.TestCase):
                 {
                     "success": True,
                     "talker": "wxid_contact_placeholder",
-                    "count": 2,
+                    "count": 1,
                     "hasMore": False,
                     "media": {"enabled": True, "exportPath": "C:/placeholder", "count": 0},
                     "messages": [{"localId": 1, "serverId": "server-1"}],
@@ -219,6 +221,39 @@ class WeflowApiClientTests(unittest.TestCase):
         self.assertEqual(first_query["format"], ["json"])
         self.assertEqual(requests[0].get_header("Authorization"), "Bearer fixed-token")
 
+    def test_single_day_message_page_still_returns_unchanged_in_one_request(self) -> None:
+        requests = []
+        expected = [
+            {"localId": index, "serverId": f"server-{index}"}
+            for index in range(5, 0, -1)
+        ]
+
+        def opener(request, timeout):
+            requests.append(request)
+            return _Response(
+                {
+                    "success": True,
+                    "count": 5,
+                    "hasMore": False,
+                    "messages": expected,
+                }
+            )
+
+        client = WeflowApiClient("http://127.0.0.1:5031", "fixed-token", opener=opener)
+        actual = client.fetch_messages(
+            "wxid_contact_placeholder",
+            start=date(2026, 8, 20),
+            end=date(2026, 8, 20),
+            media=False,
+        )
+
+        self.assertEqual(actual, expected)
+        self.assertEqual(len(requests), 1)
+        query = parse_qs(urlparse(requests[0].full_url).query)
+        self.assertEqual(query["start"], ["20260820"])
+        self.assertEqual(query["end"], ["20260820"])
+        self.assertNotIn("media", query)
+
     def test_timeline_always_sends_usernames_filters_locally_and_exhausts_offsets(self) -> None:
         queries = []
 
@@ -229,7 +264,8 @@ class WeflowApiClientTests(unittest.TestCase):
                 return _Response(
                     {
                         "success": True,
-                        "count": 3,
+                        # httpService.ts emits count: timeline.length.
+                        "count": 2,
                         "timeline": [
                             {"tid": "1", "username": "wxid_contact_placeholder"},
                             {"tid": "foreign", "username": "wxid_foreign_placeholder"},
@@ -239,7 +275,7 @@ class WeflowApiClientTests(unittest.TestCase):
             return _Response(
                 {
                     "success": True,
-                    "count": 3,
+                    "count": 1,
                     "timeline": [{"tid": "2", "username": "wxid_contact_placeholder"}],
                 }
             )
@@ -328,7 +364,7 @@ class WeflowApiClientTests(unittest.TestCase):
                 end=date(2026, 8, 6),
             )
 
-    def test_contacts_exactly_100_is_valid_when_count_proves_completeness(self) -> None:
+    def test_contacts_page_below_limit_is_complete_when_count_matches_page_size(self) -> None:
         captured = []
 
         def opener(request, timeout):
@@ -344,66 +380,106 @@ class WeflowApiClientTests(unittest.TestCase):
         client = WeflowApiClient("http://127.0.0.1:5031", "fixed-token", opener=opener)
         contacts = client.fetch_contacts()
 
-        self.assertEqual(captured[0]["limit"], ["5000"])
+        self.assertEqual(captured[0]["limit"], ["10000"])
         self.assertEqual(len(contacts), 100)
 
-    def test_sessions_without_count_follow_changed_cap_until_empty_page(self) -> None:
+    def test_sessions_page_below_limit_is_complete_without_has_more(self) -> None:
         offsets = []
-        pages = {
-            0: [{"username": "session-1"}, {"username": "session-2"}],
-            2: [{"username": "session-3"}],
-            3: [],
-        }
 
         def opener(request, timeout):
             offset = int(parse_qs(urlparse(request.full_url).query)["offset"][0])
             offsets.append(offset)
-            return _Response({"success": True, "sessions": pages[offset]})
+            return _Response(
+                {
+                    "success": True,
+                    "count": 2,
+                    "sessions": [{"username": "session-1"}, {"username": "session-2"}],
+                }
+            )
 
         client = WeflowApiClient("http://127.0.0.1:5031", "fixed-token", opener=opener)
         sessions = client.fetch_sessions(limit=5000)
 
-        self.assertEqual([item["username"] for item in sessions], ["session-1", "session-2", "session-3"])
-        self.assertEqual(offsets, [0, 2, 3])
+        self.assertEqual([item["username"] for item in sessions], ["session-1", "session-2"])
+        self.assertEqual(offsets, [0])
 
-    def test_contacts_count_mismatch_fails_with_actionable_bounded_error(self) -> None:
+    def test_bounded_collection_rejects_full_page_as_known_truncation_risk(self) -> None:
+        for endpoint, field, fetch in (
+            ("/api/v1/sessions", "sessions", lambda client: client.fetch_sessions(limit=2)),
+            ("/api/v1/contacts", "contacts", lambda client: client.fetch_contacts(limit=2)),
+        ):
+            with self.subTest(endpoint=endpoint):
+                def opener(request, timeout, page_field=field):
+                    return _Response(
+                        {
+                            "success": True,
+                            # Real sessions/contacts count is the returned page size.
+                            "count": 2,
+                            page_field: [{"username": "item-1"}, {"username": "item-2"}],
+                        }
+                    )
+
+                client = WeflowApiClient("http://127.0.0.1:5031", "fixed-token", opener=opener)
+                with self.assertRaises(WeflowApiError) as captured:
+                    fetch(client)
+
+                error = str(captured.exception)
+                self.assertIn("触及 limit=2", error)
+                self.assertIn("无法证明结果完整", error)
+                self.assertLess(len(error), 240)
+
+    def test_contacts_page_count_mismatch_fails_loudly(self) -> None:
         def opener(request, timeout):
-            offset = int(parse_qs(urlparse(request.full_url).query)["offset"][0])
-            page = [{"username": "contact-1"}] if offset == 0 else []
-            return _Response({"success": True, "count": 2, "contacts": page})
+            return _Response(
+                {"success": True, "count": 2, "contacts": [{"username": "contact-1"}]}
+            )
 
         client = WeflowApiClient("http://127.0.0.1:5031", "fixed-token", opener=opener)
         with self.assertRaises(WeflowApiError) as captured:
             client.fetch_contacts()
 
         error = str(captured.exception)
-        self.assertIn("空页提前结束", error)
+        self.assertIn("本页实际返回 1 条", error)
         self.assertIn("count=2", error)
         self.assertIn("检查 API 分页", error)
         self.assertLess(len(error), 240)
 
-    def test_messages_without_count_or_has_more_continue_until_empty_page(self) -> None:
-        offsets = []
-        pages = {
-            0: [{"localId": 3, "serverId": "server-3"}, {"localId": 2, "serverId": "server-2"}],
-            2: [{"localId": 1, "serverId": "server-1"}],
-            3: [],
-        }
-
+    def test_messages_without_has_more_fail_instead_of_guessing_from_page_length(self) -> None:
         def opener(request, timeout):
-            offset = int(parse_qs(urlparse(request.full_url).query)["offset"][0])
-            offsets.append(offset)
-            return _Response({"success": True, "messages": pages[offset]})
+            return _Response(
+                {
+                    "success": True,
+                    "count": 1,
+                    "messages": [{"localId": 3, "serverId": "server-3"}],
+                }
+            )
 
         client = WeflowApiClient("http://127.0.0.1:5031", "fixed-token", opener=opener)
-        messages = client.fetch_messages(
-            "wxid_contact_placeholder",
-            start=date(2026, 8, 5),
-            end=date(2026, 8, 5),
-        )
+        with self.assertRaisesRegex(WeflowApiError, r"缺少 hasMore.*无法证明消息已取全"):
+            client.fetch_messages(
+                "wxid_contact_placeholder",
+                start=date(2026, 8, 5),
+                end=date(2026, 8, 5),
+            )
 
-        self.assertEqual([item["serverId"] for item in messages], ["server-3", "server-2", "server-1"])
-        self.assertEqual(offsets, [0, 2, 3])
+    def test_message_page_count_mismatch_fails_loudly(self) -> None:
+        def opener(request, timeout):
+            return _Response(
+                {
+                    "success": True,
+                    "count": 2,
+                    "hasMore": False,
+                    "messages": [{"localId": 1, "serverId": "server-1"}],
+                }
+            )
+
+        client = WeflowApiClient("http://127.0.0.1:5031", "fixed-token", opener=opener)
+        with self.assertRaisesRegex(WeflowApiError, r"count=2.*本页实际返回 1 条"):
+            client.fetch_messages(
+                "wxid_contact_placeholder",
+                start=date(2026, 8, 5),
+                end=date(2026, 8, 5),
+            )
 
     def test_messages_repeated_page_fails_instead_of_looping(self) -> None:
         def opener(request, timeout):
@@ -422,6 +498,34 @@ class WeflowApiClientTests(unittest.TestCase):
                 start=date(2026, 8, 5),
                 end=date(2026, 8, 5),
             )
+
+    def test_timeline_repeated_full_page_fails_instead_of_silently_deduplicating(self) -> None:
+        def opener(request, timeout):
+            return _Response(
+                {
+                    "success": True,
+                    "count": 1,
+                    "timeline": [{"tid": "same-post", "username": "wxid_contact_placeholder"}],
+                }
+            )
+
+        client = WeflowApiClient("http://127.0.0.1:5031", "fixed-token", opener=opener)
+        with self.assertRaisesRegex(WeflowApiError, r"重复 ID.*静默漏取"):
+            list(client.iter_timeline("wxid_contact_placeholder", limit=1))
+
+    def test_group_members_count_mismatch_fails_loudly(self) -> None:
+        def opener(request, timeout):
+            return _Response(
+                {
+                    "success": True,
+                    "count": 2,
+                    "members": [{"wxid": "member-1"}],
+                }
+            )
+
+        client = WeflowApiClient("http://127.0.0.1:5031", "fixed-token", opener=opener)
+        with self.assertRaisesRegex(WeflowApiError, r"count=2.*本页实际返回 1 条"):
+            client.fetch_group_members("group-placeholder@chatroom")
 
     def test_health_is_unauthenticated_but_token_probe_is_protected(self) -> None:
         requests = []

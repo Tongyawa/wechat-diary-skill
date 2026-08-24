@@ -81,7 +81,7 @@ def main(argv: list[str] | None = None) -> int:
         config_path = resolve_config_path(args.config)
         cfg = load_config(config_path)
         client = _make_client(cfg)
-        sessions = client.fetch_sessions(limit=2000)
+        sessions = client.fetch_sessions(limit=10000)
         if args.list_sessions is not None:
             _print_session_candidates(sessions, args.list_sessions)
             return 0
@@ -171,7 +171,7 @@ def export_on_demand(
     staging_root = _make_short_staging_root(root)
 
     api = cfg.export_backend.weflow_api
-    contacts = client.fetch_contacts(limit=5000)
+    contacts = client.fetch_contacts(limit=10000)
     group_members = client.fetch_group_members(talker) if talker.endswith("@chatroom") else []
     messages = client.fetch_messages(
         talker,

@@ -14,6 +14,8 @@ from urllib.request import Request, urlopen
 
 MAX_HTTP_ERROR_BODY_BYTES = 64 * 1024
 MAX_HTTP_ERROR_DETAIL_CHARS = 500
+MAX_COLLECTION_LIMIT = 10000
+MAX_TIMELINE_LIMIT = 200
 
 
 class WeflowApiError(RuntimeError):
@@ -49,8 +51,8 @@ class WeflowApiClient:
     def validate_token(self) -> None:
         self._request("/api/v1/sessions", {"limit": 1, "offset": 0})
 
-    def fetch_sessions(self, *, limit: int = 2000) -> list[dict[str, Any]]:
-        return self._fetch_offset_collection(
+    def fetch_sessions(self, *, limit: int = MAX_COLLECTION_LIMIT) -> list[dict[str, Any]]:
+        return self._fetch_bounded_collection(
             "/api/v1/sessions",
             "sessions",
             limit=limit,
@@ -92,10 +94,11 @@ class WeflowApiClient:
     ) -> list[dict[str, Any]]:
         """Fetch one talker and arbitrary inclusive date range to exhaustion."""
 
+        if limit <= 0:
+            raise ValueError("分页 limit 必须大于 0")
         messages: list[dict[str, Any]] = []
         seen: set[tuple[str, str]] = set()
         offset = 0
-        declared_total: int | None = None
         while True:
             payload = self.get_message_page(
                 talker,
@@ -121,49 +124,23 @@ class WeflowApiClient:
             seen.update(page_keys)
             messages.extend(page)
 
-            page_total = _declared_total(payload, "/api/v1/messages")
-            if page_total is not None:
-                if declared_total is None:
-                    declared_total = page_total
-                elif declared_total != page_total:
-                    raise WeflowApiError(
-                        "WeFlow API /messages 的 count 在分页间变化；无法证明导出完整，请重试或检查 API"
-                    )
-                if len(seen) > declared_total:
-                    raise WeflowApiError(
-                        "WeFlow API /messages 唯一消息数超过 count；分页契约矛盾，请检查 API"
-                    )
+            _validate_page_count(payload, page, "/api/v1/messages")
 
             has_more = _declared_has_more(payload, "/api/v1/messages")
+            if has_more is None:
+                raise WeflowApiError(
+                    "WeFlow API /messages 缺少 hasMore；无法证明消息已取全，请升级或检查 API 分页契约"
+                )
             if has_more is False:
-                if declared_total is not None and len(seen) != declared_total:
-                    raise WeflowApiError(
-                        f"WeFlow API /messages 提前结束：唯一消息 {len(seen)} 条，count={declared_total}；"
-                        "请重试或检查 API 分页"
-                    )
                 return messages
             if has_more is True and not page:
                 raise WeflowApiError(
                     "WeFlow API /messages 返回空页但 hasMore=true；已停止以避免死循环，请检查 API 分页"
                 )
-            if has_more is True and declared_total is not None and len(seen) >= declared_total:
-                raise WeflowApiError(
-                    "WeFlow API /messages 已达到 count 但 hasMore=true；分页契约矛盾，请检查 API"
-                )
-            if has_more is None:
-                if declared_total is not None and len(seen) == declared_total:
-                    return messages
-                if not page:
-                    if declared_total is not None:
-                        raise WeflowApiError(
-                            f"WeFlow API /messages 空页提前结束：唯一消息 {len(seen)} 条，count={declared_total}；"
-                            "请重试或检查 API 分页"
-                        )
-                    return messages
             offset = _next_offset(offset, len(page), "/api/v1/messages")
 
-    def fetch_contacts(self, *, limit: int = 5000) -> list[dict[str, Any]]:
-        return self._fetch_offset_collection(
+    def fetch_contacts(self, *, limit: int = MAX_COLLECTION_LIMIT) -> list[dict[str, Any]]:
+        return self._fetch_bounded_collection(
             "/api/v1/contacts",
             "contacts",
             limit=limit,
@@ -175,11 +152,19 @@ class WeflowApiClient:
             "/api/v1/group-members",
             {"chatroomId": chatroom_id},
         )
-        return self._list_field(payload, "members")
+        members = self._list_field(payload, "members")
+        _validate_page_count(payload, members, "/api/v1/group-members")
+        _validate_unique_identities(
+            members,
+            path="/api/v1/group-members",
+            identity_fields=("wxid",),
+        )
+        return members
 
     def iter_timeline(self, username: str, *, limit: int = 100) -> Iterator[dict[str, Any]]:
         """Use required server filtering, then enforce the same filter locally."""
 
+        _validate_limit(limit, maximum=MAX_TIMELINE_LIMIT, path="/api/v1/sns/timeline")
         offset = 0
         seen: set[str] = set()
         while True:
@@ -188,18 +173,39 @@ class WeflowApiClient:
                 {"limit": limit, "offset": offset, "usernames": username},
             )
             page = self._list_field(payload, "timeline")
+            _validate_page_count(payload, page, "/api/v1/sns/timeline")
+            page_keys: set[str] = set()
             for post in page:
+                key = str(post.get("tid") or post.get("id") or "")
+                if not key:
+                    raise WeflowApiError(
+                        "WeFlow API /api/v1/sns/timeline 分页项缺少 tid/id；"
+                        "无法证明结果完整，请升级或检查 API"
+                    )
+                if key in page_keys or key in seen:
+                    raise WeflowApiError(
+                        "WeFlow API /api/v1/sns/timeline 返回重复 ID；"
+                        "已停止以避免死循环或静默漏取，请检查 API 分页"
+                    )
+                page_keys.add(key)
                 if str(post.get("username") or "") != username:
                     continue
-                key = str(post.get("tid") or post.get("id") or "")
-                if key and key in seen:
-                    continue
-                if key:
-                    seen.add(key)
                 yield post
-            if len(page) < limit:
+            seen.update(page_keys)
+
+            has_more = _declared_has_more(payload, "/api/v1/sns/timeline")
+            if has_more is False:
                 return
-            offset += len(page)
+            if has_more is None and len(page) < limit:
+                return
+            if not page:
+                if has_more is True:
+                    raise WeflowApiError(
+                        "WeFlow API /api/v1/sns/timeline 返回空页但 hasMore=true；"
+                        "已停止以避免死循环，请检查 API 分页"
+                    )
+                return
+            offset = _next_offset(offset, len(page), "/api/v1/sns/timeline")
 
     def export_moments(
         self,
@@ -235,7 +241,7 @@ class WeflowApiClient:
     def semantic_probe(self) -> tuple[str, int]:
         """Prove that a protected endpoint can read at least one message."""
 
-        sessions = self.fetch_sessions(limit=2000)
+        sessions = self.fetch_sessions(limit=MAX_COLLECTION_LIMIT)
         for session in sessions:
             talker = str(session.get("username") or "")
             if not talker:
@@ -325,7 +331,7 @@ class WeflowApiClient:
             raise WeflowApiError(str(payload.get("error") or f"WeFlow API 请求失败：{path}"))
         return payload
 
-    def _fetch_offset_collection(
+    def _fetch_bounded_collection(
         self,
         path: str,
         field: str,
@@ -333,54 +339,18 @@ class WeflowApiClient:
         limit: int,
         identity_fields: tuple[str, ...],
     ) -> list[dict[str, Any]]:
-        if limit <= 0:
-            raise ValueError("分页 limit 必须大于 0")
-        items: list[dict[str, Any]] = []
-        seen: set[tuple[str, ...]] = set()
-        offset = 0
-        declared_total: int | None = None
-        while True:
-            payload = self._request(path, {"limit": limit, "offset": offset})
-            page = self._list_field(payload, field)
-            page_keys: set[tuple[str, ...]] = set()
-            for item in page:
-                key = tuple(str(item.get(name) or "") for name in identity_fields)
-                if not any(key):
-                    joined = "/".join(identity_fields)
-                    raise WeflowApiError(
-                        f"WeFlow API {path} 分页项缺少 {joined}；无法证明结果完整，请升级或检查 API"
-                    )
-                if key in page_keys or key in seen:
-                    raise WeflowApiError(
-                        f"WeFlow API {path} 返回重复 ID；已停止以避免死循环或重复导出，请检查 API 分页"
-                    )
-                page_keys.add(key)
-            seen.update(page_keys)
-            items.extend(page)
-
-            page_total = _declared_total(payload, path)
-            if page_total is not None:
-                if declared_total is None:
-                    declared_total = page_total
-                elif declared_total != page_total:
-                    raise WeflowApiError(
-                        f"WeFlow API {path} 的 count 在分页间变化；无法证明结果完整，请重试或检查 API"
-                    )
-                if len(seen) > declared_total:
-                    raise WeflowApiError(
-                        f"WeFlow API {path} 唯一 ID 数超过 count；分页契约矛盾，请检查 API"
-                    )
-                if len(seen) == declared_total:
-                    return items
-
-            if not page:
-                if declared_total is not None:
-                    raise WeflowApiError(
-                        f"WeFlow API {path} 空页提前结束：唯一 ID {len(seen)} 个，count={declared_total}；"
-                        "请重试或检查 API 分页"
-                    )
-                return items
-            offset = _next_offset(offset, len(page), path)
+        _validate_limit(limit, maximum=MAX_COLLECTION_LIMIT, path=path)
+        payload = self._request(path, {"limit": limit, "offset": 0})
+        items = self._list_field(payload, field)
+        _validate_page_count(payload, items, path)
+        _validate_unique_identities(items, path=path, identity_fields=identity_fields)
+        if len(items) >= limit:
+            raise WeflowApiError(
+                f"WeFlow API {path} 返回 {len(items)} 条，已触及 limit={limit}，"
+                "且端点没有可用的 hasMore/offset 分页契约；无法证明结果完整。"
+                f"请把 limit 调大（最高 {MAX_COLLECTION_LIMIT}）或升级 API"
+            )
+        return items
 
     @staticmethod
     def _list_field(payload: dict[str, Any], key: str) -> list[dict[str, Any]]:
@@ -399,7 +369,7 @@ def _api_date(value: date | str) -> str:
     return text
 
 
-def _declared_total(payload: dict[str, Any], path: str) -> int | None:
+def _declared_count(payload: dict[str, Any], path: str) -> int | None:
     if "count" not in payload or payload.get("count") is None:
         return None
     raw = payload.get("count")
@@ -409,6 +379,39 @@ def _declared_total(payload: dict[str, Any], path: str) -> int | None:
     if not text.isdigit():
         raise WeflowApiError(f"WeFlow API {path} 的 count 不是非负整数；请检查 API 分页契约")
     return int(text)
+
+
+def _validate_page_count(payload: dict[str, Any], page: list[dict[str, Any]], path: str) -> None:
+    declared = _declared_count(payload, path)
+    if declared is not None and declared != len(page):
+        raise WeflowApiError(
+            f"WeFlow API {path} 的 count={declared}，但本页实际返回 {len(page)} 条；"
+            "无法证明结果完整，请重试或检查 API 分页契约"
+        )
+
+
+def _validate_unique_identities(
+    items: list[dict[str, Any]],
+    *,
+    path: str,
+    identity_fields: tuple[str, ...],
+) -> None:
+    seen: set[tuple[str, ...]] = set()
+    for item in items:
+        key = tuple(str(item.get(name) or "") for name in identity_fields)
+        if not any(key):
+            joined = "/".join(identity_fields)
+            raise WeflowApiError(
+                f"WeFlow API {path} 项目缺少 {joined}；无法证明结果完整，请升级或检查 API"
+            )
+        if key in seen:
+            raise WeflowApiError(f"WeFlow API {path} 返回重复 ID；无法证明结果完整，请检查 API")
+        seen.add(key)
+
+
+def _validate_limit(limit: int, *, maximum: int, path: str) -> None:
+    if limit <= 0 or limit > maximum:
+        raise ValueError(f"{path} 的 limit 必须在 1..{maximum} 之间")
 
 
 def _declared_has_more(payload: dict[str, Any], path: str) -> bool | None:
