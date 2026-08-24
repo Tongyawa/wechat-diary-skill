@@ -64,7 +64,7 @@ class ArchivingTests(unittest.TestCase):
                             "type": "文本消息",
                             "content": "\n兑",
                             "isSend": 0,
-                            "senderDisplayName": "学校-25-AI自强-肖逸涵",
+                            "senderDisplayName": "学校-25-AI自强-同学甲",
                             "platformMessageId": "b",
                         },
                         {
@@ -85,7 +85,7 @@ class ArchivingTests(unittest.TestCase):
                             "type": "动画表情",
                             "content": "[表情]",
                             "isSend": 0,
-                            "senderDisplayName": "学校-25-AI自强-肖逸涵",
+                            "senderDisplayName": "学校-25-AI自强-同学甲",
                             "replyContext": {
                                 "senderDisplayName": "学校-25-AI自强-巩子茗",
                                 "content": "\n拱猪教",
@@ -98,7 +98,7 @@ class ArchivingTests(unittest.TestCase):
                             "type": "文本消息",
                             "content": "确实[引用 小拱猪：拱猪教]",
                             "isSend": 0,
-                            "senderDisplayName": "学校-25-AI自强-肖逸涵",
+                            "senderDisplayName": "学校-25-AI自强-同学甲",
                             "replyContext": {
                                 "senderDisplayName": "学校-25-AI自强-巩子茗",
                                 "content": "\n拱猪教",
@@ -129,7 +129,7 @@ class ArchivingTests(unittest.TestCase):
                             "createTime": 1778840135,
                             "formattedTime": "2026-05-15 18:15:35",
                             "type": "其他消息",
-                            "content": '"肖逸涵" 拍了拍 "Me"',
+                            "content": '"同学甲" 拍了拍 "Me"',
                             "isSend": 0,
                             "senderDisplayName": "小团体",
                             "is_self_related_pat": True,
@@ -143,14 +143,14 @@ class ArchivingTests(unittest.TestCase):
 
         self.assertIn("2026-05-15 18:13:23", text)
         self.assertIn("我：公主教就是工学部教1吗？", text)
-        self.assertIn("肖逸涵：兑", text)
+        self.assertIn("同学甲：兑", text)
         self.assertIn("巩子茗：拱猪教 | 公主教如果从南门进来是三楼，要下一层到二楼", text)
-        self.assertIn("肖逸涵：[表情][引用 巩子茗：拱猪教]", text)
-        self.assertIn("肖逸涵：确实[引用 巩子茗：拱猪教]", text)
+        self.assertIn("同学甲：[表情][引用 巩子茗：拱猪教]", text)
+        self.assertIn("同学甲：确实[引用 巩子茗：拱猪教]", text)
         self.assertNotIn("小拱猪", text)
         self.assertIn("方明哲：[图片：上传实验报告\n选择文件]", text)
         self.assertIn("席圣洋【置顶消息】：即日起本群群员必须信仰拱猪教", text)
-        self.assertIn('拍一拍："肖逸涵" 拍了拍 "Me"', text)
+        self.assertIn('拍一拍："同学甲" 拍了拍 "Me"', text)
 
 
     def test_archive_clears_processed_root_by_default(self) -> None:
