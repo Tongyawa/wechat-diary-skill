@@ -158,6 +158,8 @@ class _TrackingSessionClient:
     def fetch_messages(self, talker, **kwargs):
         self.message_calls.append(talker)
         if talker in self.failures:
+            if isinstance(self.failure_reason, BaseException):
+                raise self.failure_reason
             raise RuntimeError(self.failure_reason)
         return []
 
@@ -191,10 +193,16 @@ class WeflowApiBackendTests(unittest.TestCase):
     def test_skip_official_accounts_controls_message_requests(self) -> None:
         sessions = [
             {"username": "gh_official_placeholder", "displayName": "公众号占位"},
+            {"username": "service_placeholder@openim", "displayName": "企业微信占位"},
+            {
+                "username": "service_placeholder@opencustomerservicemsg",
+                "displayName": "客服占位",
+            },
             {"username": "wxid_contact_placeholder", "displayName": "联系人占位"},
         ]
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+            state_path = _seed_failure_state(root, "service_placeholder@openim")
             client = _TrackingSessionClient(sessions)
             backend = WeflowApiBackend(_config(root))
             backend._client = client
@@ -203,8 +211,12 @@ class WeflowApiBackendTests(unittest.TestCase):
                 backend.export_chats(date(2026, 8, 6))
 
             self.assertEqual(client.message_calls, ["wxid_contact_placeholder"])
-            self.assertIn("已跳过 1 个公众号会话", output.getvalue())
+            self.assertIn("已跳过 3 个公众号/企业微信/客服会话", output.getvalue())
             self.assertEqual(backend.partial_failures, [])
+            self.assertNotIn(
+                "service_placeholder@openim",
+                SessionFailureState.load(state_path).failures,
+            )
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -213,7 +225,160 @@ class WeflowApiBackendTests(unittest.TestCase):
             backend._client = client
             backend.export_chats(date(2026, 8, 6))
 
-            self.assertEqual(client.message_calls, ["gh_official_placeholder", "wxid_contact_placeholder"])
+            self.assertEqual(
+                client.message_calls,
+                [
+                    "gh_official_placeholder",
+                    "service_placeholder@openim",
+                    "service_placeholder@opencustomerservicemsg",
+                    "wxid_contact_placeholder",
+                ],
+            )
+
+    def test_missing_database_for_stale_never_exported_session_becomes_no_local_records(self) -> None:
+        sessions = [
+            {
+                "username": "wxid_stale_placeholder",
+                "displayName": "久远空会话占位",
+                "lastTimestamp": 1_600_000_000,
+            },
+            {
+                "username": "wxid_missing_timestamp_placeholder",
+                "displayName": "无时间戳空会话占位",
+            },
+        ]
+        failure = WeflowApiError(
+            "WeFlow API HTTP 500: /api/v1/messages — 创建游标失败: -3（消息数据库未找到）",
+            status=500,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            outputs = []
+            for export_day in (date(2026, 8, 6), date(2026, 8, 7)):
+                backend = WeflowApiBackend(_config(root))
+                backend._client = _TrackingSessionClient(
+                    sessions,
+                    failures={"wxid_stale_placeholder", "wxid_missing_timestamp_placeholder"},
+                    failure_reason=failure,
+                )
+                output, errors = io.StringIO(), io.StringIO()
+                with redirect_stdout(output), redirect_stderr(errors):
+                    backend.export_chats(export_day)
+                outputs.append(output.getvalue())
+                self.assertEqual(errors.getvalue(), "")
+                self.assertEqual(backend.partial_failures, [])
+            restored = SessionFailureState.load(root / ".export-state.json")
+
+        self.assertIn("本机无记录会话现有 2 个", outputs[0])
+        self.assertLess(len(outputs[0]), 240)
+        self.assertNotIn("本机无记录会话", outputs[1])
+        self.assertEqual(restored.failures, {})
+        self.assertIn("wxid_stale_placeholder", restored.no_local_records)
+        self.assertIn("wxid_missing_timestamp_placeholder", restored.no_local_records)
+        self.assertEqual(restored.pending_review(), [])
+
+    def test_missing_database_for_recent_session_remains_true_failure(self) -> None:
+        sessions = [
+            {
+                "username": "wxid_recent_placeholder",
+                "displayName": "近期会话占位",
+                "lastTimestamp": 1_785_921_697,
+            },
+            {"username": "wxid_ok_placeholder", "displayName": "成功会话占位"},
+        ]
+        failure = WeflowApiError(
+            "WeFlow API HTTP 500: /api/v1/messages — 创建游标失败: -3（消息数据库未找到）",
+            status=500,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            backend = WeflowApiBackend(_config(root))
+            backend._client = _TrackingSessionClient(
+                sessions,
+                failures={"wxid_recent_placeholder"},
+                failure_reason=failure,
+            )
+            errors = io.StringIO()
+            with redirect_stderr(errors):
+                for day in (4, 5, 6):
+                    backend.export_chats(date(2026, 8, day))
+            restored = SessionFailureState.load(root / ".export-state.json")
+
+        self.assertEqual(backend.partial_failures, ["export_chat_session:wxid_recent_placeholder"])
+        self.assertIn("[WARN]", errors.getvalue())
+        self.assertIn("wxid_recent_placeholder", restored.failures)
+        self.assertEqual(restored.no_local_records, {})
+        self.assertEqual(
+            [record["wxid"] for record in restored.pending_review()],
+            ["wxid_recent_placeholder"],
+        )
+
+    def test_missing_database_for_previously_exported_session_remains_true_failure(self) -> None:
+        sessions = [
+            {
+                "username": "wxid_historical_placeholder",
+                "displayName": "历史会话占位",
+                "lastTimestamp": 1_600_000_000,
+            },
+            {"username": "wxid_ok_placeholder", "displayName": "成功会话占位"},
+        ]
+        failure = WeflowApiError(
+            "WeFlow API HTTP 500: /api/v1/messages — 创建游标失败: -3（消息数据库未找到）",
+            status=500,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            archived_session = root / "archived" / "raw" / "私聊_历史会话占位" / "export.json"
+            archived_session.parent.mkdir(parents=True)
+            archived_session.write_text(
+                json.dumps({"session": {"wxid": "wxid_historical_placeholder"}, "messages": []}),
+                encoding="utf-8",
+            )
+            backend = WeflowApiBackend(_config(root))
+            backend._client = _TrackingSessionClient(
+                sessions,
+                failures={"wxid_historical_placeholder"},
+                failure_reason=failure,
+            )
+            errors = io.StringIO()
+            with redirect_stderr(errors):
+                backend.export_chats(date(2026, 8, 6))
+            restored = SessionFailureState.load(root / ".export-state.json")
+
+        self.assertEqual(backend.partial_failures, ["export_chat_session:wxid_historical_placeholder"])
+        self.assertIn("[WARN]", errors.getvalue())
+        self.assertIn("wxid_historical_placeholder", restored.failures)
+
+    def test_unreadable_history_fails_closed_instead_of_hiding_failure(self) -> None:
+        sessions = [
+            {
+                "username": "wxid_uncertain_placeholder",
+                "displayName": "证据不全会话占位",
+                "lastTimestamp": 1_600_000_000,
+            },
+            {"username": "wxid_ok_placeholder", "displayName": "成功会话占位"},
+        ]
+        failure = WeflowApiError(
+            "WeFlow API HTTP 500: /api/v1/messages — 创建游标失败: -3（消息数据库未找到）",
+            status=500,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            broken = root / "archived" / "raw" / "broken.json"
+            broken.parent.mkdir(parents=True)
+            broken.write_text("{", encoding="utf-8")
+            backend = WeflowApiBackend(_config(root))
+            backend._client = _TrackingSessionClient(
+                sessions,
+                failures={"wxid_uncertain_placeholder"},
+                failure_reason=failure,
+            )
+            errors = io.StringIO()
+            with redirect_stderr(errors):
+                backend.export_chats(date(2026, 8, 6))
+
+        self.assertEqual(backend.partial_failures, ["export_chat_session:wxid_uncertain_placeholder"])
+        self.assertIn("[WARN]", errors.getvalue())
 
     def test_unignored_failure_still_warns_and_is_partial(self) -> None:
         sessions = [

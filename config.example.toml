@@ -132,7 +132,7 @@ daily = ["wechat-diary-skill"]
 # display names also work for WeFlow search, but wxid is more stable.
 target_usernames = []
 
-# 公众号推送内容当前仅产出 `[链接]` 占位，对 diary 无价值；设为 false 可导出。
+# 公众号、企业微信和客服会话对 diary 无价值；设为 false 可导出这些平台型会话。
 skip_official_accounts = true
 
 # Contacts used only for exporting your own Moments into the public diary

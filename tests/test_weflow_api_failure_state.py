@@ -89,14 +89,61 @@ class SessionFailureStateTests(unittest.TestCase):
                     "fixture cursor failure",
                 )
             state.ignore(["wxid_recovered_placeholder"], authorized_date=date(2026, 8, 6))
+            state.record_no_local_records(
+                "wxid_empty_placeholder",
+                "空会话占位",
+                date(2026, 8, 6),
+                "fixture missing database",
+                last_timestamp=None,
+            )
 
             was_ignored = state.record_success("wxid_recovered_placeholder")
+            state.record_success("wxid_empty_placeholder")
             state.save()
             restored = SessionFailureState.load(path)
 
         self.assertTrue(was_ignored)
         self.assertEqual(restored.failures, {})
         self.assertEqual(restored.ignored, {})
+        self.assertEqual(restored.no_local_records, {})
+
+    def test_v2_state_loads_without_third_class_and_migrates_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / ".export-state.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "version": 2,
+                        "failures": {
+                            "wxid_empty_placeholder": {
+                                "wxid": "wxid_empty_placeholder",
+                                "displayName": "空会话占位",
+                                "failureDates": ["2026-08-04", "2026-08-05", "2026-08-06"],
+                                "lastError": "fixture missing database",
+                            }
+                        },
+                        "ignored": {},
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            state = SessionFailureState.load(path)
+
+            created = state.record_no_local_records(
+                "wxid_empty_placeholder",
+                "空会话占位",
+                date(2026, 8, 7),
+                "fixture missing database",
+                last_timestamp=1_600_000_000,
+            )
+            state.save()
+            payload = json.loads(path.read_text(encoding="utf-8"))
+
+        self.assertTrue(created)
+        self.assertEqual(payload["version"], 3)
+        self.assertNotIn("wxid_empty_placeholder", payload["failures"])
+        self.assertIn("wxid_empty_placeholder", payload["noLocalRecords"])
 
 
 if __name__ == "__main__":

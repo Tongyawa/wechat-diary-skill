@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
-STATE_VERSION = 2
+STATE_VERSION = 3
 REVIEW_THRESHOLD = 3
 
 
@@ -34,10 +34,12 @@ class SessionFailureState:
         *,
         failures: dict[str, dict[str, Any]] | None = None,
         ignored: dict[str, dict[str, Any]] | None = None,
+        no_local_records: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         self.path = path
         self.failures = failures or {}
         self.ignored = ignored or {}
+        self.no_local_records = no_local_records or {}
         self._dirty = False
 
     @classmethod
@@ -49,16 +51,24 @@ class SessionFailureState:
             raise ValueError("导出状态文件顶层必须是 object")
         failures = payload.get("failures") or {}
         ignored = payload.get("ignored") or {}
-        if not isinstance(failures, dict) or not isinstance(ignored, dict):
-            raise ValueError("导出状态文件 failures/ignored 必须是 object")
+        no_local_records = payload.get("noLocalRecords") or {}
+        if not all(isinstance(value, dict) for value in (failures, ignored, no_local_records)):
+            raise ValueError("导出状态文件 failures/ignored/noLocalRecords 必须是 object")
         return cls(
             path,
             failures={str(key): _normalize_record(str(key), value) for key, value in failures.items()},
             ignored={str(key): _normalize_record(str(key), value) for key, value in ignored.items()},
+            no_local_records={
+                str(key): _normalize_no_local_record(str(key), value)
+                for key, value in no_local_records.items()
+            },
         )
 
     def is_ignored(self, wxid: str) -> bool:
         return wxid in self.ignored
+
+    def is_no_local_records(self, wxid: str) -> bool:
+        return wxid in self.no_local_records
 
     def record_failure(
         self,
@@ -70,6 +80,8 @@ class SessionFailureState:
         day = export_date.isoformat()
         previous = self.failures.get(wxid, {})
         previous_ignored = self.ignored.get(wxid)
+        if self.no_local_records.pop(wxid, None) is not None:
+            self._dirty = True
         fingerprint = error_fingerprint(error)
         previous_fingerprint = str((previous_ignored or {}).get("errorFingerprint") or "")
         fingerprint_changed = bool(previous_ignored and previous_fingerprint and previous_fingerprint != fingerprint)
@@ -109,7 +121,39 @@ class SessionFailureState:
             self._dirty = True
         if self.ignored.pop(wxid, None) is not None:
             self._dirty = True
+        if self.no_local_records.pop(wxid, None) is not None:
+            self._dirty = True
         return was_ignored
+
+    def record_no_local_records(
+        self,
+        wxid: str,
+        display_name: str,
+        detected_date: date,
+        error: str,
+        *,
+        last_timestamp: int | None,
+    ) -> bool:
+        """Move a conservatively identified empty session out of failures."""
+
+        day = detected_date.isoformat()
+        previous = self.no_local_records.get(wxid)
+        record = {
+            "wxid": wxid,
+            "displayName": display_name or wxid,
+            "firstDetectedDate": str((previous or {}).get("firstDetectedDate") or day),
+            "lastDetectedDate": day,
+            "lastTimestamp": last_timestamp,
+            "lastError": _error_summary(error),
+        }
+        if record != previous:
+            self.no_local_records[wxid] = record
+            self._dirty = True
+        if self.failures.pop(wxid, None) is not None:
+            self._dirty = True
+        if self.ignored.pop(wxid, None) is not None:
+            self._dirty = True
+        return previous is None
 
     def pending_review(self, threshold: int = REVIEW_THRESHOLD) -> list[dict[str, Any]]:
         return sorted(
@@ -139,6 +183,7 @@ class SessionFailureState:
             "version": STATE_VERSION,
             "failures": self.failures,
             "ignored": self.ignored,
+            "noLocalRecords": self.no_local_records,
         }
 
     def save(self) -> None:
@@ -172,6 +217,31 @@ def _normalize_record(wxid: str, value: Any) -> dict[str, Any]:
     if ignored_at:
         record["ignoredAtDate"] = ignored_at
     return record
+
+
+def _normalize_no_local_record(wxid: str, value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError(f"导出状态记录必须是 object：{wxid}")
+    raw_timestamp = value.get("lastTimestamp")
+    if raw_timestamp is None:
+        last_timestamp = None
+    elif isinstance(raw_timestamp, bool):
+        raise ValueError(f"本机无记录会话 lastTimestamp 必须是整数或 null：{wxid}")
+    else:
+        try:
+            last_timestamp = int(raw_timestamp)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"本机无记录会话 lastTimestamp 必须是整数或 null：{wxid}") from exc
+    first_detected = str(value.get("firstDetectedDate") or "")
+    last_detected = str(value.get("lastDetectedDate") or first_detected)
+    return {
+        "wxid": wxid,
+        "displayName": str(value.get("displayName") or wxid),
+        "firstDetectedDate": first_detected,
+        "lastDetectedDate": last_detected,
+        "lastTimestamp": last_timestamp,
+        "lastError": _error_summary(str(value.get("lastError") or "未知错误")),
+    }
 
 
 def _build_record(

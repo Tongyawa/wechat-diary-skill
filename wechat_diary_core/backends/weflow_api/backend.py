@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import shutil
 import sys
 import tempfile
 import time
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, ClassVar
 
@@ -18,6 +19,10 @@ from ...config import Config
 from .client import WeflowApiClient, WeflowApiError
 from .failure_state import SessionFailureState
 from .mapper import ImageMediaStats, write_moments_export, write_session_export
+
+
+NO_LOCAL_RECORDS_STALE_DAYS = 365
+_SKIPPED_ACCOUNT_SUFFIXES = ("@openim", "@opencustomerservicemsg")
 
 
 @dataclass
@@ -103,18 +108,23 @@ class WeflowApiBackend:
 
         state = self._load_failure_state()
         self._last_export_date = export_date
+        no_local_records_before = len(state.no_local_records)
+        historical_wxids, history_scan_complete = _historical_export_wxids(
+            self.config.paths.archived / "raw"
+        )
         successful_requests = 0
         messages_found = 0
         published_sessions = 0
-        skipped_official_accounts = 0
+        skipped_platform_accounts = 0
         ignored_failures = 0
         for session in sessions:
             talker = str(session.get("username") or "")
             if not talker:
                 self._record_session_failure("unknown", "会话缺少 username", None)
                 continue
-            if self.config.daily_export.skip_official_accounts and talker.startswith("gh_"):
-                skipped_official_accounts += 1
+            if self.config.daily_export.skip_official_accounts and _is_platform_account(talker):
+                skipped_platform_accounts += 1
+                state.record_success(talker)
                 continue
             display_name = str(
                 session.get("displayName")
@@ -170,6 +180,22 @@ class WeflowApiBackend:
                 published_sessions += 1
                 self._record_session_success(state, talker, display_name)
             except Exception as exc:
+                is_no_local_records, last_timestamp = _is_no_local_records_failure(
+                    exc,
+                    session,
+                    export_date,
+                    historical_wxids=historical_wxids,
+                    history_scan_complete=history_scan_complete,
+                )
+                if is_no_local_records:
+                    state.record_no_local_records(
+                        talker,
+                        display_name,
+                        export_date,
+                        str(exc),
+                        last_timestamp=last_timestamp,
+                    )
+                    continue
                 update = state.record_failure(talker, display_name, export_date, str(exc))
                 if update.fingerprint_changed:
                     marker = f"export_chat_session:{talker}"
@@ -186,9 +212,16 @@ class WeflowApiBackend:
                     self._record_session_failure(talker, str(exc), display_name)
 
         self._save_failure_state()
-        if skipped_official_accounts:
+        no_local_records_after = len(state.no_local_records)
+        if no_local_records_after != no_local_records_before:
+            delta = no_local_records_after - no_local_records_before
             print(
-                f"[INFO] 已跳过 {skipped_official_accounts} 个公众号会话"
+                f"[INFO] 本机无记录会话现有 {no_local_records_after} 个"
+                f"（数量变化 {delta:+d}）；已移出失败审查"
+            )
+        if skipped_platform_accounts:
+            print(
+                f"[INFO] 已跳过 {skipped_platform_accounts} 个公众号/企业微信/客服会话"
                 "（skip_official_accounts=true）"
             )
         if ignored_failures:
@@ -378,6 +411,81 @@ def _launch_weflow_normally(executable: Path) -> subprocess.Popen[Any]:
 def _readable_error_summary(value: str, limit: int = 180) -> str:
     text = " ".join(str(value or "未知错误").split())
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+
+def _is_platform_account(talker: str) -> bool:
+    return talker.startswith("gh_") or talker.endswith(_SKIPPED_ACCOUNT_SUFFIXES)
+
+
+def _is_no_local_records_failure(
+    exc: BaseException,
+    session: dict[str, Any],
+    export_date: date,
+    *,
+    historical_wxids: set[str],
+    history_scan_complete: bool,
+) -> tuple[bool, int | None]:
+    """Return true only when all independent empty-session evidence agrees."""
+
+    if not history_scan_complete or not isinstance(exc, WeflowApiError) or exc.status != 500:
+        return False, None
+    message = " ".join(str(exc).split())
+    if (
+        "/api/v1/messages" not in message
+        or "消息数据库未找到" not in message
+        or re.search(r"创建游标失败\s*[:：]\s*-3(?:\D|$)", message) is None
+    ):
+        return False, None
+    talker = str(session.get("username") or "")
+    if not talker or talker in historical_wxids:
+        return False, None
+    stale, last_timestamp = _stale_session_evidence(session, export_date)
+    return stale, last_timestamp
+
+
+def _stale_session_evidence(session: dict[str, Any], export_date: date) -> tuple[bool, int | None]:
+    raw_timestamp = session.get("lastTimestamp")
+    if raw_timestamp in (None, "", 0, "0"):
+        return True, None
+    if isinstance(raw_timestamp, bool):
+        return False, None
+    try:
+        timestamp = int(raw_timestamp)
+        if timestamp <= 0:
+            return False, None
+        if timestamp >= 100_000_000_000:
+            timestamp //= 1000
+        activity_date = datetime.fromtimestamp(timestamp).date()
+    except (OSError, OverflowError, TypeError, ValueError):
+        return False, None
+    cutoff = export_date - timedelta(days=NO_LOCAL_RECORDS_STALE_DAYS)
+    return activity_date <= cutoff, timestamp
+
+
+def _historical_export_wxids(raw_archive: Path) -> tuple[set[str], bool]:
+    """Read prior canonical chat identities; any unreadable candidate fails closed."""
+
+    if not raw_archive.exists():
+        return set(), True
+    wxids: set[str] = set()
+    try:
+        paths = list(raw_archive.rglob("*.json"))
+        for path in paths:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                return set(), False
+            session = payload.get("session")
+            if session is None:
+                continue
+            if not isinstance(session, dict):
+                return set(), False
+            talker = str(session.get("wxid") or session.get("username") or "")
+            if not talker:
+                return set(), False
+            wxids.add(talker)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return set(), False
+    return wxids, True
 
 
 __all__ = ["WeflowApiBackend"]

@@ -15,9 +15,9 @@
 - **token 改动不热更**，改完要**重启 WeFlow 的 API 服务**才生效。
 - 症状不明先跑 `doctor.py`（§4）——它会区分「服务不通」和「服务通但读不到数据」。
 
-**公众号默认不导出**
+**平台型会话默认不导出**
 
-`[daily_export].skip_official_accounts` 默认 `true`，`gh_` 开头的会话连请求都不发。**产物里没有公众号是预期行为，不是漏导。**
+`[daily_export].skip_official_accounts` 默认 `true`，`gh_` 公众号、`@openim` 企业微信与 `@opencustomerservicemsg` 客服会话连请求都不发。**产物里没有这些会话是预期行为，不是漏导。**
 
 **手工调 API 排障时：日期参数只认 `YYYYMMDD`**
 
@@ -49,7 +49,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$SkillRoot\scripts\run_dail
 
 ⚠️ **「with warnings」不等于「只是朋友圈失败」。** 失败清单里可能包含**几十个聊天会话**，也可能 sidecar 产出为 0。判断产物是否够用，**看控制台打印的实际计数**（`Diary processed files: N`、各类 sidecar 计数）和失败项清单，**不要凭「completed」三个字就假定聊天记录完整**。
 
-单会话失败只隔离它自己，不中断其余会话；失败记进工作区根 `.export-state.json`，连续多个导出日失败会在收尾列出待审查清单。
+单会话失败只隔离它自己，不中断其余会话；失败记进工作区根 `.export-state.json`，连续多个导出日失败会在收尾列出待审查清单。精确的“消息数据库未找到”只有在会话至少一年无活动且归档 raw 从未出现该 wxid 时才进入 `noLocalRecords`；证据不足仍按真失败。
 
 ## 2. 处理已有 raw `process_existing_raw.py`
 
