@@ -20,6 +20,7 @@ Thumbs.db
 config.toml
 .export-state.json
 .session-rename-state.json
+.session-rename-report.md
 
 # ---- Local engineering notes (kept on disk, not pushed) ----
 CLAUDE.md

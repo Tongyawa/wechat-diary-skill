@@ -28,9 +28,14 @@ from wechat_diary_core.backup_state import evaluate_backup_state
 from wechat_diary_core.config import Config, load_config
 from wechat_diary_core.preprocessing import archive_moments_for
 from wechat_diary_core.preprocessing import collect_voice_transcription_failures
-from wechat_diary_core.session_rename_alarm import update_session_rename_alarm
+from wechat_diary_core.session_rename_alarm import (
+    reconcile_archive_session_names,
+    update_session_rename_alarm,
+    write_session_rename_report,
+)
 from wechat_diary_core.workspace import rotate_export_workspace
 from wechat_diary_core.workspace_discovery import WorkspaceResolutionError, resolve_config_path
+from scripts.archive_exports import _files_equal, _find_guard_failures
 from scripts.process_existing_raw import archive_existing_processed
 
 
@@ -488,29 +493,66 @@ def run_daily_export(
     )
 
 
-def _warn_if_archive_session_names_split(cfg: Config) -> None:
-    """Surface new archive identity splits without affecting the daily result."""
+def _warn_if_archive_session_names_split(
+    cfg: Config,
+    *,
+    report_opener: Callable[[Path], None] | None = None,
+) -> None:
+    """Reconcile current-name archive splits without affecting the daily result."""
 
     state_path = cfg.base_dir / ".session-rename-state.json"
+    report_path = cfg.base_dir / ".session-rename-report.md"
     try:
-        report = update_session_rename_alarm(cfg.paths.archived / "raw", state_path)
+        reconciliation = reconcile_archive_session_names(
+            cfg.paths.archived / "raw",
+            cfg.paths.raw,
+            find_guard_failures=_find_guard_failures,
+            files_equal=_files_equal,
+        )
     except Exception as exc:  # noqa: BLE001 - advisory checks must never gate export
-        print(f"[WARN] 会话归档身份检查未完成；请下次重试。原因：{str(exc)[:80]}", file=sys.stderr)
+        print(f"[WARN] 会话归档自动合并未完成；请下次重试。原因：{str(exc)[:80]}", file=sys.stderr)
         return
 
-    if report.new_conflicts:
-        print(
-            f"[WARN] 会话归档身份冲突新增 {len(report.new_conflicts)} 条，需要人工核对。",
-            file=sys.stderr,
-        )
-        print(
-            "[WARN] 请查看工作区 .session-rename-state.json，核对目录后按需合并历史；本提示不影响本轮导出。",
-            file=sys.stderr,
-        )
+    if reconciliation.has_reportable_items:
+        try:
+            write_session_rename_report(reconciliation, report_path)
+        except OSError:
+            print("[WARN] 会话归档停留报告写入失败；本轮导出不受影响。", file=sys.stderr)
+            return
+        print("[INFO] 会话归档合并报告：.session-rename-report.md", file=sys.stderr)
+        try:
+            (report_opener or _open_session_rename_report)(report_path)
+        except Exception:  # noqa: BLE001 - report file is the durable fallback
+            print(
+                "[WARN] 无法打开会话归档合并报告；请手动打开 .session-rename-report.md。",
+                file=sys.stderr,
+            )
+
+    try:
+        report = update_session_rename_alarm(cfg.paths.archived / "raw", state_path)
+    except Exception as exc:  # noqa: BLE001 - advisory state must never gate export
+        print(f"[WARN] 会话归档身份状态未更新；请下次重试。原因：{str(exc)[:80]}", file=sys.stderr)
+        return
     if report.scan_error_count:
         print("[WARN] 会话归档身份检查未能完整扫描；请下次重试。", file=sys.stderr)
     if report.state_error:
         print("[WARN] 会话归档身份检查无法记住已提示项；下次可能重复提醒。", file=sys.stderr)
+
+
+def _open_session_rename_report(report_path: Path) -> None:
+    escaped_path = str(report_path).replace("'", "''")
+    subprocess.run(
+        [
+            "pwsh.exe",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            f"Start-Process -FilePath 'notepad.exe' -ArgumentList '{escaped_path}'",
+        ],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
 
 
 def wait_for_raw_exports_stable(
