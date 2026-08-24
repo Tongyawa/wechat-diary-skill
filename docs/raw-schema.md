@@ -33,7 +33,7 @@
 - 聊天媒体路径以会话目录为基准解析，例如 `media/images/a.jpg`。
 - 朋友圈 canonical 位置是 raw 根级 `朋友圈导出_*.json`，朋友圈媒体在 raw 根级 `media/` 下；`posts[].media[].localPath` 必须写成以 raw 根为基准的相对路径（如 `media/<id>_0.jpg`）。媒体解密失败时该项可保留 URL 而不写 `localPath`。当前发现器仍递归兼容旧位置，但新适配器应按根级布局产出。
 - 长期归档库中的 `archived/raw/<会话>/...json` 仍是 schema v1；根级朋友圈 JSON 与根级 `media/` 也按原名归档。
-- 日常导出收尾会扫描 `archived/raw` 的一级会话目录；同一 `session.wxid` 出现在多个目录时，以本轮 canonical raw 的 `session.displayName` 为目标目录逐文件合并。没有本轮 raw 的会话不猜测目标目录而停留报告；碰撞判据复用历史摄取护栏。状态与报告均在工作区本地，且不影响导出退出码。
+- 日常导出收尾会扫描 `archived/raw` 的一级会话目录；同一 `session.wxid` 出现在多个目录时，以本轮 canonical raw 的 `session.displayName` 为目标目录逐文件合并。没有本轮 raw 的会话不猜测目标目录而停留报告；碰撞判据复用历史摄取护栏。相同被拒/停留项在零文件动作时由工作区本地状态去重，明细或目标改变、状态删除或实际移动才重新报告；状态与报告均在工作区本地，且不影响导出退出码。
 
 ## 聊天 JSON
 

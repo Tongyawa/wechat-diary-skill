@@ -31,6 +31,7 @@ from wechat_diary_core.preprocessing import collect_voice_transcription_failures
 from wechat_diary_core.session_rename_alarm import (
     reconcile_archive_session_names,
     update_session_rename_alarm,
+    update_session_rename_report_state,
     write_session_rename_report,
 )
 from wechat_diary_core.workspace import rotate_export_workspace
@@ -513,9 +514,20 @@ def _warn_if_archive_session_names_split(
         print(f"[WARN] 会话归档自动合并未完成；请下次重试。原因：{str(exc)[:80]}", file=sys.stderr)
         return
 
-    if reconciliation.has_reportable_items:
+    try:
+        report_decision = update_session_rename_report_state(reconciliation, state_path)
+    except Exception as exc:  # noqa: BLE001 - report filtering must remain advisory
+        print(f"[WARN] 会话归档报告状态未更新；请下次重试。原因：{str(exc)[:80]}", file=sys.stderr)
+        report = reconciliation
+        report_state_error = None
+    else:
+        report = report_decision.report
+        report_state_error = report_decision.state_error
+    if report_state_error:
+        print("[WARN] 会话归档报告状态未更新；下次可能重复提醒。", file=sys.stderr)
+    if report.has_reportable_items:
         try:
-            write_session_rename_report(reconciliation, report_path)
+            write_session_rename_report(report, report_path)
         except OSError:
             print("[WARN] 会话归档停留报告写入失败；本轮导出不受影响。", file=sys.stderr)
             return

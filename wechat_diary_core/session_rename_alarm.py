@@ -73,10 +73,17 @@ class SessionRenameStay:
 class SessionRenameReconciliation:
     merges: tuple[SessionRenameMerge, ...]
     stayed: tuple[SessionRenameStay, ...]
+    current_wxids: tuple[str, ...] = ()
 
     @property
     def has_reportable_items(self) -> bool:
         return bool(self.merges or self.stayed)
+
+
+@dataclass(frozen=True)
+class SessionRenameReportDecision:
+    report: SessionRenameReconciliation
+    state_error: str | None
 
 
 def inspect_archive_session_names(archive_raw_root: str | Path) -> list[SessionRenameConflict]:
@@ -126,11 +133,13 @@ def update_session_rename_alarm(
 
     path = Path(state_path)
     try:
-        previous = _load_state(path)
+        state = _load_state_document(path)
     except (OSError, ValueError, json.JSONDecodeError) as exc:
+        state = _empty_state_document()
         previous = {}
         state_error = f"无法读取告警状态：{exc}"
     else:
+        previous = state["reported"]
         state_error = None
 
     current = {conflict.wxid: conflict for conflict in conflicts}
@@ -144,7 +153,8 @@ def update_session_rename_alarm(
 
     if updated != previous:
         try:
-            _save_state(path, updated)
+            state["reported"] = updated
+            _save_state_document(path, state)
         except OSError as exc:
             state_error = state_error or f"无法保存告警状态：{exc}"
 
@@ -203,7 +213,70 @@ def reconcile_archive_session_names(
             )
         )
 
-    return SessionRenameReconciliation(merges=tuple(merges), stayed=tuple(stayed))
+    return SessionRenameReconciliation(
+        merges=tuple(merges),
+        stayed=tuple(stayed),
+        current_wxids=tuple(sorted(targets)),
+    )
+
+
+def update_session_rename_report_state(
+    reconciliation: SessionRenameReconciliation,
+    state_path: str | Path,
+) -> SessionRenameReportDecision:
+    """Return only new blocked items while always retaining actual file actions.
+
+    A repeated guard rejection has no new action for the user. Its fingerprint
+    is kept with the existing rename alarm state so it becomes visible again
+    only when the unresolved details change, the target changes, or the state
+    is deliberately removed.
+    """
+
+    path = Path(state_path)
+    try:
+        state = _load_state_document(path)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        state = _empty_state_document()
+        previous: dict[str, dict[str, Any]] = {}
+        state_error = f"无法读取合并报告状态：{exc}"
+    else:
+        previous = state["merge_reports"]
+        state_error = None
+
+    pending = _pending_report_records(reconciliation)
+    active_wxids = {
+        merge.wxid
+        for merge in reconciliation.merges
+        if merge.moved_files or merge.duplicate_files
+    }
+    changed_pending_wxids = {
+        wxid
+        for wxid, record in pending.items()
+        if record["fingerprint"] != str((previous.get(wxid) or {}).get("fingerprint") or "")
+    }
+    report = SessionRenameReconciliation(
+        merges=tuple(
+            merge
+            for merge in reconciliation.merges
+            if merge.wxid in active_wxids or merge.wxid in changed_pending_wxids
+        ),
+        stayed=tuple(stayed for stayed in reconciliation.stayed if stayed.wxid in changed_pending_wxids),
+        current_wxids=reconciliation.current_wxids,
+    )
+
+    updated = dict(previous)
+    for wxid in reconciliation.current_wxids:
+        if wxid not in pending:
+            updated.pop(wxid, None)
+    updated.update(pending)
+    if updated != previous:
+        try:
+            state["merge_reports"] = updated
+            _save_state_document(path, state)
+        except OSError as exc:
+            state_error = state_error or f"无法保存合并报告状态：{exc}"
+
+    return SessionRenameReportDecision(report=report, state_error=state_error)
 
 
 def write_session_rename_report(
@@ -214,9 +287,13 @@ def write_session_rename_report(
 
     report_path = Path(path)
     lines = ["# 会话归档自动合并报告", ""]
-    if report.merges:
+    action_merges = tuple(
+        merge for merge in report.merges if merge.moved_files or merge.duplicate_files
+    )
+    blocked_merges = tuple(merge for merge in report.merges if merge not in action_merges)
+    if action_merges:
         lines.extend(["## 本轮合并", ""])
-        for merge in report.merges:
+        for merge in action_merges:
             lines.append(f"- wxid: {merge.wxid}")
             lines.append(f"  新目录: {merge.target_directory}")
             lines.append(f"  旧目录: {', '.join(merge.source_directories)}")
@@ -225,6 +302,15 @@ def write_session_rename_report(
                 lines.append(f"  护栏拒绝: {len(merge.rejected_files)} 个文件（原目录已保留）")
                 for relative_path, reason in merge.rejected_files:
                     lines.append(f"    - {relative_path}: {reason}")
+    if blocked_merges:
+        lines.extend(["", "## 护栏停留", ""])
+        for merge in blocked_merges:
+            lines.append(f"- wxid: {merge.wxid}")
+            lines.append(f"  目标目录: {merge.target_directory}")
+            lines.append(f"  原目录: {', '.join(merge.source_directories)}")
+            lines.append(f"  护栏拒绝: {len(merge.rejected_files)} 个文件（原目录已保留）")
+            for relative_path, reason in merge.rejected_files:
+                lines.append(f"    - {relative_path}: {reason}")
     if report.stayed:
         lines.extend(["", "## 停留", ""])
         for stayed in report.stayed:
@@ -240,6 +326,37 @@ def write_session_rename_report(
     finally:
         temporary.unlink(missing_ok=True)
     return report_path
+
+
+def _pending_report_records(
+    reconciliation: SessionRenameReconciliation,
+) -> dict[str, dict[str, Any]]:
+    records: dict[str, dict[str, Any]] = {}
+    for merge in reconciliation.merges:
+        if not merge.rejected_files:
+            continue
+        payload = {
+            "kind": "guard_rejection",
+            "target_directory": merge.target_directory,
+            "rejected_files": list(merge.rejected_files),
+        }
+        records[merge.wxid] = _fingerprinted_record(payload)
+    for stayed in reconciliation.stayed:
+        payload = {
+            "kind": "stay",
+            "directories": list(stayed.directories),
+            "reason": stayed.reason,
+        }
+        records[stayed.wxid] = _fingerprinted_record(payload)
+    return records
+
+
+def _fingerprinted_record(payload: dict[str, Any]) -> dict[str, Any]:
+    fingerprint_source = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return {
+        **payload,
+        "fingerprint": hashlib.sha256(fingerprint_source.encode("utf-8")).hexdigest(),
+    }
 
 
 def _read_session_wxid(path: Path) -> str:
@@ -401,24 +518,37 @@ def _remove_empty_directories(root: Path) -> None:
         pass
 
 
-def _load_state(path: Path) -> dict[str, dict[str, Any]]:
+def _empty_state_document() -> dict[str, dict[str, dict[str, Any]] | int]:
+    return {"version": STATE_VERSION, "reported": {}, "merge_reports": {}}
+
+
+def _load_state_document(path: Path) -> dict[str, Any]:
     if not path.is_file():
-        return {}
+        return _empty_state_document()
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict) or payload.get("version") != STATE_VERSION:
         raise ValueError("告警状态文件格式或版本不兼容")
     records = payload.get("reported")
     if not isinstance(records, dict):
         raise ValueError("告警状态文件 reported 必须是 object")
-    return {str(wxid): value for wxid, value in records.items() if isinstance(value, dict)}
+    merge_reports = payload.get("merge_reports", {})
+    if not isinstance(merge_reports, dict):
+        raise ValueError("告警状态文件 merge_reports 必须是 object")
+    return {
+        "version": STATE_VERSION,
+        "reported": {str(wxid): value for wxid, value in records.items() if isinstance(value, dict)},
+        "merge_reports": {
+            str(wxid): value for wxid, value in merge_reports.items() if isinstance(value, dict)
+        },
+    }
 
 
-def _save_state(path: Path, records: dict[str, dict[str, Any]]) -> None:
+def _save_state_document(path: Path, state: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     try:
         temporary.write_text(
-            json.dumps({"version": STATE_VERSION, "reported": records}, ensure_ascii=False, indent=2) + "\n",
+            json.dumps(state, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
         os.replace(temporary, path)
@@ -432,9 +562,11 @@ __all__ = [
     "SessionRenameConflict",
     "SessionRenameMerge",
     "SessionRenameReconciliation",
+    "SessionRenameReportDecision",
     "SessionRenameStay",
     "inspect_archive_session_names",
     "reconcile_archive_session_names",
     "update_session_rename_alarm",
+    "update_session_rename_report_state",
     "write_session_rename_report",
 ]
