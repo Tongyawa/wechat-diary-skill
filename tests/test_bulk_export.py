@@ -166,7 +166,9 @@ class BulkExportTests(unittest.TestCase):
                 {
                     "success": True,
                     "talker": "wxid_contact_placeholder",
-                    "count": 4,
+                    # 真机契约：count 是本页条数，不是声明总数（6 页实测
+                    # 10000×5 后末页 6276，逐页 count == len(page)）。
+                    "count": len(page),
                     "hasMore": offset == 0,
                     "messages": page,
                 }
