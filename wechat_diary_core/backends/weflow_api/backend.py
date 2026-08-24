@@ -14,11 +14,12 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, ClassVar
 
+from ...archiving import strip_date_suffix
 from ...asr import SenseVoiceTranscriber
 from ...config import Config
 from .client import WeflowApiClient, WeflowApiError
 from .failure_state import SessionFailureState
-from .mapper import ImageMediaStats, write_moments_export, write_session_export
+from .mapper import ImageMediaStats, session_directory_name, write_moments_export, write_session_export
 
 
 NO_LOCAL_RECORDS_STALE_DAYS = 365
@@ -94,7 +95,7 @@ class WeflowApiBackend:
                     last_error = exc
                     self.sleep(1.0)
                 else:
-                    self._validate_configured_contacts_before_mutation()
+                    self._validate_before_mutation()
                     return
             raise RuntimeError(
                 "WeFlow API 服务未启动或鉴权失败。请打开 WeFlow → 设置 → API 服务 → "
@@ -102,7 +103,7 @@ class WeflowApiBackend:
                 f" 最后错误：{last_error}"
             ) from first_error
         else:
-            self._validate_configured_contacts_before_mutation()
+            self._validate_before_mutation()
             return
 
     def export_chats(self, export_date: date) -> None:
@@ -322,18 +323,53 @@ class WeflowApiBackend:
         self.client.health()
         self.client.validate_token()
 
+    def _validate_before_mutation(self) -> None:
+        self._validate_configured_contacts_before_mutation()
+        sessions = self._sessions()
+        current_collisions = _current_session_directory_collisions(
+            sessions,
+            skip_official_accounts=self.config.daily_export.skip_official_accounts,
+        )
+        live_raw_collisions = _stored_session_directory_collisions(
+            self.config.paths.raw,
+            directory_key=strip_date_suffix,
+        )
+        archive_collisions = _stored_session_directory_collisions(self.config.paths.archived / "raw")
+        if current_collisions or live_raw_collisions or archive_collisions:
+            details: list[str] = []
+            if current_collisions:
+                details.append("本轮会话：" + _format_session_directory_collisions(current_collisions))
+            if live_raw_collisions:
+                details.append("待轮转 live raw：" + _format_session_directory_collisions(live_raw_collisions))
+            if archive_collisions:
+                details.append("已有归档：" + _format_session_directory_collisions(archive_collisions))
+            raise RuntimeError(
+                "检测到不同 wxid 会写入同一 canonical 会话目录；已在任何归档轮转或 live 写入前拒绝本轮导出。 "
+                + " ".join(details)
+                + " 请去微信里改其中一方的备注，使双方显示名净化后不同，再重新运行导出。"
+                + (
+                    " 既有 live raw 或归档冲突不会被改备注自动修复，请先保留其目录并另行人工核对。"
+                    if live_raw_collisions or archive_collisions
+                    else ""
+                )
+            )
+
     def _validate_configured_contacts_before_mutation(self) -> None:
         if not self._configured_contact_targets():
             return
         sessions, contacts = self._export_roster()
         self._validate_configured_contacts(sessions, contacts)
 
-    def _export_roster(self) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    def _sessions(self) -> list[dict[str, Any]]:
         if self._sessions_cache is None:
             self._sessions_cache = self.client.fetch_sessions(limit=10000)
+        return self._sessions_cache
+
+    def _export_roster(self) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        sessions = self._sessions()
         if self._contacts_cache is None:
             self._contacts_cache = self.client.fetch_contacts(limit=10000)
-        return self._sessions_cache, self._contacts_cache
+        return sessions, self._contacts_cache
 
     def _configured_contact_targets(self) -> list[tuple[str, str]]:
         configured: list[tuple[str, str]] = []
@@ -474,6 +510,82 @@ def _readable_error_summary(value: str, limit: int = 180) -> str:
 
 def _is_platform_account(talker: str) -> bool:
     return talker.startswith("gh_") or talker.endswith(_SKIPPED_ACCOUNT_SUFFIXES)
+
+
+def _current_session_directory_collisions(
+    sessions: list[dict[str, Any]],
+    *,
+    skip_official_accounts: bool,
+) -> dict[str, dict[str, str]]:
+    """Return only canonical daily directories claimed by multiple wxids."""
+
+    candidates: dict[str, dict[str, str]] = {}
+    today = date.today()
+    for session in sessions:
+        wxid = str(session.get("username") or "").strip()
+        if not wxid or (skip_official_accounts and _is_platform_account(wxid)):
+            continue
+        directory = session_directory_name(session, today, today)
+        candidates.setdefault(directory, {}).setdefault(wxid, _session_display_name(session, wxid))
+    return {
+        directory: identities
+        for directory, identities in candidates.items()
+        if len(identities) > 1
+    }
+
+
+def _stored_session_directory_collisions(
+    raw_root: Path,
+    *,
+    directory_key: Callable[[str], str] = str,
+) -> dict[str, dict[str, str]]:
+    """Find preserved evidence that one archive key contains multiple wxids.
+
+    We inspect only direct JSON children of first-level session directories, the
+    same shape used by the rename reconciler. ``directory_key`` is identity for
+    archived directories and strips the date suffix for live raw, matching the
+    rotation destination exactly. Root-level moments exports and media subtrees
+    therefore cannot participate in this chat-identity guard.
+    """
+
+    if not raw_root.is_dir():
+        return {}
+    candidates: dict[str, dict[str, str]] = {}
+    for session_dir in sorted(path for path in raw_root.iterdir() if path.is_dir()):
+        directory = directory_key(session_dir.name)
+        identities = candidates.setdefault(directory, {})
+        for json_path in sorted(session_dir.glob("*.json")):
+            try:
+                payload = json.loads(json_path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                continue
+            if not isinstance(payload, dict) or not isinstance(payload.get("session"), dict):
+                continue
+            session = payload["session"]
+            wxid = str(session.get("wxid") or session.get("username") or "").strip()
+            if wxid:
+                identities.setdefault(wxid, _session_display_name(session, wxid))
+    return {
+        directory: identities
+        for directory, identities in candidates.items()
+        if len(identities) > 1
+    }
+
+
+def _session_display_name(session: dict[str, Any], wxid: str) -> str:
+    display_name = " ".join(str(session.get("displayName") or "").split())
+    return display_name or f"（缺失，目录名回退为 {wxid}）"
+
+
+def _format_session_directory_collisions(collisions: dict[str, dict[str, str]]) -> str:
+    groups = []
+    for directory, identities in sorted(collisions.items()):
+        participants = "; ".join(
+            f"wxid={wxid}, displayName=「{display_name}」"
+            for wxid, display_name in sorted(identities.items())
+        )
+        groups.append(f"目录「{directory}」：{participants}。")
+    return " ".join(groups)
 
 
 def _is_no_local_records_failure(

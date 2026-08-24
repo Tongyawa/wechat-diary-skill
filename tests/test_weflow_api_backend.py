@@ -61,6 +61,16 @@ engine = "{asr_engine}"
     return load_config(path)
 
 
+def _tree_snapshot(root: Path) -> tuple[tuple[str, bool, bytes | None], ...] | None:
+    if not root.exists():
+        return None
+    snapshot: list[tuple[str, bool, bytes | None]] = []
+    for path in sorted(root.rglob("*")):
+        relative = path.relative_to(root).as_posix()
+        snapshot.append((relative, path.is_dir(), None if path.is_dir() else path.read_bytes()))
+    return tuple(snapshot)
+
+
 class _Client:
     def __init__(self):
         self.health_calls = 0
@@ -577,6 +587,155 @@ class WeflowApiBackendTests(unittest.TestCase):
                 backend.prepare()
 
         self.assertEqual(launches, [])
+
+    def test_prepare_rejects_sanitized_directory_collision_before_live_roots_mutate(self) -> None:
+        sessions = [
+            {"username": "wxid_first_collision_placeholder", "displayName": "碰撞/名称"},
+            {"username": "wxid_second_collision_placeholder", "displayName": "碰撞:名称"},
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = _config(root)
+            raw_sentinel = cfg.paths.raw / "existing" / "raw.txt"
+            processed_sentinel = cfg.paths.processed / "existing.md"
+            raw_sentinel.parent.mkdir(parents=True)
+            processed_sentinel.parent.mkdir(parents=True)
+            raw_sentinel.write_bytes(b"keep raw bytes")
+            processed_sentinel.write_bytes(b"keep processed bytes")
+            before = {
+                "raw": _tree_snapshot(cfg.paths.raw),
+                "processed": _tree_snapshot(cfg.paths.processed),
+            }
+            client = _TrackingSessionClient(sessions)
+            client.health = Mock()
+            client.validate_token = Mock()
+            backend = WeflowApiBackend(cfg)
+            backend._client = client
+
+            with self.assertRaisesRegex(
+                RuntimeError,
+                r"wxid_first_collision_placeholder.*碰撞/名称.*wxid_second_collision_placeholder.*碰撞:名称.*微信里改其中一方的备注",
+            ):
+                backend.prepare()
+
+            after = {
+                "raw": _tree_snapshot(cfg.paths.raw),
+                "processed": _tree_snapshot(cfg.paths.processed),
+            }
+
+        self.assertEqual(after, before)
+        self.assertEqual(client.message_calls, [])
+
+    def test_prepare_allows_repeated_same_wxid_and_skipped_official_collision(self) -> None:
+        sessions = [
+            {"username": "wxid_repeat_placeholder", "displayName": "重复会话"},
+            {"username": "wxid_repeat_placeholder", "displayName": "重复会话"},
+            {"username": "gh_collision_placeholder", "displayName": "忽略/名称"},
+            {"username": "wxid_visible_placeholder", "displayName": "忽略:名称"},
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            client = _TrackingSessionClient(sessions)
+            client.health = Mock()
+            client.validate_token = Mock()
+            backend = WeflowApiBackend(_config(Path(tmp), skip_official_accounts=True))
+            backend._client = client
+
+            backend.prepare()
+
+        self.assertEqual(client.message_calls, [])
+
+    def test_prepare_rejects_existing_archive_directory_with_multiple_wxids(self) -> None:
+        sessions = [
+            {"username": "wxid_current_one_placeholder", "displayName": "当前甲"},
+            {"username": "wxid_current_two_placeholder", "displayName": "当前乙"},
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = _config(root)
+            archive_dir = cfg.paths.archived / "raw" / "私聊_旧目录"
+            archive_dir.mkdir(parents=True)
+            for filename, wxid, display_name in (
+                ("first.json", "wxid_archived_first_placeholder", "归档甲"),
+                ("second.json", "wxid_archived_second_placeholder", "归档乙"),
+            ):
+                (archive_dir / filename).write_text(
+                    json.dumps({"session": {"wxid": wxid, "displayName": display_name}}, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+            client = _TrackingSessionClient(sessions)
+            client.health = Mock()
+            client.validate_token = Mock()
+            backend = WeflowApiBackend(cfg)
+            backend._client = client
+
+            with self.assertRaisesRegex(
+                RuntimeError,
+                r"已有归档.*wxid_archived_first_placeholder.*归档甲.*wxid_archived_second_placeholder.*归档乙.*人工核对",
+            ):
+                backend.prepare()
+
+        self.assertEqual(client.message_calls, [])
+
+    def test_prepare_rejects_live_raw_that_rotation_would_merge_by_name(self) -> None:
+        sessions = [{"username": "wxid_current_placeholder", "displayName": "当前会话"}]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = _config(root)
+            for directory, wxid, display_name in (
+                ("私聊_待轮转冲突_20260820", "wxid_live_first_placeholder", "live 甲"),
+                ("私聊_待轮转冲突_20260821", "wxid_live_second_placeholder", "live 乙"),
+            ):
+                path = cfg.paths.raw / directory / "session.json"
+                path.parent.mkdir(parents=True)
+                path.write_text(
+                    json.dumps({"session": {"wxid": wxid, "displayName": display_name}}, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+            before = {
+                "raw": _tree_snapshot(cfg.paths.raw),
+                "processed": _tree_snapshot(cfg.paths.processed),
+            }
+            client = _TrackingSessionClient(sessions)
+            client.health = Mock()
+            client.validate_token = Mock()
+            backend = WeflowApiBackend(cfg)
+            backend._client = client
+
+            with self.assertRaisesRegex(
+                RuntimeError,
+                r"待轮转 live raw.*wxid_live_first_placeholder.*live 甲.*wxid_live_second_placeholder.*live 乙.*人工核对",
+            ):
+                backend.prepare()
+
+            after = {
+                "raw": _tree_snapshot(cfg.paths.raw),
+                "processed": _tree_snapshot(cfg.paths.processed),
+            }
+
+        self.assertEqual(after, before)
+        self.assertEqual(client.message_calls, [])
+
+    def test_prepare_allows_archive_rename_split_for_one_wxid(self) -> None:
+        sessions = [{"username": "wxid_current_placeholder", "displayName": "当前会话"}]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = _config(root)
+            for directory in ("私聊_旧名称", "私聊_新名称"):
+                path = cfg.paths.archived / "raw" / directory
+                path.mkdir(parents=True)
+                (path / "session.json").write_text(
+                    json.dumps({"session": {"wxid": "wxid_current_placeholder", "displayName": "当前会话"}}, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+            client = _TrackingSessionClient(sessions)
+            client.health = Mock()
+            client.validate_token = Mock()
+            backend = WeflowApiBackend(cfg)
+            backend._client = client
+
+            backend.prepare()
+
+        self.assertEqual(client.message_calls, [])
 
     def test_prepare_rejects_missing_configured_contact_before_export(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
