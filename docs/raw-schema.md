@@ -175,9 +175,7 @@
 
 - `preprocessing.cleaner.load_chat_export()`：聊天 raw 校验失败时抛 `InvalidExportError`，消息包含具体文件路径与字段名。
 - `preprocessing.moments.load_moments_export()`：朋友圈 raw 校验失败时抛 `InvalidExportError`，消息包含具体文件路径与字段名。
-- `scripts/archive_exports.py`：摄取 raw 根前逐个 JSON 校验；坏 JSON 跳过，其余文件继续归档，结尾汇总失败清单并返回非零退出码。写入前还会对同路径聊天 JSON 做快照倒退检查：同代按 `(createTime, localId)` 多重集合，跨 legacy GUI / HTTP API 两代按非空 `platformMessageId` 多重集合；后者允许重复、按出现次数比较。严格子集、时间水位倒退或会话身份错配始终拒绝；空跨代 id 与零交集因不可比而默认拒绝。legacy 同代在上述检查通过后，双方有效的 `exportedAt` 还会作为快照版本水位：incoming 较旧强拒绝，较新可解释共同消息内容变化；缺失或无效时继续保守处理。
-
-`platformMessageId` 不是 canonical 必填字段，也不保证唯一。摄取护栏只在跨代比较时使用它，并在任一侧存在空值时 fail-closed；不要据此把它升级为 schema 主键。processed、媒体、朋友圈 JSON 等没有聊天消息集合身份契约，同路径异字节覆盖默认同样 fail-closed，只能由操作者明确确认 incoming 更新后放行。
+- `scripts/archive_exports.py`：摄取 raw 根前逐个 JSON 校验；坏 JSON 跳过，其余文件继续归档，结尾汇总失败清单并返回非零退出码。写入前还会对同路径聊天 JSON 做快照倒退检查（同代按 `(createTime, localId)`、跨代按非空 `platformMessageId`；严格子集、时间水位倒退、会话身份错配一律拒绝整批）。⚠️ `platformMessageId` 不是必填字段、也不保证唯一，摄取护栏只在跨代比较时用它并在有空值时 fail-closed，**不要据此把它升级为 schema 主键**。processed、媒体、朋友圈 JSON 等没有聊天消息集合身份契约，同路径异字节覆盖默认同样 fail-closed，只能由操作者明确确认 incoming 更新后放行。
 
 ## 字段梳理清单
 

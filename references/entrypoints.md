@@ -112,34 +112,22 @@ python "$SkillRoot\scripts\doctor.py"
 
 ## 5. 并入旧导出快照 `archive_exports.py`
 
-把换机备份、历史手工导出等旧目录摄取进长期归档库。
-
-> 默认是**复制并保留源树**。只有显式传入 `--move-source`，成功摄取后才会删除源目录。
-> 旧命令中的 `--keep-source` 继续可用，但现在是兼容 no-op。
+把换机备份、`--out` 的一次性产物等旧目录摄取进长期归档库。**默认只复制、不动源树。**
 
 ```powershell
-# 默认安全摄取：复制、不动源
-python "$SkillRoot\scripts\archive_exports.py" --raw-root <旧raw目录> --processed-root <旧processed目录>
+python "$SkillRoot\scriptsrchive_exports.py" --raw-root <旧raw目录> --processed-root <旧processed目录>
 ```
 
 | 参数 | 说明 |
 |---|---|
 | `--raw-root` | 要摄取的 raw 树 |
 | `--processed-root` | 要摄取的 processed 树 |
-| `--move-source` | 摄取成功后删除源树；不传时默认复制并保留源树 |
-| `--keep-source` | 旧命令兼容参数；现在不传参数也会保留源树 |
-| `--force-overwrite` | 仅放行“机器无法判断新旧”的同路径异内容冲突；须先人工确认 incoming 更新。不能越过严格子集、时间水位倒退或会话身份错配 |
+| `--move-source` | 摄取成功后删除源树；不传即复制保源 |
+| `--keep-source` | 旧命令兼容参数，现在是 no-op |
+| `--force-overwrite` | 只放行「机器判不出新旧」的同路径冲突；越不过严格子集 / 时间水位倒退 / 会话身份错配 |
 | `--config` | 配置文件路径 |
 
-摄取会先展开 raw 与 processed 的全部目标路径，**整批预检通过后才开始写入**：
-
-- 血统按真机元数据判断：legacy GUI 是 `weflow.generator = "WeFlow"`，HTTP API 是 `weflow.source = "http_api"`；legacy 的独立 `version` 字段不参与血统判定。只有同代聊天才按 `(createTime, localId)` 多重集合比较；跨代改用非空 `platformMessageId` 多重集合。重复 id 按出现次数计算，不当唯一主键。
-- incoming 是严格子集、最大 `createTime` 更旧，或会话身份不一致时，拒绝整批、退出 `1`，不写任何文件。`--force-overwrite` 也不能越过这些已有证据的回退。
-- legacy↔legacy 在通过上述消息集合检查后，还会比较双方有效的 `weflow.exportedAt`：incoming 更旧时强拒绝；incoming 更新时，可据此接受共同消息内容变化。任一侧缺失或无效则不臆测，内容冲突仍按“机器无法判断”处理。
-- 跨代任一侧存在空 `platformMessageId`、两代 id 零交集，或 processed / 媒体 / 朋友圈等非 canonical 文件同路径异字节时，程序无法判断新旧，默认拒绝。只有人工确认 incoming 更新后才可加 `--force-overwrite`。
-- 冲突报告最多展示 12 条路径，其余只报数量，避免整棵树冲突时刷屏。
-
-raw schema 校验仍逐文件执行：坏 JSON 会跳过，其余文件继续归档，结尾汇总并退出 `1`；显式移动模式下也会保留含坏文件的 raw 源树供复核。
+写入前整批预检：判定 incoming 更旧就**拒绝整批、退出 `1`、一个文件都不写**（报告最多列 12 条），坏 JSON 逐个跳过并在结尾汇总。判据实现在 `scripts/archive_exports.py`，元数据形态与设计理由在工程 `CLAUDE.md`。
 
 ## 6. 打开产物 `Open-LatestInsights.ps1` / `Open-InsightsByDate.ps1`
 
