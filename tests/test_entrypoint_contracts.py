@@ -14,6 +14,7 @@ POWERSHELL = shutil.which("powershell.exe")
 PYTHON_ENTRYPOINTS = {
     "process_existing_raw.py",
     "export_on_demand.py",
+    "export_bulk_raw.py",
     "doctor.py",
     "archive_exports.py",
     "init_worktree_config.py",

@@ -12,18 +12,35 @@ import time
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Callable, ClassVar
+from typing import Any, Callable, ClassVar, Mapping, Sequence
 
 from ...archiving import strip_date_suffix
 from ...asr import SenseVoiceTranscriber
 from ...config import Config
+from .bulk_state import BulkExportState, DateInterval
 from .client import WeflowApiClient, WeflowApiError
 from .failure_state import SessionFailureState
-from .mapper import ImageMediaStats, session_directory_name, write_moments_export, write_session_export
+from .mapper import (
+    ImageMediaStats,
+    session_directory_name,
+    write_moments_export,
+    write_session_export,
+)
 
 
 NO_LOCAL_RECORDS_STALE_DAYS = 365
 _SKIPPED_ACCOUNT_SUFFIXES = ("@openim", "@opencustomerservicemsg")
+
+
+@dataclass(frozen=True)
+class BulkExportResult:
+    requested_sessions: int
+    completed_intervals: int
+    resumed_intervals: int
+    skipped_platform_accounts: int
+    messages_written: int
+    files_written: tuple[Path, ...]
+    failures: dict[str, str]
 
 
 @dataclass
@@ -63,6 +80,20 @@ class WeflowApiBackend:
         return self._client
 
     def prepare(self) -> None:
+        self._prepare_api(validate_before_mutation=True)
+
+    def prepare_bulk_export(self) -> None:
+        """Prepare the API without applying the daily pre-rotation validation.
+
+        Bulk export writes to its own ``--out`` root: the daily sidecar contact
+        targets do not apply, and live-raw / archive collisions cannot occur.
+        Directory collisions among the *selected* sessions are still checked, in
+        ``export_chats_range``, through the same predicate the daily gate uses.
+        """
+
+        self._prepare_api(validate_before_mutation=False)
+
+    def _prepare_api(self, *, validate_before_mutation: bool) -> None:
         api = self.config.export_backend.weflow_api
         if not api.access_token:
             raise RuntimeError(
@@ -95,7 +126,8 @@ class WeflowApiBackend:
                     last_error = exc
                     self.sleep(1.0)
                 else:
-                    self._validate_before_mutation()
+                    if validate_before_mutation:
+                        self._validate_before_mutation()
                     return
             raise RuntimeError(
                 "WeFlow API 服务未启动或鉴权失败。请打开 WeFlow → 设置 → API 服务 → "
@@ -103,10 +135,178 @@ class WeflowApiBackend:
                 f" 最后错误：{last_error}"
             ) from first_error
         else:
-            self._validate_before_mutation()
+            if validate_before_mutation:
+                self._validate_before_mutation()
             return
 
     def export_chats(self, export_date: date) -> None:
+        self.export_chats_range(export_date, export_date, _daily_compat=True)
+
+    def export_chats_range(
+        self,
+        start: date,
+        end: date,
+        *,
+        raw_root: Path | None = None,
+        sessions: Sequence[Mapping[str, Any]] | None = None,
+        state_path: Path | None = None,
+        force: bool = False,
+        _daily_compat: bool = False,
+    ) -> BulkExportResult | None:
+        """Export selected sessions over an inclusive range as one canonical file per active day."""
+
+        if start > end:
+            raise ValueError("批量导出的起始日期不能晚于结束日期")
+        if _daily_compat:
+            if start != end:
+                raise ValueError("日常兼容路径只接受单日范围")
+            self._export_chats_daily(start)
+            return None
+        if raw_root is None:
+            raise ValueError("批量导出必须显式提供 raw_root")
+        if state_path is None:
+            raise ValueError("批量导出必须提供独立 state_path 以支持续跑")
+
+        destination_root = Path(raw_root).expanduser().resolve()
+        destination_root.mkdir(parents=True, exist_ok=True)
+        state = BulkExportState.load(Path(state_path).expanduser(), destination_root)
+        self.partial_failures.clear()
+        if sessions is None:
+            selected_sessions, contacts = self._export_roster()
+        else:
+            selected_sessions = [dict(session) for session in sessions]
+            if self._contacts_cache is None:
+                self._contacts_cache = self.client.fetch_contacts(limit=5000)
+            contacts = self._contacts_cache
+        if not selected_sessions:
+            raise RuntimeError("WeFlow API 没有返回可导出的会话，拒绝把空结果当成功")
+        _validate_bulk_destination_names(
+            selected_sessions,
+            skip_platform_accounts=self.config.daily_export.skip_official_accounts,
+        )
+
+        completed_intervals = 0
+        resumed_intervals = 0
+        skipped_platform_accounts = 0
+        messages_written = 0
+        files_written: list[Path] = []
+        failures: dict[str, str] = {}
+        for index, session in enumerate(selected_sessions, start=1):
+            talker = str(session.get("username") or "")
+            display_name = str(
+                session.get("displayName")
+                or session.get("nickname")
+                or session.get("remark")
+                or talker
+                or "未知会话"
+            )
+            if not talker:
+                failures[f"unknown-{index}"] = "会话缺少 username"
+                self._record_session_failure("unknown", "会话缺少 username", display_name)
+                continue
+            if self.config.daily_export.skip_official_accounts and _is_platform_account(talker):
+                skipped_platform_accounts += 1
+                continue
+
+            pending = state.uncovered(talker, start, end, force=force)
+            if not pending:
+                resumed_intervals += 1
+                print(
+                    f"[INFO] [{index}/{len(selected_sessions)}] 会话「{display_name}」"
+                    f"已覆盖 {start} ~ {end}，跳过"
+                )
+                continue
+
+            for interval in pending:
+                print(
+                    f"[INFO] [{index}/{len(selected_sessions)}] 导出会话「{display_name}」："
+                    f"{interval.start} ~ {interval.end}"
+                )
+                try:
+                    messages = self.client.fetch_messages(
+                        talker,
+                        start=interval.start,
+                        end=interval.end,
+                        media=self.config.export_backend.weflow_api.media_localize,
+                    )
+                    messages_by_day = _split_messages_by_day(messages, interval)
+                    group_members = (
+                        self.client.fetch_group_members(talker)
+                        if messages and talker.endswith("@chatroom")
+                        else []
+                    )
+                    transcriber, reason = self._asr()
+                    interval_files: list[Path] = []
+                    interval_message_count = 0
+                    image_media_stats = ImageMediaStats()
+                    for export_day in sorted(messages_by_day):
+                        day_messages = messages_by_day[export_day]
+                        published = write_session_export(
+                            destination_root,
+                            session,
+                            day_messages,
+                            start=export_day,
+                            end=export_day,
+                            contacts=contacts,
+                            group_members=group_members,
+                            self_wxids=self.config.user.self_wxids,
+                            transcriber=transcriber,
+                            asr_unavailable_reason=reason,
+                            emit_emotion=self.config.asr.emit_emotion,
+                            require_media=self.config.export_backend.weflow_api.media_localize,
+                            appmsg_text_max_chars=self.config.export_backend.weflow_api.appmsg_text_max_chars,
+                            image_media_stats=image_media_stats,
+                        )
+                        interval_files.extend(path for path in published.rglob("*") if path.is_file())
+                        interval_message_count += len(day_messages)
+
+                    state.record_completed(
+                        talker,
+                        display_name,
+                        interval,
+                        interval_files,
+                    )
+                    completed_intervals += 1
+                    messages_written += interval_message_count
+                    files_written.extend(interval_files)
+                    if image_media_stats.missing_image_paths or image_media_stats.missing_image_files:
+                        marker = (
+                            f"export_chat_image_media:{talker}:"
+                            f"missing_path={image_media_stats.missing_image_paths}:"
+                            f"missing_file={image_media_stats.missing_image_files}"
+                        )
+                        self.partial_failures.append(marker)
+                        print(
+                            f"[WARN] 会话「{_readable_error_summary(display_name, limit=60)}」"
+                            "有图片降级为 [图片]："
+                            f"缺少本地路径 {image_media_stats.missing_image_paths} 条；"
+                            f"路径指向的文件不存在 {image_media_stats.missing_image_files} 条。"
+                            "已继续导出。",
+                            file=sys.stderr,
+                        )
+                except Exception as exc:
+                    reason = _readable_error_summary(str(exc), limit=500)
+                    failures[talker] = reason
+                    state.record_failure(talker, display_name, interval, reason)
+                    self._record_session_failure(talker, reason, display_name)
+                    break
+
+        if skipped_platform_accounts:
+            print(
+                f"[INFO] 已跳过 {skipped_platform_accounts} 个公众号/企业微信/客服会话"
+                "（skip_official_accounts=true）"
+            )
+        return BulkExportResult(
+            requested_sessions=len(selected_sessions),
+            completed_intervals=completed_intervals,
+            resumed_intervals=resumed_intervals,
+            skipped_platform_accounts=skipped_platform_accounts,
+            messages_written=messages_written,
+            files_written=tuple(files_written),
+            failures=failures,
+        )
+
+    def _export_chats_daily(self, export_date: date) -> None:
         self.partial_failures.clear()
         sessions, contacts = self._export_roster()
         self._validate_configured_contacts(sessions, contacts)
@@ -659,4 +859,61 @@ def _historical_export_wxids(raw_archive: Path) -> tuple[set[str], bool]:
     return wxids, True
 
 
-__all__ = ["WeflowApiBackend"]
+def _split_messages_by_day(
+    messages: Sequence[Mapping[str, Any]],
+    interval: DateInterval,
+) -> dict[date, list[Mapping[str, Any]]]:
+    grouped: dict[date, list[Mapping[str, Any]]] = {}
+    for message in messages:
+        raw_timestamp = message.get("createTime")
+        if isinstance(raw_timestamp, bool):
+            raise ValueError("WeFlow API 消息 createTime 无效，无法按天切分")
+        try:
+            timestamp = int(raw_timestamp)
+            if timestamp >= 100_000_000_000:
+                timestamp //= 1000
+            if timestamp <= 0:
+                raise ValueError
+            message_day = datetime.fromtimestamp(timestamp).date()
+        except (OSError, OverflowError, TypeError, ValueError) as exc:
+            raise ValueError("WeFlow API 消息 createTime 无效，无法按天切分") from exc
+        if not interval.start <= message_day <= interval.end:
+            raise ValueError(
+                "WeFlow API 返回了请求范围外的消息，拒绝静默丢弃："
+                f"createTime={raw_timestamp}，日期={message_day}，"
+                f"请求={interval.start}~{interval.end}"
+            )
+        grouped.setdefault(message_day, []).append(message)
+    return grouped
+
+
+def _validate_bulk_destination_names(
+    sessions: Sequence[Mapping[str, Any]],
+    *,
+    skip_platform_accounts: bool,
+) -> None:
+    """Reject a bulk run whose selected sessions would share one directory.
+
+    Reuses the daily gate's predicate so one definition decides what counts as
+    a collision. Only the "current sessions" face applies: bulk writes to its
+    own ``--out`` root, so the live-raw and archive faces are unreachable here.
+    The date carried by a directory name is identical for every session in one
+    run, so the predicate's internal date is irrelevant to the verdict.
+    """
+
+    collisions = _current_session_directory_collisions(
+        [dict(session) for session in sessions],
+        skip_official_accounts=skip_platform_accounts,
+    )
+    if not collisions:
+        return
+    raise RuntimeError(
+        "检测到不同 wxid 会写入同一 canonical 会话目录；已在任何写入前拒绝本次批量导出。 "
+        "本次选中的会话："
+        + _format_session_directory_collisions(collisions)
+        + " 请去微信里改其中一方的备注，使双方显示名净化后不同，再重新运行；"
+        "也可以用 --session 把它们分开导出到不同的 --out 根。"
+    )
+
+
+__all__ = ["BulkExportResult", "WeflowApiBackend"]

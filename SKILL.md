@@ -28,6 +28,7 @@ description: 用 WeFlow 导出并清洗微信聊天记录，生成日记、DoneL
 | 把旧的导出快照并进长期归档 | ⑤ 归档摄取 | `references/entrypoints.md` §5 |
 | 打开某天的产物 | ⑥ 打开产物 | `references/entrypoints.md` §6 |
 | 在 Git worktree 做实机验收前，让数据根指向主工作区 | ⑦ 初始化 worktree 配置 | `references/entrypoints.md` §7 |
+| 全部或一组会话、任意日期范围，批量回填 canonical raw | ⑧ 批量 raw 导出 | `references/entrypoints.md` §8 |
 
 **读 processed 内容之前，先读 `references/processed-format.md`**——它是占位符（引用 / 媒体 / 表情 / 文件 / 链接…）的唯一事实源，路径 ①②③ 都要用。
 
@@ -59,6 +60,7 @@ python "$SkillRoot\scripts\export_on_demand.py" --session <wxid或显示名子�
 **⑤ 归档摄取** `python "$SkillRoot\scripts\archive_exports.py" --raw-root <旧raw> --processed-root <旧processed>`（默认复制保源；倒序覆盖会在整批写入前拒绝，移动与人工确认参数见 §5）
 **⑥ 打开产物** `powershell ... -File "$SkillRoot\scripts\Open-LatestInsights.ps1" -Workspace "$Workspace"`（按日期挑用 `Open-InsightsByDate.ps1`）
 **⑦ 初始化 worktree 配置**（在目标 worktree 根目录运行）`python "$SkillRoot\scripts\init_worktree_config.py"`
+**⑧ 批量 raw 导出**（显式落点、按天切分、可续跑，不产 processed）`python "$SkillRoot\scripts\export_bulk_raw.py" --start <起> --end <止> --out <raw输出根>`
 
 ## 二次加工
 

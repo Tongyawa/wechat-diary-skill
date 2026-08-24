@@ -163,3 +163,27 @@ python "$SkillRoot\scripts\init_worktree_config.py"
 |---|---|
 | `--main-root` | 主工作区根目录。自动发现失败或需要指定其他主工作区时才传 |
 | `--force` | 已有本 worktree 的 `config.toml` 时覆盖它 |
+
+## 8. 批量 canonical raw 导出 `export_bulk_raw.py`
+
+导出全部会话或一组指定会话的任意日期范围；只写显式输出根，不碰 live raw / processed / 归档，且不产 processed。消息按本地日历日切分，一个活跃会话日一个 canonical JSON；空日不造空文件。
+
+```powershell
+# 全部会话
+python "$SkillRoot\scripts\export_bulk_raw.py" --start 2026-07-02 --end 2026-08-05 --out <raw输出根>
+
+# 指定一组会话；--session 可重复，接受 wxid 或唯一的显示名子串
+python "$SkillRoot\scripts\export_bulk_raw.py" --start 2026-07-02 --end 2026-08-05 --out <raw输出根> --session <会话一> --session <会话二>
+```
+
+| 参数 | 说明 |
+|---|---|
+| `--start` / `--end` | 必填日期范围，`yyyy-mm-dd` 或 `yyyymmdd`；首尾都包含 |
+| `--out` | 必填的 canonical raw 输出根；不会从 `[paths].raw` 猜落点 |
+| `--session` | 可重复；wxid 或唯一显示名子串。省略即全部会话 |
+| `--force` | 忽略已完成区间并重导；mapper 改进后刷新历史产物时使用 |
+| `--config` | 配置文件路径 |
+
+默认可续跑：状态写在输出根同级的 `.<输出目录名>.bulk-export-state.json`，不混进 canonical raw，也不写日常 `.export-state.json`。每完成一个“会话 × 连续区间”立即记账；中断后原命令重跑会跳过已完成区间。若某个已记账文件被删除，该区间会自动失效并重导。
+
+退出码：`0` = 本次选择的会话全部完成或已由状态覆盖；`1` = 至少一个会话未完成，修复原因后原命令重跑即可；`2` = 工作区或会话选择错误。平台型会话是否跳过仍服从 `[daily_export].skip_official_accounts`。若两个不同 wxid 经名称净化后会写进同一个 canonical 目录，程序会在第一条消息请求前拒绝整批，避免后写会话静默覆盖先写会话。
