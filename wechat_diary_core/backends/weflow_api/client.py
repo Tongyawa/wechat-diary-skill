@@ -50,19 +50,12 @@ class WeflowApiClient:
         self._request("/api/v1/sessions", {"limit": 1, "offset": 0})
 
     def fetch_sessions(self, *, limit: int = 2000) -> list[dict[str, Any]]:
-        sessions: list[dict[str, Any]] = []
-        offset = 0
-        while True:
-            payload = self._request(
-                "/api/v1/sessions",
-                {"limit": limit, "offset": offset},
-            )
-            page = self._list_field(payload, "sessions")
-            sessions.extend(page)
-            total = int(payload.get("count") or len(sessions))
-            if not page or len(sessions) >= total:
-                return sessions
-            offset += len(page)
+        return self._fetch_offset_collection(
+            "/api/v1/sessions",
+            "sessions",
+            limit=limit,
+            identity_fields=("username",),
+        )
 
     def get_message_page(
         self,
@@ -102,6 +95,7 @@ class WeflowApiClient:
         messages: list[dict[str, Any]] = []
         seen: set[tuple[str, str]] = set()
         offset = 0
+        declared_total: int | None = None
         while True:
             payload = self.get_message_page(
                 talker,
@@ -112,34 +106,69 @@ class WeflowApiClient:
                 media=media,
             )
             page = self._list_field(payload, "messages")
+            page_keys: set[tuple[str, str]] = set()
             for message in page:
                 key = (str(message.get("serverId") or ""), str(message.get("localId") or ""))
-                if key not in seen:
-                    seen.add(key)
-                    messages.append(message)
-            if not page or not bool(payload.get("hasMore")):
+                if key == ("", ""):
+                    raise WeflowApiError(
+                        "WeFlow API /messages 分页项缺少 serverId/localId；无法证明导出完整，请升级或检查 API"
+                    )
+                if key in page_keys or key in seen:
+                    raise WeflowApiError(
+                        "WeFlow API /messages 返回重复消息 ID；已停止以避免死循环或重复导出，请检查 API 分页"
+                    )
+                page_keys.add(key)
+            seen.update(page_keys)
+            messages.extend(page)
+
+            page_total = _declared_total(payload, "/api/v1/messages")
+            if page_total is not None:
+                if declared_total is None:
+                    declared_total = page_total
+                elif declared_total != page_total:
+                    raise WeflowApiError(
+                        "WeFlow API /messages 的 count 在分页间变化；无法证明导出完整，请重试或检查 API"
+                    )
+                if len(seen) > declared_total:
+                    raise WeflowApiError(
+                        "WeFlow API /messages 唯一消息数超过 count；分页契约矛盾，请检查 API"
+                    )
+
+            has_more = _declared_has_more(payload, "/api/v1/messages")
+            if has_more is False:
+                if declared_total is not None and len(seen) != declared_total:
+                    raise WeflowApiError(
+                        f"WeFlow API /messages 提前结束：唯一消息 {len(seen)} 条，count={declared_total}；"
+                        "请重试或检查 API 分页"
+                    )
                 return messages
-            offset += len(page)
+            if has_more is True and not page:
+                raise WeflowApiError(
+                    "WeFlow API /messages 返回空页但 hasMore=true；已停止以避免死循环，请检查 API 分页"
+                )
+            if has_more is True and declared_total is not None and len(seen) >= declared_total:
+                raise WeflowApiError(
+                    "WeFlow API /messages 已达到 count 但 hasMore=true；分页契约矛盾，请检查 API"
+                )
+            if has_more is None:
+                if declared_total is not None and len(seen) == declared_total:
+                    return messages
+                if not page:
+                    if declared_total is not None:
+                        raise WeflowApiError(
+                            f"WeFlow API /messages 空页提前结束：唯一消息 {len(seen)} 条，count={declared_total}；"
+                            "请重试或检查 API 分页"
+                        )
+                    return messages
+            offset = _next_offset(offset, len(page), "/api/v1/messages")
 
     def fetch_contacts(self, *, limit: int = 5000) -> list[dict[str, Any]]:
-        contacts: list[dict[str, Any]] = []
-        offset = 0
-        while True:
-            payload = self._request(
-                "/api/v1/contacts",
-                {"limit": limit, "offset": offset},
-            )
-            page = self._list_field(payload, "contacts")
-            contacts.extend(page)
-            total = int(payload.get("count") or len(contacts))
-            if not page or len(contacts) >= total:
-                break
-            offset += len(page)
-        if len(contacts) == 100:
-            raise WeflowApiError(
-                "联系人名册恰好 100 条，疑似命中 /contacts 默认截断；请确认 WeFlow 5.x 支持 limit=5000。"
-            )
-        return contacts
+        return self._fetch_offset_collection(
+            "/api/v1/contacts",
+            "contacts",
+            limit=limit,
+            identity_fields=("username",),
+        )
 
     def fetch_group_members(self, chatroom_id: str) -> list[dict[str, Any]]:
         payload = self._request(
@@ -296,6 +325,63 @@ class WeflowApiClient:
             raise WeflowApiError(str(payload.get("error") or f"WeFlow API 请求失败：{path}"))
         return payload
 
+    def _fetch_offset_collection(
+        self,
+        path: str,
+        field: str,
+        *,
+        limit: int,
+        identity_fields: tuple[str, ...],
+    ) -> list[dict[str, Any]]:
+        if limit <= 0:
+            raise ValueError("分页 limit 必须大于 0")
+        items: list[dict[str, Any]] = []
+        seen: set[tuple[str, ...]] = set()
+        offset = 0
+        declared_total: int | None = None
+        while True:
+            payload = self._request(path, {"limit": limit, "offset": offset})
+            page = self._list_field(payload, field)
+            page_keys: set[tuple[str, ...]] = set()
+            for item in page:
+                key = tuple(str(item.get(name) or "") for name in identity_fields)
+                if not any(key):
+                    joined = "/".join(identity_fields)
+                    raise WeflowApiError(
+                        f"WeFlow API {path} 分页项缺少 {joined}；无法证明结果完整，请升级或检查 API"
+                    )
+                if key in page_keys or key in seen:
+                    raise WeflowApiError(
+                        f"WeFlow API {path} 返回重复 ID；已停止以避免死循环或重复导出，请检查 API 分页"
+                    )
+                page_keys.add(key)
+            seen.update(page_keys)
+            items.extend(page)
+
+            page_total = _declared_total(payload, path)
+            if page_total is not None:
+                if declared_total is None:
+                    declared_total = page_total
+                elif declared_total != page_total:
+                    raise WeflowApiError(
+                        f"WeFlow API {path} 的 count 在分页间变化；无法证明结果完整，请重试或检查 API"
+                    )
+                if len(seen) > declared_total:
+                    raise WeflowApiError(
+                        f"WeFlow API {path} 唯一 ID 数超过 count；分页契约矛盾，请检查 API"
+                    )
+                if len(seen) == declared_total:
+                    return items
+
+            if not page:
+                if declared_total is not None:
+                    raise WeflowApiError(
+                        f"WeFlow API {path} 空页提前结束：唯一 ID {len(seen)} 个，count={declared_total}；"
+                        "请重试或检查 API 分页"
+                    )
+                return items
+            offset = _next_offset(offset, len(page), path)
+
     @staticmethod
     def _list_field(payload: dict[str, Any], key: str) -> list[dict[str, Any]]:
         value = payload.get(key)
@@ -311,6 +397,34 @@ def _api_date(value: date | str) -> str:
     if len(text) != 8 or not text.isdigit():
         raise ValueError(f"日期必须为 YYYYMMDD 或 YYYY-MM-DD：{value!r}")
     return text
+
+
+def _declared_total(payload: dict[str, Any], path: str) -> int | None:
+    if "count" not in payload or payload.get("count") is None:
+        return None
+    raw = payload.get("count")
+    if isinstance(raw, bool):
+        raise WeflowApiError(f"WeFlow API {path} 的 count 不是非负整数；请检查 API 分页契约")
+    text = str(raw).strip()
+    if not text.isdigit():
+        raise WeflowApiError(f"WeFlow API {path} 的 count 不是非负整数；请检查 API 分页契约")
+    return int(text)
+
+
+def _declared_has_more(payload: dict[str, Any], path: str) -> bool | None:
+    if "hasMore" not in payload or payload.get("hasMore") is None:
+        return None
+    value = payload.get("hasMore")
+    if not isinstance(value, bool):
+        raise WeflowApiError(f"WeFlow API {path} 的 hasMore 不是 boolean；请检查 API 分页契约")
+    return value
+
+
+def _next_offset(offset: int, page_size: int, path: str) -> int:
+    next_offset = offset + page_size
+    if page_size <= 0 or next_offset <= offset:
+        raise WeflowApiError(f"WeFlow API {path} 分页 offset 未前进；已停止以避免死循环")
+    return next_offset
 
 
 def _http_error_detail(exc: HTTPError, *, access_token: str) -> str:

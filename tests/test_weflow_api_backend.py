@@ -23,7 +23,11 @@ def _config(
     asr_engine: str = "",
     skip_official_accounts: bool = True,
     media_localize: bool = True,
+    target_usernames: tuple[str, ...] = (),
+    self_moments_usernames: tuple[str, ...] = (),
 ):
+    target_values = json.dumps(list(target_usernames), ensure_ascii=False)
+    self_moments_values = json.dumps(list(self_moments_usernames), ensure_ascii=False)
     path = root / "config.toml"
     path.write_text(
         f"""
@@ -45,7 +49,8 @@ access_token = "fixed-token"
 media_localize = {str(media_localize).lower()}
 
 [daily_export]
-self_moments_usernames = []
+target_usernames = {target_values}
+self_moments_usernames = {self_moments_values}
 skip_official_accounts = {str(skip_official_accounts).lower()}
 
 [asr]
@@ -572,6 +577,66 @@ class WeflowApiBackendTests(unittest.TestCase):
                 backend.prepare()
 
         self.assertEqual(launches, [])
+
+    def test_prepare_rejects_missing_configured_contact_before_export(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = _config(root, target_usernames=("missing-contact-placeholder",))
+            existing_sidecar = cfg.paths.processed / "_targets" / "chats" / "2026-08-04.md"
+            existing_sidecar.parent.mkdir(parents=True)
+            existing_sidecar.write_text("preserve me", encoding="utf-8")
+            client = _TrackingSessionClient(
+                [{"username": "wxid_present_placeholder", "displayName": "现有联系人占位"}]
+            )
+            client.health = Mock()
+            client.validate_token = Mock()
+            backend = WeflowApiBackend(cfg)
+            backend._client = client
+
+            with self.assertRaisesRegex(RuntimeError, r"target_usernames.*未在 WeFlow 名册中找到.*wxid"):
+                backend.prepare()
+
+            self.assertEqual(client.message_calls, [])
+            self.assertTrue(existing_sidecar.exists())
+
+    def test_prepare_rejects_ambiguous_display_name_and_requests_wxid(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = _config(root, self_moments_usernames=("同名联系人占位",))
+            sessions = [
+                {"username": "wxid_first_placeholder", "displayName": "同名联系人占位"},
+                {"username": "wxid_second_placeholder", "displayName": "同名联系人占位"},
+            ]
+            client = _TrackingSessionClient(sessions)
+            client.health = Mock()
+            client.validate_token = Mock()
+            backend = WeflowApiBackend(cfg)
+            backend._client = client
+
+            with self.assertRaisesRegex(RuntimeError, r"匹配到 2 个账号.*唯一 wxid"):
+                backend.prepare()
+
+    def test_existing_contact_with_zero_daily_messages_is_valid(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = "wxid_present_placeholder"
+            cfg = _config(
+                root,
+                target_usernames=(target,),
+                self_moments_usernames=(target,),
+            )
+            client = _TrackingSessionClient(
+                [{"username": target, "displayName": "零消息联系人占位"}]
+            )
+            client.health = Mock()
+            client.validate_token = Mock()
+            backend = WeflowApiBackend(cfg)
+            backend._client = client
+
+            backend.prepare()
+            backend.export_chats(date(2026, 8, 5))
+
+        self.assertEqual(client.message_calls, [target])
 
     def test_sensevoice_without_worker_python_degrades_before_process_start(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

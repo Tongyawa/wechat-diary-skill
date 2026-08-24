@@ -30,6 +30,14 @@ _CHAT_MESSAGE_REQUIRED: dict[str, tuple[type, ...]] = {
     "senderDisplayName": (str,),
 }
 
+_CHAT_CONTENT_GROUP_LABELS = {
+    "text": "文本消息",
+    "reply": "引用消息正文",
+    "image": "图片消息",
+    "voice": "语音消息",
+    "other": "其他内容型消息",
+}
+
 _MOMENTS_FILTER_REQUIRED: dict[str, tuple[type, ...]] = {
     "usernames": (list,),
 }
@@ -62,6 +70,7 @@ def validate_session_json(data: Any) -> None:
     if not isinstance(messages, list):
         issues.append("messages (array)")
     else:
+        content_contract_counts = {group: [0, 0] for group in _CHAT_CONTENT_GROUP_LABELS}
         previous_create_time: int | None = None
         first_order_violation: tuple[int, int, int] | None = None
         order_violation_count = 0
@@ -72,6 +81,12 @@ def validate_session_json(data: Any) -> None:
                 continue
             _require_fields(message, path, _CHAT_MESSAGE_REQUIRED, issues)
             _validate_optional_reply_context(message.get("replyContext"), path, issues)
+            content_group = _chat_content_group(message)
+            if content_group is not None:
+                counts = content_contract_counts[content_group]
+                counts[0] += 1
+                if _message_has_renderable_payload(message, content_group):
+                    counts[1] += 1
             if "createTime" not in message:
                 continue
             create_time = _message_numeric_value(message.get("createTime"))
@@ -87,6 +102,13 @@ def validate_session_json(data: Any) -> None:
                 f"（首个违规处 createTime {first_previous_time} → {first_current_time}，"
                 f"共 {order_violation_count} 处），请重新导出"
             )
+        for group, (message_count, valid_count) in content_contract_counts.items():
+            if message_count and valid_count == 0:
+                label = _CHAT_CONTENT_GROUP_LABELS[group]
+                issues.append(
+                    f"messages 内容契约：{label}共 {message_count} 条但全部缺少可渲染载荷；"
+                    "请检查导出 mapper 的 content/source 映射后重新导出"
+                )
 
     _raise_if_issues("chat", issues)
 
@@ -129,6 +151,41 @@ def _validate_optional_reply_context(value: Any, parent_path: str, issues: list[
     for field in ("isSend", "senderDisplayName", "senderUsername", "content", "type"):
         if field in value:
             _require_type(value[field], f"{parent_path}.replyContext.{field}", _CHAT_MESSAGE_REQUIRED.get(field, (str,)), issues)
+
+
+def _chat_content_group(message: Mapping[str, Any]) -> str | None:
+    message_type = str(message.get("type") or "").strip()
+    if message_type == "文本消息":
+        return "text"
+    if message_type == "引用消息":
+        return "reply"
+    if "图片" in message_type:
+        return "image"
+    if message_type == "语音消息":
+        return "voice"
+    if message_type == "动画表情":
+        # The renderer deterministically degrades this type to ``[表情]`` even
+        # when the upstream export carries no textual body or local file.
+        return None
+    return "other"
+
+
+def _message_has_renderable_payload(message: Mapping[str, Any], group: str) -> bool:
+    content = str(message.get("content") or "").strip()
+    source = str(message.get("source") or "").strip()
+    if group in {"text", "reply"}:
+        # Reply-target metadata is independently mapped context. It can make a
+        # quote visible, but cannot prove that this message's own body survived
+        # the content mapper.
+        return bool(content)
+    if group == "image":
+        return bool(content or source) or any(
+            message.get(field)
+            for field in ("image_vision", "image_vision_inline", "image_ocr", "image_ocr_inline")
+        )
+    if group == "voice":
+        return bool(content or source or message.get("transcribe_failed"))
+    return bool(content)
 
 
 def _validate_moments_media(value: Any, parent_path: str, issues: list[str]) -> None:

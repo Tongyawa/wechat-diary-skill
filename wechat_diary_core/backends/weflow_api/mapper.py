@@ -57,8 +57,6 @@ def map_session_json(
 ) -> dict[str, Any]:
     """Map one talker; callable independently from the daily runner."""
 
-    if len(contacts) == 100:
-        raise ValueError("联系人名册恰好 100 条，疑似被 /contacts 默认 limit 截断")
     talker = str(session.get("username") or "")
     if not talker:
         raise ValueError("session.username 不能为空")

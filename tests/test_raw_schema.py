@@ -114,6 +114,127 @@ class RawSchemaTests(unittest.TestCase):
 
         validate_session_json(payload)
 
+    def test_all_text_bodies_missing_is_one_bounded_actionable_error(self) -> None:
+        payload = _session_payload()
+        template = payload["messages"][0]
+        payload["messages"] = []
+        for index in range(500):
+            message = copy.deepcopy(template)
+            message.update(
+                {
+                    "localId": index,
+                    "createTime": 1778839200 + index,
+                    "type": "文本消息",
+                    "content": "",
+                }
+            )
+            for field in (
+                "replyContext",
+                "replyToMessageId",
+                "quotedContent",
+                "quotedSender",
+                "quotedSenderDisplayName",
+            ):
+                message.pop(field, None)
+            payload["messages"].append(message)
+
+        with self.assertRaises(RawSchemaError) as captured:
+            validate_session_json(payload)
+
+        error = str(captured.exception)
+        self.assertEqual(error.count("文本消息"), 1)
+        self.assertIn("共 500 条但全部缺少可渲染载荷", error)
+        self.assertIn("检查导出 mapper", error)
+        self.assertLess(len(error), 240)
+
+    def test_sparse_empty_text_does_not_reject_other_valid_text(self) -> None:
+        payload = _session_payload()
+        valid = copy.deepcopy(payload["messages"][0])
+        valid.update({"localId": 2, "createTime": 1778839201, "type": "文本消息", "content": "valid text"})
+        empty = copy.deepcopy(payload["messages"][0])
+        empty.update({"localId": 3, "createTime": 1778839202, "type": "文本消息", "content": ""})
+        for field in (
+            "replyContext",
+            "replyToMessageId",
+            "quotedContent",
+            "quotedSender",
+            "quotedSenderDisplayName",
+        ):
+            empty.pop(field, None)
+        payload["messages"].extend([valid, empty])
+
+        validate_session_json(payload)
+
+    def test_references_do_not_mask_all_plain_text_bodies_missing(self) -> None:
+        payload = _session_payload()
+        reply = payload["messages"][0]
+        second_reply = copy.deepcopy(reply)
+        second_reply.update({"localId": 2, "createTime": 1778839201, "content": "another reply"})
+        empty_texts = []
+        for index in range(3, 8):
+            message = copy.deepcopy(reply)
+            message.update(
+                {
+                    "localId": index,
+                    "createTime": 1778839200 + index,
+                    "type": "文本消息",
+                    "content": "",
+                }
+            )
+            for field in (
+                "replyContext",
+                "replyToMessageId",
+                "quotedContent",
+                "quotedSender",
+                "quotedSenderDisplayName",
+            ):
+                message.pop(field, None)
+            empty_texts.append(message)
+        payload["messages"] = [reply, second_reply, *empty_texts]
+
+        with self.assertRaisesRegex(RawSchemaError, r"文本消息共 5 条但全部缺少可渲染载荷"):
+            validate_session_json(payload)
+
+    def test_reply_target_metadata_does_not_replace_reply_body(self) -> None:
+        payload = _session_payload()
+        first = payload["messages"][0]
+        first["content"] = ""
+        second = copy.deepcopy(first)
+        second.update({"localId": 2, "createTime": 1778839201})
+        payload["messages"] = [first, second]
+
+        with self.assertRaisesRegex(RawSchemaError, r"引用消息正文共 2 条.*mapper"):
+            validate_session_json(payload)
+
+    def test_media_contract_accepts_paths_or_explicit_degradation_markers(self) -> None:
+        payload = _session_payload()
+        template = payload["messages"][0]
+        image = copy.deepcopy(template)
+        image.update({"localId": 2, "createTime": 1778839201, "type": "图片消息", "content": "[图片]"})
+        voice = copy.deepcopy(template)
+        voice.update(
+            {
+                "localId": 3,
+                "createTime": 1778839202,
+                "type": "语音消息",
+                "content": "",
+                "source": "media/voice/example.silk",
+            }
+        )
+        emoji = copy.deepcopy(template)
+        emoji.update({"localId": 4, "createTime": 1778839203, "type": "动画表情", "content": "", "source": ""})
+        payload["messages"] = [image, voice, emoji]
+
+        validate_session_json(payload)
+
+    def test_all_voice_payloads_missing_is_rejected(self) -> None:
+        payload = _session_payload()
+        message = payload["messages"][0]
+        message.update({"type": "语音消息", "content": "", "source": ""})
+
+        with self.assertRaisesRegex(RawSchemaError, r"语音消息共 1 条.*content/source"):
+            validate_session_json(payload)
+
     def test_complete_moments_payload_passes(self) -> None:
         validate_moments_json(_moments_payload())
 

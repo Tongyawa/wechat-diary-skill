@@ -328,7 +328,7 @@ class WeflowApiClientTests(unittest.TestCase):
                 end=date(2026, 8, 6),
             )
 
-    def test_contacts_explicit_large_limit_rejects_exactly_100_truncation_signal(self) -> None:
+    def test_contacts_exactly_100_is_valid_when_count_proves_completeness(self) -> None:
         captured = []
 
         def opener(request, timeout):
@@ -342,10 +342,86 @@ class WeflowApiClientTests(unittest.TestCase):
             )
 
         client = WeflowApiClient("http://127.0.0.1:5031", "fixed-token", opener=opener)
-        with self.assertRaisesRegex(WeflowApiError, "恰好 100"):
-            client.fetch_contacts()
+        contacts = client.fetch_contacts()
 
         self.assertEqual(captured[0]["limit"], ["5000"])
+        self.assertEqual(len(contacts), 100)
+
+    def test_sessions_without_count_follow_changed_cap_until_empty_page(self) -> None:
+        offsets = []
+        pages = {
+            0: [{"username": "session-1"}, {"username": "session-2"}],
+            2: [{"username": "session-3"}],
+            3: [],
+        }
+
+        def opener(request, timeout):
+            offset = int(parse_qs(urlparse(request.full_url).query)["offset"][0])
+            offsets.append(offset)
+            return _Response({"success": True, "sessions": pages[offset]})
+
+        client = WeflowApiClient("http://127.0.0.1:5031", "fixed-token", opener=opener)
+        sessions = client.fetch_sessions(limit=5000)
+
+        self.assertEqual([item["username"] for item in sessions], ["session-1", "session-2", "session-3"])
+        self.assertEqual(offsets, [0, 2, 3])
+
+    def test_contacts_count_mismatch_fails_with_actionable_bounded_error(self) -> None:
+        def opener(request, timeout):
+            offset = int(parse_qs(urlparse(request.full_url).query)["offset"][0])
+            page = [{"username": "contact-1"}] if offset == 0 else []
+            return _Response({"success": True, "count": 2, "contacts": page})
+
+        client = WeflowApiClient("http://127.0.0.1:5031", "fixed-token", opener=opener)
+        with self.assertRaises(WeflowApiError) as captured:
+            client.fetch_contacts()
+
+        error = str(captured.exception)
+        self.assertIn("空页提前结束", error)
+        self.assertIn("count=2", error)
+        self.assertIn("检查 API 分页", error)
+        self.assertLess(len(error), 240)
+
+    def test_messages_without_count_or_has_more_continue_until_empty_page(self) -> None:
+        offsets = []
+        pages = {
+            0: [{"localId": 3, "serverId": "server-3"}, {"localId": 2, "serverId": "server-2"}],
+            2: [{"localId": 1, "serverId": "server-1"}],
+            3: [],
+        }
+
+        def opener(request, timeout):
+            offset = int(parse_qs(urlparse(request.full_url).query)["offset"][0])
+            offsets.append(offset)
+            return _Response({"success": True, "messages": pages[offset]})
+
+        client = WeflowApiClient("http://127.0.0.1:5031", "fixed-token", opener=opener)
+        messages = client.fetch_messages(
+            "wxid_contact_placeholder",
+            start=date(2026, 8, 5),
+            end=date(2026, 8, 5),
+        )
+
+        self.assertEqual([item["serverId"] for item in messages], ["server-3", "server-2", "server-1"])
+        self.assertEqual(offsets, [0, 2, 3])
+
+    def test_messages_repeated_page_fails_instead_of_looping(self) -> None:
+        def opener(request, timeout):
+            return _Response(
+                {
+                    "success": True,
+                    "hasMore": True,
+                    "messages": [{"localId": 1, "serverId": "server-1"}],
+                }
+            )
+
+        client = WeflowApiClient("http://127.0.0.1:5031", "fixed-token", opener=opener)
+        with self.assertRaisesRegex(WeflowApiError, r"重复消息 ID.*死循环"):
+            client.fetch_messages(
+                "wxid_contact_placeholder",
+                start=date(2026, 8, 5),
+                end=date(2026, 8, 5),
+            )
 
     def test_health_is_unauthenticated_but_token_probe_is_protected(self) -> None:
         requests = []

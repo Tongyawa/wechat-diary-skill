@@ -261,13 +261,15 @@ class WeflowApiMapperTests(unittest.TestCase):
                 contacts=_fixture("contacts.json")["contacts"],
             )
             with self.assertRaises(ValueError):
+                invalid_session = dict(session)
+                invalid_session["username"] = ""
                 write_session_export(
                     raw,
-                    session,
+                    invalid_session,
                     _fixture("messages.json")["messages"],
                     start=date(2026, 8, 5),
                     end=date(2026, 8, 5),
-                    contacts=[{"username": f"contact-placeholder-{index}"} for index in range(100)],
+                    contacts=_fixture("contacts.json")["contacts"],
                 )
             # A failed rerun leaves the previous complete live snapshot intact.
             self.assertTrue(expected.exists())

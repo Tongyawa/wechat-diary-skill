@@ -42,6 +42,8 @@ class WeflowApiBackend:
     _failure_state: SessionFailureState | None = field(default=None, init=False, repr=False)
     _failure_state_writable: bool = field(default=True, init=False, repr=False)
     _last_export_date: date | None = field(default=None, init=False, repr=False)
+    _sessions_cache: list[dict[str, Any]] | None = field(default=None, init=False, repr=False)
+    _contacts_cache: list[dict[str, Any]] | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         if self.process_launcher is None:
@@ -68,7 +70,6 @@ class WeflowApiBackend:
             )
         try:
             self._probe_ready()
-            return
         except Exception as first_error:
             if isinstance(first_error, WeflowApiError) and first_error.status == 401:
                 raise RuntimeError(
@@ -89,22 +90,25 @@ class WeflowApiBackend:
             while time.monotonic() < deadline:
                 try:
                     self._probe_ready()
-                    return
                 except Exception as exc:
                     last_error = exc
                     self.sleep(1.0)
+                else:
+                    self._validate_configured_contacts_before_mutation()
+                    return
             raise RuntimeError(
                 "WeFlow API 服务未启动或鉴权失败。请打开 WeFlow → 设置 → API 服务 → "
                 "启动服务，并确认 Access Token 已固定；修改 token 后需重启 API 服务。"
                 f" 最后错误：{last_error}"
             ) from first_error
+        else:
+            self._validate_configured_contacts_before_mutation()
+            return
 
     def export_chats(self, export_date: date) -> None:
         self.partial_failures.clear()
-        sessions = self.client.fetch_sessions(limit=2000)
-        contacts = self.client.fetch_contacts(limit=5000)
-        if len(contacts) == 100:
-            raise RuntimeError("联系人名册恰好 100 条，拒绝用疑似截断的 roster 映射会话")
+        sessions, contacts = self._export_roster()
+        self._validate_configured_contacts(sessions, contacts)
 
         state = self._load_failure_state()
         self._last_export_date = export_date
@@ -317,6 +321,61 @@ class WeflowApiBackend:
     def _probe_ready(self) -> None:
         self.client.health()
         self.client.validate_token()
+
+    def _validate_configured_contacts_before_mutation(self) -> None:
+        if not self._configured_contact_targets():
+            return
+        sessions, contacts = self._export_roster()
+        self._validate_configured_contacts(sessions, contacts)
+
+    def _export_roster(self) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        if self._sessions_cache is None:
+            self._sessions_cache = self.client.fetch_sessions(limit=2000)
+        if self._contacts_cache is None:
+            self._contacts_cache = self.client.fetch_contacts(limit=5000)
+        return self._sessions_cache, self._contacts_cache
+
+    def _configured_contact_targets(self) -> list[tuple[str, str]]:
+        configured: list[tuple[str, str]] = []
+        for config_key, values in (
+            ("target_usernames", self.config.daily_export.target_usernames),
+            ("self_moments_usernames", self.config.daily_export.self_moments_usernames),
+        ):
+            for value in values:
+                target = str(value).strip()
+                if target:
+                    configured.append((config_key, target))
+        return configured
+
+    def _validate_configured_contacts(
+        self,
+        sessions: list[dict[str, Any]],
+        contacts: list[dict[str, Any]],
+    ) -> None:
+        records = [*sessions, *contacts]
+        for config_key, target in self._configured_contact_targets():
+            matched_identities: set[str] = set()
+            for record in records:
+                identity = str(record.get("username") or record.get("wxid") or "").strip()
+                if not identity:
+                    continue
+                candidates = {
+                    str(record.get(field) or "").strip()
+                    for field in ("username", "wxid", "displayName", "nickname", "remark", "alias")
+                }
+                if target in candidates:
+                    matched_identities.add(identity)
+            readable_target = _readable_error_summary(target, limit=60)
+            if not matched_identities:
+                raise RuntimeError(
+                    f"配置 {config_key} 的联系人「{readable_target}」未在 WeFlow 名册中找到；"
+                    "请更新为当前 wxid 或精确显示名后重试"
+                )
+            if len(matched_identities) > 1:
+                raise RuntimeError(
+                    f"配置 {config_key} 的联系人「{readable_target}」匹配到 {len(matched_identities)} 个账号；"
+                    "请改用唯一 wxid 后重试"
+                )
 
     def _asr(self) -> tuple[Any, str]:
         if self._transcriber_initialized:
