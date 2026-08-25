@@ -191,3 +191,23 @@ python "$SkillRoot\scripts\export_bulk_raw.py" --start 2026-07-02 --end 2026-08-
 
 退出码：`0` = 本次选择的会话全部完成或已由状态覆盖；`1` = 至少一个会话未完成，修复原因后原命令重跑即可；`2` = 工作区或会话选择错误。群成员名册读取失败时，当前消息块仍按同群既有 canonical 名字/contacts/wxid 退路落盘，汇总会打印降级数；若最近 5 个有消息群中至少 4 个名册读取失败，程序会在当前块记入续跑状态后以退出码 `1` 停止，提示重启 WeFlow API 服务并用原命令续跑。平台型会话是否跳过仍服从 `[daily_export].skip_official_accounts`。若两个不同 wxid 经名称净化后会写进同一个 canonical 目录，程序会在第一条消息请求前拒绝整批，避免后写会话静默覆盖先写会话。
 
+## 9. 离线群成员名字回填 `backfill_group_names.py`
+
+扫描一个 canonical raw 根，用同一 `session.wxid` 下已经解析出的成员名字，回填仍显示为裸 wxid 的群消息。纯离线，不调用 WeFlow、不重取消息或媒体，也不生成状态文件。
+
+```powershell
+# 先预览，不写文件
+python "$SkillRoot\scripts\backfill_group_names.py" --raw-root <canonical raw根>
+
+# 确认计数后实际写入
+python "$SkillRoot\scripts\backfill_group_names.py" --raw-root <canonical raw根> --apply
+```
+
+| 参数 | 说明 |
+|---|---|
+| `--raw-root` | 必填；要扫描和回填的 canonical raw 根 |
+| `--apply` | 实际写入；省略时只打印可修复文件、消息、字段和仍无证据的数量 |
+
+受影响集合由产物自描述：`senderDisplayName == senderUsername`，引用发送者对应 `quotedSenderDisplayName == quotedSender`。名字证据严格按 `session.wxid` 隔离，不信目录名前缀；只有命中该集合才会更新显示名，并仅在昵称/备注为空或仍等于 wxid 时补值。已有非 wxid 名字一律不覆盖。写入只替换单条消息里的 `senderDisplayName`、`senderNickname`、`senderRemark`、`quotedSenderDisplayName` 字符串；若文件不是现役 canonical 序列化形状，脚本会拒绝整文件重写。
+
+该入口只修 raw。已经生成的 processed、Diary 和 insights 不会回溯更新；后续蒸馏读取修复后的归档 raw 才会受益。名字曾由旧 canonical 退路解析成功、但实际已经过期的部分降级，因字段不再等于 wxid 而无法从产物识别，本工具不会覆盖。
