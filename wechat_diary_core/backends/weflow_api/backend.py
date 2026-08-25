@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import shutil
@@ -19,6 +20,7 @@ from ...asr import SenseVoiceTranscriber
 from ...config import Config
 from ...media_store import MEDIA_STORE_NAME
 from .bulk_state import BulkExportState, DateInterval
+from .bulk_plan import BulkExportPlan
 from .client import WeflowApiClient, WeflowApiError
 from .failure_state import SessionFailureState
 from .mapper import (
@@ -43,6 +45,10 @@ class BulkExportResult:
     messages_written: int
     files_written: tuple[Path, ...]
     failures: dict[str, str]
+    planned_sessions: int = 0
+    resumed_plans: int = 0
+    reconciliation_path: Path | None = None
+    reconciliation_differences: int = 0
 
 
 @dataclass
@@ -153,6 +159,9 @@ class WeflowApiBackend:
         sessions: Sequence[Mapping[str, Any]] | None = None,
         state_path: Path | None = None,
         force: bool = False,
+        plan_path: Path | None = None,
+        chunk_target: int = 10_000,
+        replan: bool = False,
         _daily_compat: bool = False,
     ) -> BulkExportResult | None:
         """Export selected sessions over an inclusive range as one canonical file per active day."""
@@ -169,9 +178,16 @@ class WeflowApiBackend:
         if state_path is None:
             raise ValueError("批量导出必须提供独立 state_path 以支持续跑")
 
+        if chunk_target <= 0:
+            raise ValueError("批量导出切块目标必须大于 0")
         destination_root = Path(raw_root).expanduser().resolve()
         destination_root.mkdir(parents=True, exist_ok=True)
-        state = BulkExportState.load(Path(state_path).expanduser(), destination_root)
+        state_file = Path(state_path).expanduser()
+        state = BulkExportState.load(state_file, destination_root)
+        plan_file = Path(plan_path).expanduser() if plan_path is not None else state_file.with_name(
+            f"{state_file.name}.plan.json"
+        )
+        plan = BulkExportPlan.load(plan_file, destination_root)
         self.partial_failures.clear()
         if sessions is None:
             selected_sessions, contacts = self._export_roster()
@@ -188,12 +204,57 @@ class WeflowApiBackend:
             skip_platform_accounts=self.config.daily_export.skip_official_accounts,
         )
 
+        planned_sessions = 0
+        resumed_plans = 0
+        plan_failures: dict[str, str] = {}
+        for index, session in enumerate(selected_sessions, start=1):
+            talker = str(session.get("username") or "")
+            display_name = session_directory_display_name(session, contacts)
+            if not talker or (
+                self.config.daily_export.skip_official_accounts and _is_platform_account(talker)
+            ):
+                continue
+            if replan:
+                plan.invalidate(talker, start, end)
+            pending_plan = plan.uncovered(talker, start, end)
+            if not pending_plan:
+                resumed_plans += 1
+                continue
+            planned_this_session = False
+            for interval in pending_plan:
+                print(
+                    f"[INFO] [{index}/{len(selected_sessions)}] 规划会话「{display_name}」："
+                    f"{interval.start} ~ {interval.end}",
+                )
+                try:
+                    messages = self.client.fetch_messages(
+                        talker,
+                        start=interval.start,
+                        end=interval.end,
+                        media=False,
+                    )
+                    messages_by_day = _split_messages_by_day(messages, interval)
+                    plan.record_completed(
+                        talker,
+                        display_name,
+                        interval,
+                        {day: len(day_messages) for day, day_messages in messages_by_day.items()},
+                    )
+                    planned_this_session = True
+                except Exception as exc:
+                    reason = _readable_error_summary(str(exc), limit=500)
+                    plan_failures[talker] = reason
+                    plan.record_failure(talker, display_name, interval, reason)
+                    break
+            if planned_this_session and talker not in plan_failures:
+                planned_sessions += 1
+
         completed_intervals = 0
         resumed_intervals = 0
         skipped_platform_accounts = 0
         messages_written = 0
         files_written: list[Path] = []
-        failures: dict[str, str] = {}
+        failures: dict[str, str] = dict(plan_failures)
         for index, session in enumerate(selected_sessions, start=1):
             talker = str(session.get("username") or "")
             display_name = session_directory_display_name(session, contacts)
@@ -205,6 +266,11 @@ class WeflowApiBackend:
                 skipped_platform_accounts += 1
                 continue
 
+            daily_plan = plan.daily_counts(talker, start, end)
+            if daily_plan is None:
+                reason = plan.failure_reason(talker) or "plan 未完整覆盖请求范围"
+                failures[talker] = f"plan 不可用：{reason}"
+                continue
             pending = state.uncovered(talker, start, end, force=force)
             if not pending:
                 resumed_intervals += 1
@@ -214,31 +280,40 @@ class WeflowApiBackend:
                 )
                 continue
 
-            for interval in pending:
-                print(
-                    f"[INFO] [{index}/{len(selected_sessions)}] 导出会话「{display_name}」："
-                    f"{interval.start} ~ {interval.end}"
+            group_members: list[dict[str, Any]] | None = None
+            for pending_interval in pending:
+                chunks = _chunk_interval_by_messages(
+                    pending_interval,
+                    daily_plan,
+                    target_messages=chunk_target,
                 )
-                try:
-                    messages = self.client.fetch_messages(
+                _validate_interval_partition(pending_interval, chunks)
+                for interval in chunks:
+                    print(
+                        f"[INFO] [{index}/{len(selected_sessions)}] 导出会话「{display_name}」："
+                        f"{interval.start} ~ {interval.end}"
+                    )
+                    try:
+                        messages = self.client.fetch_messages(
                         talker,
                         start=interval.start,
                         end=interval.end,
                         media=self.config.export_backend.weflow_api.media_localize,
-                    )
-                    messages_by_day = _split_messages_by_day(messages, interval)
-                    group_members = (
-                        self.client.fetch_group_members(talker)
-                        if messages and talker.endswith("@chatroom")
-                        else []
-                    )
-                    transcriber, reason = self._asr()
-                    interval_files: list[Path] = []
-                    interval_message_count = 0
-                    image_media_stats = ImageMediaStats()
-                    for export_day in sorted(messages_by_day):
-                        day_messages = messages_by_day[export_day]
-                        published = write_session_export(
+                        )
+                        messages_by_day = _split_messages_by_day(messages, interval)
+                        if group_members is None:
+                            group_members = (
+                                self.client.fetch_group_members(talker)
+                                if messages and talker.endswith("@chatroom")
+                                else []
+                            )
+                        transcriber, reason = self._asr()
+                        interval_files: list[Path] = []
+                        interval_message_count = 0
+                        image_media_stats = ImageMediaStats()
+                        for export_day in sorted(messages_by_day):
+                            day_messages = messages_by_day[export_day]
+                            published = write_session_export(
                             destination_root,
                             session,
                             day_messages,
@@ -253,55 +328,59 @@ class WeflowApiBackend:
                             require_media=self.config.export_backend.weflow_api.media_localize,
                             appmsg_text_max_chars=self.config.export_backend.weflow_api.appmsg_text_max_chars,
                             image_media_stats=image_media_stats,
-                        )
-                        interval_files.extend(path for path in published.rglob("*") if path.is_file())
-                        interval_files.extend(_referenced_cas_files(published, destination_root))
-                        interval_message_count += len(day_messages)
+                            )
+                            interval_files.extend(path for path in published.rglob("*") if path.is_file())
+                            interval_files.extend(_referenced_cas_files(published, destination_root))
+                            interval_message_count += len(day_messages)
 
-                    state.record_completed(
-                        talker,
-                        display_name,
-                        interval,
-                        _unique_paths(interval_files),
-                    )
-                    completed_intervals += 1
-                    messages_written += interval_message_count
-                    files_written.extend(_unique_paths(interval_files))
-                    if image_media_stats.missing_image_paths or image_media_stats.missing_image_files:
-                        marker = (
+                        state.record_completed(
+                            talker,
+                            display_name,
+                            interval,
+                            _unique_paths(interval_files),
+                            daily_counts={day: len(day_messages) for day, day_messages in messages_by_day.items()},
+                        )
+                        completed_intervals += 1
+                        messages_written += interval_message_count
+                        files_written.extend(_unique_paths(interval_files))
+                        if image_media_stats.missing_image_paths or image_media_stats.missing_image_files:
+                            marker = (
                             f"export_chat_image_media:{talker}:"
                             f"missing_path={image_media_stats.missing_image_paths}:"
                             f"missing_file={image_media_stats.missing_image_files}"
-                        )
-                        self.partial_failures.append(marker)
-                        print(
+                            )
+                            self.partial_failures.append(marker)
+                            print(
                             f"[WARN] 会话「{_readable_error_summary(display_name, limit=60)}」"
                             "有图片降级为 [图片]："
                             f"缺少本地路径 {image_media_stats.missing_image_paths} 条；"
                             f"路径指向的文件不存在 {image_media_stats.missing_image_files} 条。"
                             "已继续导出。",
-                            file=sys.stderr,
-                        )
-                    if image_media_stats.missing_video_md5 or image_media_stats.missing_video_files:
-                        marker = (
+                                file=sys.stderr,
+                            )
+                        if image_media_stats.missing_video_md5 or image_media_stats.missing_video_files:
+                            marker = (
                             f"export_chat_video_media:{talker}:"
                             f"missing_md5={image_media_stats.missing_video_md5}:"
                             f"missing_file={image_media_stats.missing_video_files}"
-                        )
-                        self.partial_failures.append(marker)
-                        print(
+                            )
+                            self.partial_failures.append(marker)
+                            print(
                             f"[WARN] 会话「{_readable_error_summary(display_name, limit=60)}」"
                             "有视频降级为 [视频]："
                             f"缺少 videoMd5 {image_media_stats.missing_video_md5} 条；"
                             f"有 md5 但本地文件不存在 {image_media_stats.missing_video_files} 条。"
                             "已继续导出。",
-                            file=sys.stderr,
-                        )
-                except Exception as exc:
-                    reason = _readable_error_summary(str(exc), limit=500)
-                    failures[talker] = reason
-                    state.record_failure(talker, display_name, interval, reason)
-                    self._record_session_failure(talker, reason, display_name)
+                                file=sys.stderr,
+                            )
+                    except Exception as exc:
+                        reason = _readable_error_summary(str(exc), limit=500)
+                        failures[talker] = reason
+                        state.record_failure(talker, display_name, interval, reason)
+                        self._record_session_failure(talker, reason, display_name)
+                        break
+
+                if talker in failures:
                     break
 
         if skipped_platform_accounts:
@@ -309,6 +388,16 @@ class WeflowApiBackend:
                 f"[INFO] 已跳过 {skipped_platform_accounts} 个公众号/企业微信/客服会话"
                 "（skip_official_accounts=true）"
             )
+        reconciliation_path, reconciliation_differences = _write_bulk_reconciliation(
+            destination_root,
+            plan,
+            state,
+            selected_sessions,
+            contacts=contacts,
+            start=start,
+            end=end,
+            skip_platform_accounts=self.config.daily_export.skip_official_accounts,
+        )
         return BulkExportResult(
             requested_sessions=len(selected_sessions),
             completed_intervals=completed_intervals,
@@ -317,6 +406,10 @@ class WeflowApiBackend:
             messages_written=messages_written,
             files_written=tuple(files_written),
             failures=failures,
+            planned_sessions=planned_sessions,
+            resumed_plans=resumed_plans,
+            reconciliation_path=reconciliation_path,
+            reconciliation_differences=reconciliation_differences,
         )
 
     def _export_chats_daily(self, export_date: date) -> None:
@@ -997,6 +1090,167 @@ def _split_messages_by_day(
             )
         grouped.setdefault(message_day, []).append(message)
     return grouped
+
+
+def _chunk_interval_by_messages(
+    interval: DateInterval,
+    daily_counts: Mapping[date, int],
+    *,
+    target_messages: int,
+) -> list[DateInterval]:
+    """Partition every calendar day, keeping an oversized day atomic."""
+
+    if target_messages <= 0:
+        raise ValueError("批量导出切块目标必须大于 0")
+    chunks: list[DateInterval] = []
+    chunk_start = interval.start
+    chunk_count = 0
+    current = interval.start
+    while current <= interval.end:
+        if current not in daily_counts:
+            raise ValueError(f"plan 缺少逐日消息数：{current}")
+        count = daily_counts[current]
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            raise ValueError(f"plan 的逐日消息数无效：{current}={count!r}")
+        if count > target_messages:
+            if chunk_start < current:
+                chunks.append(DateInterval(chunk_start, current - timedelta(days=1)))
+            chunks.append(DateInterval(current, current))
+            chunk_start = current + timedelta(days=1)
+            chunk_count = 0
+        elif chunk_count and chunk_count + count > target_messages:
+            chunks.append(DateInterval(chunk_start, current - timedelta(days=1)))
+            chunk_start = current
+            chunk_count = count
+        else:
+            chunk_count += count
+        current += timedelta(days=1)
+    if chunk_start <= interval.end:
+        chunks.append(DateInterval(chunk_start, interval.end))
+    return chunks
+
+
+def _validate_interval_partition(parent: DateInterval, chunks: Sequence[DateInterval]) -> None:
+    """Reject gaps, overlaps, inversions, and boundaries escaping ``parent``."""
+
+    if not chunks:
+        raise ValueError(f"切块为空，无法覆盖请求区间：{parent.start}~{parent.end}")
+    cursor = parent.start
+    for index, chunk in enumerate(chunks, start=1):
+        if chunk.start > chunk.end:
+            raise ValueError(f"切块 {index} 起止倒置：{chunk.start}~{chunk.end}")
+        if chunk.start < parent.start or chunk.end > parent.end:
+            raise ValueError(f"切块 {index} 越出请求区间：{chunk.start}~{chunk.end}")
+        if chunk.start != cursor:
+            kind = "重叠" if chunk.start < cursor else "缺口"
+            raise ValueError(
+                f"切块 {kind}：期望从 {cursor} 开始，实际为 {chunk.start}~{chunk.end}"
+            )
+        cursor = chunk.end + timedelta(days=1)
+    if cursor != parent.end + timedelta(days=1):
+        raise ValueError(f"切块缺口：最后覆盖到 {cursor - timedelta(days=1)}，应到 {parent.end}")
+
+
+def _write_bulk_reconciliation(
+    raw_root: Path,
+    plan: BulkExportPlan,
+    state: BulkExportState,
+    sessions: Sequence[Mapping[str, Any]],
+    *,
+    contacts: Sequence[Mapping[str, Any]],
+    start: date,
+    end: date,
+    skip_platform_accounts: bool,
+) -> tuple[Path, int]:
+    """Write an inspectable plan-vs-actual report; drift is evidence, not failure."""
+
+    entries: list[dict[str, Any]] = []
+    difference_count = 0
+    for index, session in enumerate(sessions, start=1):
+        talker = str(session.get("username") or "")
+        display_name = session_directory_display_name(session, contacts)
+        entry: dict[str, Any] = {
+            "session": talker or f"unknown-{index}",
+            "displayName": display_name,
+            "range": {"start": start.isoformat(), "end": end.isoformat()},
+        }
+        if not talker:
+            entry["status"] = "invalid_session"
+            entry["reason"] = "会话缺少 username"
+            entries.append(entry)
+            continue
+        if skip_platform_accounts and _is_platform_account(talker):
+            entry["status"] = "skipped_platform_account"
+            entries.append(entry)
+            continue
+        planned = plan.daily_counts(talker, start, end)
+        if planned is None:
+            entry["status"] = "plan_unavailable"
+            entry["reason"] = plan.failure_reason(talker) or "plan 未完整覆盖请求范围"
+            entries.append(entry)
+            continue
+        actual = state.completed_daily_counts(talker, start, end)
+        covered = state.covered_days(talker, start, end)
+        differences: list[dict[str, Any]] = []
+        for current in _days_inclusive(start, end):
+            expected = planned[current]
+            observed = actual.get(current) if actual is not None else None
+            if expected != observed:
+                differences.append(
+                    {"day": current.isoformat(), "plannedMessages": expected, "exportedMessages": observed}
+                )
+        entry.update(
+            {
+                "plannedMessages": sum(planned.values()),
+                "plannedActiveDays": sum(1 for value in planned.values() if value),
+                "plannedDailyCounts": {day.isoformat(): planned[day] for day in sorted(planned)},
+                "exportedMessages": sum(actual.values()) if actual is not None else None,
+                "exportedActiveDays": sum(1 for value in actual.values() if value) if actual is not None else None,
+                "exportedDailyCounts": (
+                    {day.isoformat(): actual[day] for day in sorted(actual)} if actual is not None else None
+                ),
+                "exportedCoverageDays": len(covered),
+                "differences": differences,
+            }
+        )
+        entry["status"] = (
+            "matched"
+            if not differences and len(covered) == (end - start).days + 1
+            else "drift_or_incomplete"
+        )
+        difference_count += len(differences)
+        entries.append(entry)
+    path = raw_root.parent / f".{raw_root.name}.bulk-export-reconciliation.json"
+    payload = {
+        "version": 1,
+        "outputRoot": str(raw_root.resolve()),
+        "range": {"start": start.isoformat(), "end": end.isoformat()},
+        "sessions": entries,
+        "differenceCount": difference_count,
+    }
+    _write_json_atomically(path, payload)
+    return path, difference_count
+
+
+def _write_json_atomically(path: Path, payload: Mapping[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8", newline="\n") as stream:
+            json.dump(payload, stream, ensure_ascii=False, indent=2, sort_keys=True)
+            stream.write("\n")
+        os.replace(temporary, path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
+def _days_inclusive(start: date, end: date):
+    current = start
+    while current <= end:
+        yield current
+        current += timedelta(days=1)
 
 
 def _referenced_cas_files(session_dir: Path, raw_root: Path) -> list[Path]:

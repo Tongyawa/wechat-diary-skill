@@ -6,13 +6,19 @@ import os
 import tempfile
 import unittest
 from contextlib import redirect_stdout
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 from unittest.mock import Mock, patch
 
 from scripts import export_bulk_raw
-from wechat_diary_core.backends.weflow_api.backend import BulkExportResult, WeflowApiBackend
+from wechat_diary_core.backends.weflow_api.backend import (
+    BulkExportResult,
+    WeflowApiBackend,
+    _chunk_interval_by_messages,
+    _validate_interval_partition,
+)
+from wechat_diary_core.backends.weflow_api.bulk_state import BulkExportState, DateInterval
 from wechat_diary_core.backends.weflow_api.client import WeflowApiClient
 from wechat_diary_core.config import load_config
 from wechat_diary_core.raw_schema import validate_session_json
@@ -21,7 +27,12 @@ from wechat_diary_core.raw_schema import validate_session_json
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "weflow_api"
 
 
-def _config(root: Path, *, target_usernames: tuple[str, ...] = ()):
+def _config(
+    root: Path,
+    *,
+    target_usernames: tuple[str, ...] = (),
+    media_localize: bool = False,
+):
     path = root / "config.toml"
     path.write_text(
         f"""
@@ -40,7 +51,7 @@ backend = "weflow_api"
 [export_backend.weflow_api]
 base_url = "http://127.0.0.1:5031"
 access_token = "fixed-token"
-media_localize = false
+media_localize = {str(media_localize).lower()}
 
 [daily_export]
 target_usernames = {json.dumps(list(target_usernames), ensure_ascii=False)}
@@ -117,7 +128,7 @@ class _BulkClient:
             for session in self.sessions
         ]
 
-    def fetch_messages(self, talker, *, start, end, **_kwargs):
+    def fetch_messages(self, talker, *, start, end, media, **_kwargs):
         self.message_calls.append((talker, start, end))
         return [
             message
@@ -200,7 +211,7 @@ class BulkExportTests(unittest.TestCase):
             payload = json.loads(export.read_text(encoding="utf-8"))
 
         self.assertIsInstance(result, BulkExportResult)
-        self.assertEqual([query["offset"] for query in queries], [["0"], ["2"]])
+        self.assertEqual([query["offset"] for query in queries], [["0"], ["2"], ["0"], ["2"]])
         self.assertTrue(all(query["limit"] == ["10000"] for query in queries))
         self.assertEqual(result.messages_written, len(fixture["messages"]))
         expected_ids = {str(message["serverId"]) for message in fixture["messages"]}
@@ -288,8 +299,12 @@ class BulkExportTests(unittest.TestCase):
         }
 
         class InterruptingClient(_BulkClient):
+            second_calls = 0
+
             def fetch_messages(self, talker, *, start, end, **kwargs):
                 if talker == "wxid_second_placeholder":
+                    self.second_calls += 1
+                if talker == "wxid_second_placeholder" and self.second_calls == 2:
                     self.message_calls.append((talker, start, end))
                     raise KeyboardInterrupt("injected interruption")
                 return super().fetch_messages(talker, start=start, end=end, **kwargs)
@@ -375,11 +390,12 @@ class BulkExportTests(unittest.TestCase):
             )
             state = json.loads(state_path.read_text(encoding="utf-8"))
             recorded = state["sessions"][session["username"]]["completed"][0]["files"]
-            media_relative = next(value for value in recorded if value.startswith("_media/"))
-            media_path = raw_root / media_relative
+            self.assertTrue(recorded and all(value.endswith(".json") for value in recorded))
             session_dir = next(
                 path for path in raw_root.iterdir() if path.is_dir() and path.name != "_media"
             )
+            payload = json.loads(next(session_dir.glob("*.json")).read_text(encoding="utf-8"))
+            media_path = (session_dir / payload["messages"][0]["source"]).resolve()
             media_path.unlink()
 
             second_client = _BulkClient([session], {session["username"]: [message]})
@@ -424,6 +440,77 @@ class BulkExportTests(unittest.TestCase):
             self.assertTrue(media_path.is_file())
             self.assertIn(media_path, result.files_written)
 
+    def test_resume_state_allows_degraded_image_without_a_media_source(self) -> None:
+        export_day = date(2026, 8, 5)
+        session = {"username": "wxid_degraded_image_placeholder", "displayName": "降级图片占位"}
+        message = _message_for(export_day, 1)
+        message.update({"localType": 3, "content": "[图片]"})
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            raw_root = root / "bulk-raw"
+            state_path = root / ".bulk-state.json"
+            first = WeflowApiBackend(_config(root, media_localize=True))
+            first._client = _BulkClient([session], {session["username"]: [message]})
+            first.export_chats_range(
+                export_day,
+                export_day,
+                raw_root=raw_root,
+                sessions=[session],
+                state_path=state_path,
+            )
+            resumed_client = _BulkClient([session], {session["username"]: [message]})
+            resumed = WeflowApiBackend(_config(root, media_localize=True))
+            resumed._client = resumed_client
+            result = resumed.export_chats_range(
+                export_day,
+                export_day,
+                raw_root=raw_root,
+                sessions=[session],
+                state_path=state_path,
+            )
+
+        self.assertEqual(resumed_client.message_calls, [])
+        self.assertEqual(result.resumed_intervals, 1)
+
+    def test_resume_state_rejects_an_existing_media_reference_escaping_output_root(self) -> None:
+        export_day = date(2026, 8, 5)
+        session = {"username": "wxid_escape_placeholder", "displayName": "越界引用占位"}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            raw_root = root / "segment" / "output"
+            source = root / "image.jpg"
+            source.write_bytes(b"escape-reference-source")
+            message = _message_for(export_day, 1)
+            message.update(
+                {
+                    "localType": 3,
+                    "content": "[图片]",
+                    "mediaLocalPath": str(source),
+                    "mediaFileName": source.name,
+                    "mediaType": "image",
+                }
+            )
+            state_path = root / ".bulk-state.json"
+            backend = WeflowApiBackend(_config(root))
+            backend._client = _BulkClient([session], {session["username"]: [message]})
+            backend.export_chats_range(
+                export_day,
+                export_day,
+                raw_root=raw_root,
+                sessions=[session],
+                state_path=state_path,
+            )
+            session_dir = next(path for path in raw_root.iterdir() if path.is_dir() and path.name != "_media")
+            json_path = next(session_dir.glob("*.json"))
+            payload = json.loads(json_path.read_text(encoding="utf-8"))
+            payload["messages"][0]["source"] = "../../../outside.bin"
+            json_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            (root / "outside.bin").write_bytes(b"must-still-be-illegal")
+            reloaded = BulkExportState.load(state_path, raw_root)
+            pending = reloaded.uncovered(session["username"], export_day, export_day, force=False)
+
+        self.assertEqual(pending, [DateInterval(export_day, export_day)])
+
     def test_extending_range_fetches_only_uncovered_tail(self) -> None:
         first = date(2026, 8, 1)
         initial_end = date(2026, 8, 3)
@@ -463,12 +550,271 @@ class BulkExportTests(unittest.TestCase):
 
         self.assertEqual(
             extension_client.message_calls,
-            [(session["username"], date(2026, 8, 4), date(2026, 8, 5))],
+            [
+                (session["username"], date(2026, 8, 4), date(2026, 8, 5)),
+                (session["username"], date(2026, 8, 4), date(2026, 8, 5)),
+            ],
         )
         self.assertEqual(
             exported_days,
             ["20260801", "20260802", "20260803", "20260804", "20260805"],
         )
+
+    def test_message_target_chunking_keeps_every_day_and_rejects_bad_partitions(self) -> None:
+        first = date(2026, 8, 1)
+        interval = DateInterval(first, date(2026, 8, 6))
+        counts = {first + timedelta(days=offset): value for offset, value in enumerate([4, 0, 7, 13, 3, 8])}
+
+        chunks = _chunk_interval_by_messages(interval, counts, target_messages=10)
+
+        self.assertEqual(
+            [(chunk.start, chunk.end) for chunk in chunks],
+            [
+                (date(2026, 8, 1), date(2026, 8, 2)),
+                (date(2026, 8, 3), date(2026, 8, 3)),
+                (date(2026, 8, 4), date(2026, 8, 4)),
+                (date(2026, 8, 5), date(2026, 8, 5)),
+                (date(2026, 8, 6), date(2026, 8, 6)),
+            ],
+        )
+        _validate_interval_partition(interval, chunks)
+        with self.assertRaisesRegex(ValueError, "缺口"):
+            _validate_interval_partition(interval, [DateInterval(first, first)])
+        with self.assertRaisesRegex(ValueError, "重叠"):
+            _validate_interval_partition(
+                interval,
+                [DateInterval(first, date(2026, 8, 3)), DateInterval(date(2026, 8, 3), interval.end)],
+            )
+        with self.assertRaisesRegex(ValueError, "越出"):
+            _validate_interval_partition(
+                interval,
+                [DateInterval(date(2026, 7, 31), interval.end)],
+            )
+
+    def test_plan_distinguishes_an_empty_session_from_a_failed_fetch(self) -> None:
+        class OnePlanFailureClient(_BulkClient):
+            def fetch_messages(self, talker, *, start, end, **kwargs):
+                if talker == "wxid_plan_failure_placeholder":
+                    raise RuntimeError("injected plan fetch failure")
+                return super().fetch_messages(talker, start=start, end=end, **kwargs)
+
+        first = date(2026, 8, 1)
+        second = date(2026, 8, 2)
+        empty = {"username": "wxid_empty_placeholder", "displayName": "空会话占位"}
+        failed = {"username": "wxid_plan_failure_placeholder", "displayName": "失败会话占位"}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            raw_root = root / "bulk-raw"
+            state_path = root / ".bulk-state.json"
+            backend = WeflowApiBackend(_config(root))
+            backend._client = OnePlanFailureClient([empty, failed], {empty["username"]: []})
+            result = backend.export_chats_range(
+                first,
+                second,
+                raw_root=raw_root,
+                sessions=[empty, failed],
+                state_path=state_path,
+            )
+            plan = json.loads(state_path.with_name(f"{state_path.name}.plan.json").read_text(encoding="utf-8"))
+
+        empty_plan = plan["sessions"][empty["username"]]
+        failed_plan = plan["sessions"][failed["username"]]
+        self.assertEqual(empty_plan["dailyCounts"], {first.isoformat(): 0, second.isoformat(): 0})
+        self.assertNotIn("lastFailure", empty_plan)
+        self.assertIn("lastFailure", failed_plan)
+        self.assertNotIn("dailyCounts", failed_plan)
+        self.assertIn(failed["username"], result.failures)
+
+    def test_plan_is_media_free_and_uses_the_export_day_splitter(self) -> None:
+        class CaptureMediaClient(_BulkClient):
+            media_flags: list[bool] = []
+
+            def fetch_messages(self, talker, *, start, end, **kwargs):
+                self.media_flags.append(kwargs["media"])
+                return super().fetch_messages(talker, start=start, end=end, **kwargs)
+
+        first = date(2026, 8, 1)
+        second = date(2026, 8, 2)
+        session = {"username": "wxid_plan_media_placeholder", "displayName": "plan 媒体占位"}
+        messages = [_message_for(first, 1), _message_for(second, 2)]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state_path = root / ".bulk-state.json"
+            client = CaptureMediaClient([session], {session["username"]: messages})
+            backend = WeflowApiBackend(_config(root, media_localize=True))
+            backend._client = client
+            backend.export_chats_range(
+                first,
+                second,
+                raw_root=root / "bulk-raw",
+                sessions=[session],
+                state_path=state_path,
+            )
+            plan = json.loads(state_path.with_name(f"{state_path.name}.plan.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(client.media_flags, [False, True])
+        self.assertEqual(
+            plan["sessions"][session["username"]]["dailyCounts"],
+            {first.isoformat(): 1, second.isoformat(): 1},
+        )
+
+    def test_replan_refreshes_only_the_plan_not_completed_exports(self) -> None:
+        export_day = date(2026, 8, 5)
+        session = {"username": "wxid_replan_placeholder", "displayName": "重算 plan 占位"}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            raw_root = root / "bulk-raw"
+            state_path = root / ".bulk-state.json"
+            first = WeflowApiBackend(_config(root))
+            first._client = _BulkClient([session], {session["username"]: [_message_for(export_day, 1)]})
+            first.export_chats_range(
+                export_day,
+                export_day,
+                raw_root=raw_root,
+                sessions=[session],
+                state_path=state_path,
+            )
+
+            refreshed_client = _BulkClient(
+                [session], {session["username"]: [_message_for(export_day, 1), _message_for(export_day, 2)]}
+            )
+            refreshed = WeflowApiBackend(_config(root))
+            refreshed._client = refreshed_client
+            result = refreshed.export_chats_range(
+                export_day,
+                export_day,
+                raw_root=raw_root,
+                sessions=[session],
+                state_path=state_path,
+                replan=True,
+            )
+            plan = json.loads(state_path.with_name(f"{state_path.name}.plan.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(refreshed_client.message_calls, [(session["username"], export_day, export_day)])
+        self.assertEqual(result.completed_intervals, 0)
+        self.assertEqual(result.resumed_intervals, 1)
+        self.assertEqual(plan["sessions"][session["username"]]["dailyCounts"], {export_day.isoformat(): 2})
+
+    def test_interruption_resumes_from_the_last_completed_chunk(self) -> None:
+        class ChunkInterruptingClient(_BulkClient):
+            calls = 0
+
+            def fetch_messages(self, talker, *, start, end, **kwargs):
+                self.calls += 1
+                # Call one is the all-days plan; call three is the second export block.
+                if self.calls == 3:
+                    raise KeyboardInterrupt("injected chunk interruption")
+                return super().fetch_messages(talker, start=start, end=end, **kwargs)
+
+        start = date(2026, 8, 1)
+        end = date(2026, 8, 3)
+        session = {"username": "wxid_chunk_resume_placeholder", "displayName": "切块续跑占位"}
+        messages = [_message_for(start + timedelta(days=offset), offset + 1) for offset in range(3)]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            raw_root = root / "bulk-raw"
+            state_path = root / ".bulk-state.json"
+            first = WeflowApiBackend(_config(root))
+            first._client = ChunkInterruptingClient([session], {session["username"]: messages})
+            with self.assertRaisesRegex(KeyboardInterrupt, "chunk interruption"):
+                first.export_chats_range(
+                    start,
+                    end,
+                    raw_root=raw_root,
+                    sessions=[session],
+                    state_path=state_path,
+                    chunk_target=1,
+                )
+
+            resumed_client = _BulkClient([session], {session["username"]: messages})
+            resumed = WeflowApiBackend(_config(root))
+            resumed._client = resumed_client
+            result = resumed.export_chats_range(
+                start,
+                end,
+                raw_root=raw_root,
+                sessions=[session],
+                state_path=state_path,
+                chunk_target=1,
+            )
+
+        self.assertEqual(
+            resumed_client.message_calls,
+            [
+                (session["username"], date(2026, 8, 2), date(2026, 8, 2)),
+                (session["username"], date(2026, 8, 3), date(2026, 8, 3)),
+            ],
+        )
+        self.assertEqual(result.completed_intervals, 2)
+        self.assertEqual(result.resumed_plans, 1)
+
+    def test_reconciliation_reports_plan_export_drift_without_marking_export_failed(self) -> None:
+        class DriftingClient(_BulkClient):
+            calls = 0
+
+            def fetch_messages(self, talker, *, start, end, **kwargs):
+                self.calls += 1
+                if self.calls == 2:
+                    return []
+                return super().fetch_messages(talker, start=start, end=end, **kwargs)
+
+        export_day = date(2026, 8, 5)
+        session = {"username": "wxid_drift_placeholder", "displayName": "漂移会话占位"}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            backend = WeflowApiBackend(_config(root))
+            backend._client = DriftingClient(
+                [session], {session["username"]: [_message_for(export_day, 1)]}
+            )
+            result = backend.export_chats_range(
+                export_day,
+                export_day,
+                raw_root=root / "bulk-raw",
+                sessions=[session],
+                state_path=root / ".bulk-state.json",
+            )
+            reconciliation = json.loads(result.reconciliation_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(result.failures, {})
+        self.assertEqual(result.reconciliation_differences, 1)
+        entry = reconciliation["sessions"][0]
+        self.assertEqual(entry["status"], "drift_or_incomplete")
+        self.assertEqual(entry["differences"][0]["plannedMessages"], 1)
+        self.assertEqual(entry["differences"][0]["exportedMessages"], 0)
+
+    def test_block_state_uses_a_journal_between_compactions(self) -> None:
+        export_day = date(2026, 8, 5)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            raw_root = root / "raw"
+            raw_root.mkdir()
+            first_json = raw_root / "first.json"
+            second_json = raw_root / "second.json"
+            first_json.write_text('{"messages": []}', encoding="utf-8")
+            second_json.write_text('{"messages": []}', encoding="utf-8")
+            state_path = root / ".bulk-state.json"
+            state = BulkExportState.load(state_path, raw_root)
+            state.record_completed(
+                "wxid_state_placeholder",
+                "状态占位",
+                DateInterval(export_day, export_day),
+                [first_json],
+                daily_counts={export_day: 1},
+            )
+            next_day = export_day + timedelta(days=1)
+            state.record_completed(
+                "wxid_state_placeholder",
+                "状态占位",
+                DateInterval(next_day, next_day),
+                [second_json],
+                daily_counts={next_day: 1},
+            )
+            reloaded = BulkExportState.load(state_path, raw_root)
+            journal_exists = reloaded.journal_path.exists()
+            uncovered = reloaded.uncovered("wxid_state_placeholder", export_day, next_day, force=False)
+
+        self.assertTrue(journal_exists)
+        self.assertEqual(uncovered, [])
 
     def test_bulk_failure_uses_own_state_and_never_writes_daily_failure_state(self) -> None:
         class FailingClient(_BulkClient):
@@ -491,7 +837,10 @@ class BulkExportTests(unittest.TestCase):
                 state_path=state_path,
             )
             self.assertIn(session["username"], result.failures)
-            self.assertTrue(state_path.exists())
+            plan_path = state_path.with_name(f"{state_path.name}.plan.json")
+            plan = json.loads(plan_path.read_text(encoding="utf-8"))
+            self.assertIn("lastFailure", plan["sessions"][session["username"]])
+            self.assertFalse(state_path.exists())
             self.assertFalse((root / ".export-state.json").exists())
 
     def test_cli_session_queries_are_repeatable_and_deduplicated(self) -> None:
@@ -509,6 +858,24 @@ class BulkExportTests(unittest.TestCase):
             [session["username"] for session in selected],
             ["wxid_first_placeholder", "wxid_second_placeholder"],
         )
+
+    def test_cli_accepts_explicit_chunk_target_and_replan(self) -> None:
+        args = export_bulk_raw.build_parser().parse_args(
+            [
+                "--start",
+                "2026-08-01",
+                "--end",
+                "2026-08-02",
+                "--out",
+                "synthetic-output",
+                "--chunk-target",
+                "321",
+                "--replan",
+            ]
+        )
+
+        self.assertEqual(args.chunk_target, 321)
+        self.assertTrue(args.replan)
 
     def test_cli_passes_explicit_range_selection_output_and_resume_state_to_backend(self) -> None:
         sessions = [
@@ -563,6 +930,12 @@ class BulkExportTests(unittest.TestCase):
             call.kwargs["state_path"],
             raw_root.parent / f".{raw_root.name}.bulk-export-state.json",
         )
+        self.assertEqual(
+            call.kwargs["plan_path"],
+            raw_root.parent / f".{raw_root.name}.bulk-export-plan.json",
+        )
+        self.assertEqual(call.kwargs["chunk_target"], 10_000)
+        self.assertFalse(call.kwargs["replan"])
         fake_backend.prepare_bulk_export.assert_called_once_with()
         fake_backend.shutdown.assert_called_once_with()
 

@@ -167,7 +167,7 @@ python "$SkillRoot\scripts\init_worktree_config.py"
 
 ## 8. 批量 canonical raw 导出 `export_bulk_raw.py`
 
-导出全部会话或一组指定会话的任意日期范围；只写显式输出根，不碰 live raw / processed / 归档，且不产 processed。消息按本地日历日切分，一个活跃会话日一个 canonical JSON；空日不造空文件。
+导出全部会话或一组指定会话的任意日期范围；只写显式输出根，不碰 live raw / processed / 归档，且不产 processed。先以 `media=false` 建可续跑的逐日消息数 plan，再按本地日历日组成目标大小的块带媒体导出；一个活跃会话日一个 canonical JSON，空日不造空文件。
 
 ```powershell
 # 全部会话
@@ -183,8 +183,10 @@ python "$SkillRoot\scripts\export_bulk_raw.py" --start 2026-07-02 --end 2026-08-
 | `--out` | 必填的 canonical raw 输出根；不会从 `[paths].raw` 猜落点 |
 | `--session` | 可重复；wxid 或唯一显示名子串。省略即全部会话 |
 | `--force` | 忽略已完成区间并重导；mapper 改进后刷新历史产物时使用 |
+| `--chunk-target` | 每个导出块的目标消息数，默认 `10000`；单日超标时该日仍独立成块 |
+| `--replan` | 强制以 `media=false` 重算本次范围的逐日消息数；只刷新 plan，不会重导已完成块 |
 | `--config` | 配置文件路径 |
 
-默认可续跑：状态写在输出根同级的 `.<输出目录名>.bulk-export-state.json`，不混进 canonical raw，也不写日常 `.export-state.json`。每完成一个“会话 × 连续区间”立即记账；中断后原命令重跑会跳过已完成区间。若某个已记账文件被删除，该区间会自动失效并重导。
+默认可续跑：逐日 plan 写在输出根同级的 `.<输出目录名>.bulk-export-plan.json`，状态写 `.<输出目录名>.bulk-export-state.json`（运行中有同名 `.journal` 追加账本），均不混进 canonical raw，也不写日常 `.export-state.json`。plan 逐会话完成即可续跑，且把「请求失败」与「0 条消息」分开记录；每完成一个块立即记账。中断后原命令重跑会复用已有 plan、跳过已完成块。若 canonical JSON 或它引用的媒体文件被删除，该块会自动失效并重导。每轮还会写 `.<输出目录名>.bulk-export-reconciliation.json`，逐会话列出 plan/实际的逐日消息数、活跃天数与差异；两遍之间的新消息会被报告为漂移，不作为导出失败。
 
 退出码：`0` = 本次选择的会话全部完成或已由状态覆盖；`1` = 至少一个会话未完成，修复原因后原命令重跑即可；`2` = 工作区或会话选择错误。平台型会话是否跳过仍服从 `[daily_export].skip_official_accounts`。若两个不同 wxid 经名称净化后会写进同一个 canonical 目录，程序会在第一条消息请求前拒绝整批，避免后写会话静默覆盖先写会话。

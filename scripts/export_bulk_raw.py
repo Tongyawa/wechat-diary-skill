@@ -31,6 +31,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="会话 wxid 或显示名子串；可重复。省略表示全部会话。",
     )
     parser.add_argument("--force", action="store_true", help="忽略完成区间状态并重导本次范围。")
+    parser.add_argument(
+        "--chunk-target",
+        type=int,
+        default=10_000,
+        help="每个导出块的目标消息数；单日超过该值时仍保持单日一个块（默认 10000）。",
+    )
+    parser.add_argument(
+        "--replan",
+        action="store_true",
+        help="强制重新以 media=false 扫描本次范围的逐日消息数；不等同于重导。",
+    )
     parser.add_argument("--config", default=None, help="配置文件路径。")
     return parser
 
@@ -49,8 +60,11 @@ def main(argv: list[str] | None = None) -> int:
         end = _parse_day(args.end)
         if start > end:
             parser.error("--start 不能晚于 --end。")
+        if args.chunk_target <= 0:
+            parser.error("--chunk-target 必须大于 0。")
         raw_root = _resolve_output_path(args.out)
         state_path = bulk_state_path_for(raw_root)
+        plan_path = bulk_plan_path_for(raw_root)
         config_path = resolve_config_path(args.config)
         cfg = load_config(config_path)
         if cfg.export_backend.backend != "weflow_api":
@@ -69,6 +83,9 @@ def main(argv: list[str] | None = None) -> int:
             sessions=selected,
             state_path=state_path,
             force=args.force,
+            plan_path=plan_path,
+            chunk_target=args.chunk_target,
+            replan=args.replan,
         )
         assert isinstance(result, BulkExportResult)
     except WorkspaceResolutionError as exc:
@@ -92,9 +109,14 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"批量 raw 输出：{raw_root}")
     print(f"续跑状态：{state_path}")
+    print(f"逐日 plan：{plan_path}")
+    if result.reconciliation_path is not None:
+        print(f"对账：{result.reconciliation_path}（差异日 {result.reconciliation_differences}）")
     print(
         "汇总："
         f"会话 {result.requested_sessions}；"
+        f"本轮 plan {result.planned_sessions}；"
+        f"复用 plan {result.resumed_plans}；"
         f"完成区间 {result.completed_intervals}；"
         f"续跑跳过 {result.resumed_intervals}；"
         f"消息 {result.messages_written}；"
@@ -126,6 +148,10 @@ def select_sessions(
 
 def bulk_state_path_for(raw_root: Path) -> Path:
     return raw_root.parent / f".{raw_root.name}.bulk-export-state.json"
+
+
+def bulk_plan_path_for(raw_root: Path) -> Path:
+    return raw_root.parent / f".{raw_root.name}.bulk-export-plan.json"
 
 
 def _parse_day(value: str) -> date:
