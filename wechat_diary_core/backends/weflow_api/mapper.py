@@ -51,11 +51,53 @@ def session_date_suffix(start: date, end: date) -> str:
     return first if first == last else f"{first}-{last}"
 
 
-def session_directory_name(session: Mapping[str, Any], start: date, end: date) -> str:
+def session_directory_name(
+    session: Mapping[str, Any],
+    start: date,
+    end: date,
+    *,
+    contacts: Sequence[Mapping[str, Any]] = (),
+) -> str:
     username = str(session.get("username") or "")
     prefix = "群聊" if username.endswith("@chatroom") else "私聊"
-    display_name = sanitize_session_name(session.get("displayName"), fallback=username or "未命名会话")
+    display_name = sanitize_session_name(
+        session_directory_display_name(session, contacts),
+        fallback=username or "未命名会话",
+    )
     return f"{prefix}_{display_name}_{session_date_suffix(start, end)}"
+
+
+def session_directory_display_name(
+    session: Mapping[str, Any],
+    contacts: Sequence[Mapping[str, Any]],
+) -> str:
+    """Resolve the user-controlled roster name before the stale session snapshot."""
+
+    username = str(session.get("username") or "").strip()
+    contact = next(
+        (
+            record
+            for record in contacts
+            if str(record.get("username") or record.get("wxid") or "").strip() == username
+        ),
+        None,
+    )
+    if contact is not None:
+        # WeFlow builds contact.displayName as remark -> nickname -> alias ->
+        # username for both friends and chatrooms. Keep explicit field fallbacks
+        # for fixtures and compatible API implementations that omit displayName.
+        contact_name = str(
+            contact.get("displayName")
+            or contact.get("remark")
+            or contact.get("nickname")
+            or contact.get("alias")
+            or contact.get("username")
+            or contact.get("wxid")
+            or ""
+        ).strip()
+        if contact_name:
+            return contact_name
+    return str(session.get("displayName") or username or "未命名会话")
 
 
 def map_session_json(
@@ -82,7 +124,7 @@ def map_session_json(
     contact_index = _roster_index(contacts, "username")
     member_index = _roster_index(group_members, "wxid")
     session_contact = contact_index.get(talker, {})
-    display_name = str(session.get("displayName") or _display_name(session_contact, talker))
+    display_name = session_directory_display_name(session, contacts)
     nickname = str(session_contact.get("nickname") or display_name)
     remark = str(session_contact.get("remark") or "")
     ordered_messages = sorted(
@@ -168,7 +210,7 @@ def write_session_export(
     raw_root.mkdir(parents=True, exist_ok=True)
     staging_parent = raw_root.parent / f".{raw_root.name}.weflow-api-staging"
     staging_parent.mkdir(parents=True, exist_ok=True)
-    directory_name = session_directory_name(session, start, end)
+    directory_name = session_directory_name(session, start, end, contacts=contacts)
     staging_dir = Path(tempfile.mkdtemp(prefix=f"{directory_name}-", dir=staging_parent))
     active_image_media_stats = image_media_stats or ImageMediaStats()
     try:
@@ -838,6 +880,7 @@ __all__ = [
     "map_session_json",
     "moments_filename",
     "session_date_suffix",
+    "session_directory_display_name",
     "session_directory_name",
     "write_moments_export",
     "write_session_export",

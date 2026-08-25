@@ -23,6 +23,7 @@ from .client import WeflowApiClient, WeflowApiError
 from .failure_state import SessionFailureState
 from .mapper import (
     ImageMediaStats,
+    session_directory_display_name,
     session_directory_name,
     write_moments_export,
     write_session_export,
@@ -183,6 +184,7 @@ class WeflowApiBackend:
             raise RuntimeError("WeFlow API 没有返回可导出的会话，拒绝把空结果当成功")
         _validate_bulk_destination_names(
             selected_sessions,
+            contacts=contacts,
             skip_platform_accounts=self.config.daily_export.skip_official_accounts,
         )
 
@@ -194,13 +196,7 @@ class WeflowApiBackend:
         failures: dict[str, str] = {}
         for index, session in enumerate(selected_sessions, start=1):
             talker = str(session.get("username") or "")
-            display_name = str(
-                session.get("displayName")
-                or session.get("nickname")
-                or session.get("remark")
-                or talker
-                or "未知会话"
-            )
+            display_name = session_directory_display_name(session, contacts)
             if not talker:
                 failures[f"unknown-{index}"] = "会话缺少 username"
                 self._record_session_failure("unknown", "会话缺少 username", display_name)
@@ -348,12 +344,7 @@ class WeflowApiBackend:
                 skipped_platform_accounts += 1
                 state.record_success(talker)
                 continue
-            display_name = str(
-                session.get("displayName")
-                or session.get("nickname")
-                or session.get("remark")
-                or talker
-            )
+            display_name = session_directory_display_name(session, contacts)
             try:
                 messages = self.client.fetch_messages(
                     talker,
@@ -562,9 +553,10 @@ class WeflowApiBackend:
 
     def _validate_before_mutation(self) -> None:
         self._validate_configured_contacts_before_mutation()
-        sessions = self._sessions()
+        sessions, contacts = self._export_roster()
         current_collisions = _current_session_directory_collisions(
             sessions,
+            contacts=contacts,
             skip_official_accounts=self.config.daily_export.skip_official_accounts,
         )
         live_raw_collisions = _stored_session_directory_collisions(
@@ -752,6 +744,7 @@ def _is_platform_account(talker: str) -> bool:
 def _current_session_directory_collisions(
     sessions: list[dict[str, Any]],
     *,
+    contacts: Sequence[Mapping[str, Any]],
     skip_official_accounts: bool,
 ) -> dict[str, dict[str, str]]:
     """Return only canonical daily directories claimed by multiple wxids."""
@@ -762,8 +755,11 @@ def _current_session_directory_collisions(
         wxid = str(session.get("username") or "").strip()
         if not wxid or (skip_official_accounts and _is_platform_account(wxid)):
             continue
-        directory = session_directory_name(session, today, today)
-        candidates.setdefault(directory, {}).setdefault(wxid, _session_display_name(session, wxid))
+        directory = session_directory_name(session, today, today, contacts=contacts)
+        candidates.setdefault(directory, {}).setdefault(
+            wxid,
+            session_directory_display_name(session, contacts),
+        )
     return {
         directory: identities
         for directory, identities in candidates.items()
@@ -796,13 +792,9 @@ def _stored_session_directory_collisions(
         directory = directory_key(session_dir.name)
         identities = candidates.setdefault(directory, {})
         for json_path in sorted(session_dir.glob("*.json")):
-            try:
-                payload = json.loads(json_path.read_text(encoding="utf-8"))
-            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            session = _read_stored_session(json_path)
+            if session is None:
                 continue
-            if not isinstance(payload, dict) or not isinstance(payload.get("session"), dict):
-                continue
-            session = payload["session"]
             wxid = str(session.get("wxid") or session.get("username") or "").strip()
             if wxid:
                 identities.setdefault(wxid, _session_display_name(session, wxid))
@@ -811,6 +803,85 @@ def _stored_session_directory_collisions(
         for directory, identities in candidates.items()
         if len(identities) > 1
     }
+
+
+_SESSION_PREFIX_CHUNK_CHARS = 4096
+_SESSION_PREFIX_MAX_CHARS = 65536
+_NEED_MORE_PREFIX = object()
+_USE_FULL_DOCUMENT = object()
+
+
+def _read_stored_session(json_path: Path) -> dict[str, Any] | None:
+    """Read the leading canonical session object without materializing messages.
+
+    Canonical exports serialize ``session`` as the first top-level field. Any
+    other ordering, oversized metadata, or ambiguous prefix falls back to the
+    previous full-document parser so the optimization cannot hide a supported
+    historical shape.
+    """
+
+    try:
+        with json_path.open("r", encoding="utf-8") as stream:
+            prefix = ""
+            while len(prefix) < _SESSION_PREFIX_MAX_CHARS:
+                chunk = stream.read(
+                    min(
+                        _SESSION_PREFIX_CHUNK_CHARS,
+                        _SESSION_PREFIX_MAX_CHARS - len(prefix),
+                    )
+                )
+                prefix += chunk
+                parsed = _parse_leading_session(prefix)
+                if isinstance(parsed, dict):
+                    return parsed
+                if parsed is _USE_FULL_DOCUMENT or not chunk:
+                    break
+    except (OSError, UnicodeDecodeError):
+        return None
+
+    try:
+        payload = json.loads(json_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict) or not isinstance(payload.get("session"), dict):
+        return None
+    return payload["session"]
+
+
+def _parse_leading_session(prefix: str) -> dict[str, Any] | object:
+    """Return a complete first ``session`` value or a parser control sentinel."""
+
+    decoder = json.JSONDecoder()
+    index = 0
+    while index < len(prefix) and prefix[index].isspace():
+        index += 1
+    if index >= len(prefix):
+        return _NEED_MORE_PREFIX
+    if prefix[index] != "{":
+        return _USE_FULL_DOCUMENT
+    index += 1
+    while index < len(prefix) and prefix[index].isspace():
+        index += 1
+    try:
+        key, index = decoder.raw_decode(prefix, index)
+    except json.JSONDecodeError:
+        return _NEED_MORE_PREFIX
+    if key != "session":
+        return _USE_FULL_DOCUMENT
+    while index < len(prefix) and prefix[index].isspace():
+        index += 1
+    if index >= len(prefix):
+        return _NEED_MORE_PREFIX
+    if prefix[index] != ":":
+        return _USE_FULL_DOCUMENT
+    index += 1
+    while index < len(prefix) and prefix[index].isspace():
+        index += 1
+    try:
+        session, _ = decoder.raw_decode(prefix, index)
+    except json.JSONDecodeError:
+        return _NEED_MORE_PREFIX
+    return session if isinstance(session, dict) else _USE_FULL_DOCUMENT
 
 
 def _session_display_name(session: dict[str, Any], wxid: str) -> str:
@@ -959,6 +1030,7 @@ def _unique_paths(paths: Sequence[Path]) -> list[Path]:
 def _validate_bulk_destination_names(
     sessions: Sequence[Mapping[str, Any]],
     *,
+    contacts: Sequence[Mapping[str, Any]],
     skip_platform_accounts: bool,
 ) -> None:
     """Reject a bulk run whose selected sessions would share one directory.
@@ -972,6 +1044,7 @@ def _validate_bulk_destination_names(
 
     collisions = _current_session_directory_collisions(
         [dict(session) for session in sessions],
+        contacts=contacts,
         skip_official_accounts=skip_platform_accounts,
     )
     if not collisions:

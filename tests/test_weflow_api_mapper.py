@@ -30,6 +30,83 @@ def _fixture(name: str):
 
 
 class WeflowApiMapperTests(unittest.TestCase):
+    def test_directory_name_uses_contact_roster_fallback_chain(self) -> None:
+        export_day = date(2026, 8, 25)
+        session = {"username": "wxid_directory_placeholder", "displayName": "会话快照"}
+        cases = (
+            (
+                "remark",
+                [{"username": session["username"], "remark": "实时备注"}],
+                "私聊_实时备注_20260825",
+            ),
+            (
+                "nickname",
+                [{"username": session["username"], "remark": "", "nickname": "实时昵称"}],
+                "私聊_实时昵称_20260825",
+            ),
+            (
+                "wxid",
+                [{"username": session["username"], "remark": "", "nickname": ""}],
+                "私聊_wxid_directory_placeholder_20260825",
+            ),
+            ("missing contact", [], "私聊_会话快照_20260825"),
+        )
+        for label, contacts, expected in cases:
+            with self.subTest(label=label):
+                self.assertEqual(
+                    session_directory_name(session, export_day, export_day, contacts=contacts),
+                    expected,
+                )
+
+        no_snapshot = {"username": "wxid_only_placeholder", "displayName": ""}
+        self.assertEqual(
+            session_directory_name(no_snapshot, export_day, export_day, contacts=[]),
+            "私聊_wxid_only_placeholder_20260825",
+        )
+
+    def test_group_directory_name_uses_group_contact_display_name(self) -> None:
+        export_day = date(2026, 8, 25)
+        session = {"username": "room_placeholder@chatroom", "displayName": "陈旧群名"}
+        contacts = [
+            {
+                "username": "room_placeholder@chatroom",
+                "type": "group",
+                "displayName": "实时群名",
+            }
+        ]
+
+        self.assertEqual(
+            session_directory_name(session, export_day, export_day, contacts=contacts),
+            "群聊_实时群名_20260825",
+        )
+
+    def test_writer_publishes_to_contact_roster_name_not_session_snapshot(self) -> None:
+        session = {"username": "wxid_contact_placeholder", "displayName": "陈旧会话名"}
+        contacts = [
+            {
+                "username": "wxid_contact_placeholder",
+                "displayName": "实时备注名",
+                "remark": "实时备注名",
+                "nickname": "昵称占位",
+            },
+            *_fixture("contacts.json")["contacts"][1:],
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            destination = write_session_export(
+                Path(tmp) / "raw",
+                session,
+                _fixture("messages.json")["messages"],
+                start=date(2026, 8, 25),
+                end=date(2026, 8, 25),
+                contacts=contacts,
+            )
+            payload = json.loads(
+                (destination / f"{destination.name}.json").read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(destination.name, "私聊_实时备注名_20260825")
+        self.assertEqual(payload["session"]["displayName"], "实时备注名")
+
     def test_real_shape_messages_cover_server_id_empty_sender_quote_and_voice_fallback(self) -> None:
         sessions = _fixture("sessions.json")["sessions"]
         contacts = _fixture("contacts.json")["contacts"]

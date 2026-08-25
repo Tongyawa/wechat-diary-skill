@@ -154,8 +154,16 @@ class _EmptyMomentsClient(_Client):
 
 
 class _TrackingSessionClient:
-    def __init__(self, sessions, *, failures=(), failure_reason="fixture cursor failure"):
+    def __init__(
+        self,
+        sessions,
+        *,
+        contacts=None,
+        failures=(),
+        failure_reason="fixture cursor failure",
+    ):
         self.sessions = sessions
+        self.contacts = contacts
         self.failures = set(failures)
         self.failure_reason = failure_reason
         self.message_calls = []
@@ -164,6 +172,8 @@ class _TrackingSessionClient:
         return self.sessions
 
     def fetch_contacts(self, *, limit):
+        if self.contacts is not None:
+            return self.contacts
         return [
             {
                 "username": session["username"],
@@ -213,6 +223,62 @@ class WeflowApiBackendTests(unittest.TestCase):
                 )
 
             self.assertEqual(_stored_session_directory_collisions(raw), {})
+
+    def test_fast_archive_scan_still_detects_known_mixed_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            session_dir = Path(tmp) / "私聊_已混入"
+            session_dir.mkdir()
+            for index, wxid in enumerate(
+                ("wxid_mixed_first_placeholder", "wxid_mixed_second_placeholder"),
+                start=1,
+            ):
+                (session_dir / f"day-{index}.json").write_text(
+                    json.dumps(
+                        {
+                            "session": {"wxid": wxid, "displayName": f"混入{index}"},
+                            "messages": [{"content": "大消息占位" * 10000}],
+                        },
+                        ensure_ascii=False,
+                    ),
+                    encoding="utf-8",
+                )
+
+            with patch(
+                "wechat_diary_core.backends.weflow_api.backend.json.loads",
+                side_effect=AssertionError("canonical fast path must not fully json.loads"),
+            ):
+                collisions = _stored_session_directory_collisions(Path(tmp))
+
+        self.assertEqual(
+            set(collisions["私聊_已混入"]),
+            {"wxid_mixed_first_placeholder", "wxid_mixed_second_placeholder"},
+        )
+
+    def test_archive_scan_falls_back_for_noncanonical_top_level_order(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            session_dir = Path(tmp) / "私聊_旧格式混入"
+            session_dir.mkdir()
+            for index, wxid in enumerate(
+                ("wxid_old_first_placeholder", "wxid_old_second_placeholder"),
+                start=1,
+            ):
+                (session_dir / f"old-{index}.json").write_text(
+                    json.dumps(
+                        {
+                            "messages": [],
+                            "session": {"wxid": wxid, "displayName": f"旧格式{index}"},
+                        },
+                        ensure_ascii=False,
+                    ),
+                    encoding="utf-8",
+                )
+
+            collisions = _stored_session_directory_collisions(Path(tmp))
+
+        self.assertEqual(
+            set(collisions["私聊_旧格式混入"]),
+            {"wxid_old_first_placeholder", "wxid_old_second_placeholder"},
+        )
 
     def test_client_factory_receives_control_and_message_timeouts(self) -> None:
         captured = {}
@@ -647,6 +713,27 @@ class WeflowApiBackendTests(unittest.TestCase):
             }
 
         self.assertEqual(after, before)
+        self.assertEqual(client.message_calls, [])
+
+    def test_prepare_uses_same_contact_names_as_writer_when_session_snapshots_differ(self) -> None:
+        sessions = [
+            {"username": "wxid_roster_first_placeholder", "displayName": "陈旧甲"},
+            {"username": "wxid_roster_second_placeholder", "displayName": "陈旧乙"},
+        ]
+        contacts = [
+            {"username": "wxid_roster_first_placeholder", "displayName": "实时/撞名"},
+            {"username": "wxid_roster_second_placeholder", "displayName": "实时:撞名"},
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            client = _TrackingSessionClient(sessions, contacts=contacts)
+            client.health = Mock()
+            client.validate_token = Mock()
+            backend = WeflowApiBackend(_config(Path(tmp)))
+            backend._client = client
+
+            with self.assertRaisesRegex(RuntimeError, r"本轮会话.*私聊_实时_撞名_"):
+                backend.prepare()
+
         self.assertEqual(client.message_calls, [])
 
     def test_prepare_allows_repeated_same_wxid_and_skipped_official_collision(self) -> None:

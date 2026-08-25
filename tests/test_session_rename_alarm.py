@@ -29,7 +29,13 @@ def _write_session(root: Path, directory: str, wxid: str) -> None:
     )
 
 
-def _write_current_session(root: Path, directory: str, wxid: str, display_name: str) -> None:
+def _write_current_session(
+    root: Path,
+    directory: str,
+    wxid: str,
+    display_name: str,
+    session_type: str = "群聊",
+) -> None:
     session_dir = root / directory
     session_dir.mkdir(parents=True)
     (session_dir / f"{directory}.json").write_text(
@@ -38,7 +44,7 @@ def _write_current_session(root: Path, directory: str, wxid: str, display_name: 
                 "session": {
                     "wxid": wxid,
                     "displayName": display_name,
-                    "type": "群聊",
+                    "type": session_type,
                 }
             },
             ensure_ascii=False,
@@ -209,6 +215,36 @@ class SessionRenameAlarmTests(unittest.TestCase):
         self.assertEqual(opened, [report_path])
         self.assertIn("本轮合并", report_text)
         self.assertIn("合并报告", output.getvalue())
+
+    def test_contact_roster_rename_continues_through_archive_reconciliation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            archive_raw = root / "archived" / "raw"
+            _write_session(archive_raw, "私聊_旧备注", "wxid_roster_rename_placeholder")
+            _write_current_session(
+                root / "raw",
+                "私聊_新备注_20260825",
+                "wxid_roster_rename_placeholder",
+                "新备注",
+                "私聊",
+            )
+            cfg = SimpleNamespace(
+                base_dir=root,
+                paths=SimpleNamespace(archived=root / "archived", raw=root / "raw"),
+            )
+
+            with redirect_stderr(io.StringIO()):
+                _warn_if_archive_session_names_split(cfg, report_opener=lambda path: None)
+
+            moved = (
+                archive_raw
+                / "私聊_新备注"
+                / "私聊_旧备注_20260516.json"
+            ).is_file()
+            old_removed = not (archive_raw / "私聊_旧备注").exists()
+
+        self.assertTrue(moved)
+        self.assertTrue(old_removed)
 
     def test_guard_rejection_is_reported_once_then_a_new_move_reports_again(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
