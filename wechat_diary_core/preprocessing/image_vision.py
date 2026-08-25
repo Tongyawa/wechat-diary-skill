@@ -15,6 +15,7 @@ import sys
 import threading
 
 from ..config import ImageVisionConfig
+from ..media_store import is_media_reference
 
 
 LOGGER = logging.getLogger(__name__)
@@ -457,7 +458,7 @@ def _context_body(message: Mapping[str, Any]) -> str:
 
 
 def _looks_like_image(value: str) -> bool:
-    return "media/images/" in value.replace("\\", "/")
+    return is_media_reference(value, "images")
 
 
 def _sender_key(message: Mapping[str, Any]) -> str:

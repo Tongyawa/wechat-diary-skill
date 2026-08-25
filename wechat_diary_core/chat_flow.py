@@ -5,6 +5,7 @@ from typing import Any
 import html
 import re
 
+from .media_store import is_media_reference
 
 Message = dict[str, Any]
 TIME_GAP_SECONDS = 5 * 60
@@ -177,7 +178,7 @@ def _target_is_image(target: Message) -> bool:
     if "图片" in str(target.get("type") or ""):
         return True
     content = str(target.get("content") or "")
-    return "media/images/" in content.replace("\\", "/") or "[OCR]" in content
+    return is_media_reference(content, "images") or "[OCR]" in content
 
 
 def _has_quote_context(message: Message) -> bool:

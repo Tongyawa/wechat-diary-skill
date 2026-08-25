@@ -488,11 +488,14 @@ driver = "uia"
             self.assertEqual(archive_calls, [])
             self.assertTrue(processed_file.exists())
 
-    def test_manual_backend_rejects_empty_raw_before_archiving_processed(self) -> None:
+    def test_manual_backend_rejects_media_only_raw_before_archiving_processed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             cfg = load_config(_write_config(root, target_users="", backend="manual"))
             cfg.paths.raw.mkdir(parents=True)
+            media = cfg.paths.raw / "_media" / "images" / "ab"
+            media.mkdir(parents=True)
+            (media / ("ab" + "1" * 30 + ".jpg")).write_bytes(b"orphan")
             processed_file = cfg.paths.processed / "live.md"
             processed_file.parent.mkdir(parents=True)
             processed_file.write_text("live", encoding="utf-8")
@@ -506,7 +509,7 @@ driver = "uia"
                 run_daily_export(cfg, deps=deps, day=date(2026, 5, 16))
 
             self.assertEqual(captured.exception.stage, "validate_raw_root")
-            self.assertIn("Raw root is empty:", str(captured.exception.cause))
+            self.assertIn("Raw root has no canonical JSON:", str(captured.exception.cause))
             self.assertIn("canonical raw", str(captured.exception.cause))
             self.assertEqual(archive_calls, [])
             self.assertTrue(processed_file.exists())

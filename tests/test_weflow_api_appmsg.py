@@ -223,10 +223,14 @@ class AppmsgMappingTests(unittest.TestCase):
         self.assertEqual(mapped["replyToMessageId"], "server-quote-placeholder")
 
     def test_base_media_placeholders_are_preserved(self):
-        for base, expected in [(42, "[名片]"), (43, "[视频]"), (48, "[位置]")]:
+        for base, expected, expected_type in [
+            (42, "[名片]", "其他消息"),
+            (43, "[视频]", "视频消息"),
+            (48, "[位置]", "其他消息"),
+        ]:
             with self.subTest(base=base):
                 mapped = _mapped(_message(base, "[其他消息]"))
-                self.assertEqual(mapped["type"], "其他消息")
+                self.assertEqual(mapped["type"], expected_type)
                 self.assertEqual(mapped["content"], expected)
 
     def test_unknown_appmsg_uses_aligned_title_or_placeholder(self):

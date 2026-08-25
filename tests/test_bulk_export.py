@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -342,6 +343,86 @@ class BulkExportTests(unittest.TestCase):
         )
         self.assertEqual(resumed.resumed_intervals, 1)
         self.assertEqual(resumed_tree, clean_tree)
+
+    def test_resume_state_tracks_cas_references_and_refetches_when_media_is_deleted(self) -> None:
+        export_day = date(2026, 8, 5)
+        session = {"username": "wxid_media_placeholder", "displayName": "媒体会话占位"}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "中文图片.jpg"
+            source.write_bytes(b"bulk-cas-image-placeholder")
+            message = _message_for(export_day, 1)
+            message.update(
+                {
+                    "localType": 3,
+                    "content": "[图片]",
+                    "mediaLocalPath": str(source),
+                    "mediaFileName": source.name,
+                    "mediaType": "image",
+                }
+            )
+            cfg = _config(root)
+            raw_root = root / "bulk-raw"
+            state_path = root / ".bulk-state.json"
+            first = WeflowApiBackend(cfg)
+            first._client = _BulkClient([session], {session["username"]: [message]})
+            first.export_chats_range(
+                export_day,
+                export_day,
+                raw_root=raw_root,
+                sessions=[session],
+                state_path=state_path,
+            )
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            recorded = state["sessions"][session["username"]]["completed"][0]["files"]
+            media_relative = next(value for value in recorded if value.startswith("_media/"))
+            media_path = raw_root / media_relative
+            session_dir = next(
+                path for path in raw_root.iterdir() if path.is_dir() and path.name != "_media"
+            )
+            media_path.unlink()
+
+            second_client = _BulkClient([session], {session["username"]: [message]})
+            second = WeflowApiBackend(cfg)
+            second._client = second_client
+            real_replace = os.replace
+            publish_attempts = 0
+
+            def replace_with_transient_lock(source_path, destination_path):
+                nonlocal publish_attempts
+                source_path = Path(source_path)
+                destination_path = Path(destination_path)
+                if (
+                    source_path.parent.name == ".bulk-raw.weflow-api-staging"
+                    and destination_path == session_dir
+                ):
+                    publish_attempts += 1
+                    if publish_attempts == 1:
+                        raise PermissionError("injected transient directory lock")
+                return real_replace(source_path, destination_path)
+
+            with (
+                patch(
+                    "wechat_diary_core.backends.weflow_api.mapper.os.replace",
+                    side_effect=replace_with_transient_lock,
+                ),
+                patch("wechat_diary_core.backends.weflow_api.mapper.time.sleep") as retry_sleep,
+            ):
+                result = second.export_chats_range(
+                    export_day,
+                    export_day,
+                    raw_root=raw_root,
+                    sessions=[session],
+                    state_path=state_path,
+                )
+
+            self.assertEqual(len(second_client.message_calls), 1)
+            self.assertEqual(result.completed_intervals, 1)
+            self.assertEqual(result.failures, {})
+            self.assertEqual(publish_attempts, 2)
+            retry_sleep.assert_called_once_with(0.01)
+            self.assertTrue(media_path.is_file())
+            self.assertIn(media_path, result.files_written)
 
     def test_extending_range_fetches_only_uncovered_tail(self) -> None:
         first = date(2026, 8, 1)

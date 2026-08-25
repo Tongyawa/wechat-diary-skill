@@ -16,7 +16,7 @@ BASE_TYPES: dict[int, MessageType] = {
     3: MessageType("图片消息", "[图片]"),
     34: MessageType("语音消息", "[语音消息 - 转文字失败: ASR未启用]"),
     42: MessageType("其他消息", "[名片]"),
-    43: MessageType("其他消息", "[视频]"),
+    43: MessageType("视频消息", "[视频]"),
     47: MessageType("动画表情", "[动画表情]"),
     48: MessageType("其他消息", "[位置]"),
     50: MessageType("其他消息", "[通话消息]"),

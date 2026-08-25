@@ -8,6 +8,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 from scripts.archive_exports import MAX_REPORTED_GUARD_FAILURES
+from scripts.archive_exports import _chat_lineage
 from scripts.archive_exports import main as archive_exports_main
 
 
@@ -106,6 +107,17 @@ def _run_silently(args: list[str]) -> tuple[int, str, str]:
 
 
 class ArchiveExportsScriptTests(unittest.TestCase):
+    def test_cas_and_legacy_http_api_are_same_lineage_but_unknown_scheme_is_not(self) -> None:
+        legacy_http = _chat_payload(lineage="http_api")
+        cas_http = _chat_payload(lineage="http_api")
+        cas_http["weflow"]["mediaScheme"] = "cas-v1"
+        unknown = _chat_payload(lineage="http_api")
+        unknown["weflow"]["mediaScheme"] = "future-v9"
+
+        self.assertEqual(_chat_lineage(legacy_http), "http_api")
+        self.assertEqual(_chat_lineage(cas_http), "http_api")
+        self.assertIsNone(_chat_lineage(unknown))
+
     def test_default_ingest_copies_raw_and_processed_and_keeps_sources(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

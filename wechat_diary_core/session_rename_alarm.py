@@ -21,6 +21,7 @@ from typing import Any
 
 from .archiving import strip_date_suffix
 from .backends.weflow.naming import sanitize_session_name
+from .media_store import MEDIA_STORE_NAME
 
 
 STATE_VERSION = 1
@@ -376,7 +377,9 @@ def _archive_session_directories(root: Path) -> dict[str, set[str]]:
     if not root.is_dir():
         return {}
     directories_by_wxid: dict[str, set[str]] = {}
-    for session_dir in sorted(path for path in root.iterdir() if path.is_dir()):
+    for session_dir in sorted(
+        path for path in root.iterdir() if path.is_dir() and path.name != MEDIA_STORE_NAME
+    ):
         for json_path in sorted(session_dir.glob("*.json")):
             wxid = _read_session_wxid(json_path)
             if wxid:
@@ -389,7 +392,11 @@ def _current_session_targets(raw_root: Path) -> tuple[dict[str, str], dict[str, 
     issues: dict[str, str] = {}
     if not raw_root.is_dir():
         return {}, issues
-    for session_dir in sorted(path for path in raw_root.iterdir() if path.is_dir()):
+    for session_dir in sorted(
+        path
+        for path in raw_root.iterdir()
+        if path.is_dir() and path.name != MEDIA_STORE_NAME
+    ):
         for json_path in sorted(session_dir.glob("*.json")):
             payload = _read_session_payload(json_path)
             if payload is None:

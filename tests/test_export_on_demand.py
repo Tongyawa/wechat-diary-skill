@@ -541,9 +541,12 @@ class ExportOnDemandTests(unittest.TestCase):
                 }
             )
             cfg = _config(root)
-            targets = {True: root / "with-copy", False: root / "without-copy"}
+            targets = {
+                True: root / "with-copy" / "会话",
+                False: root / "without-copy" / "会话",
+            }
             for target in targets.values():
-                target.mkdir()
+                target.mkdir(parents=True)
 
             for copy_media, target in targets.items():
                 module.export_on_demand(
@@ -558,8 +561,11 @@ class ExportOnDemandTests(unittest.TestCase):
                     copy_media=copy_media,
                 )
 
-            self.assertTrue((targets[True] / "media" / "images" / "fixture-image.jpg").is_file())
-            self.assertFalse((targets[False] / "media").exists())
+            copied_text = (targets[True] / "2026-08-05.md").read_text(encoding="utf-8")
+            copied_ref = re.search(r"\[图片：([^｜\]]+)", copied_text).group(1)
+            self.assertTrue((targets[True] / copied_ref).is_file())
+            self.assertRegex(copied_ref, r"^\.\./_media/images/[0-9a-f]{2}/[0-9a-f]{32}\.jpg$")
+            self.assertFalse((targets[False].parent / "_media").exists())
 
     def test_merge_start_scans_only_top_level_daily_markdown(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -792,10 +798,12 @@ class ExportOnDemandTests(unittest.TestCase):
                 copy_media=False,
             )
 
-            media = with_copy.output_session_dir / "media" / "images" / "fixture-image.jpg"
-            self.assertTrue(media.is_file())
-            self.assertIn("[图片：media/images/fixture-image.jpg]", with_copy.diary_files[0].read_text(encoding="utf-8"))
-            self.assertFalse((without_copy.output_session_dir / "media").exists())
+            copied_text = with_copy.diary_files[0].read_text(encoding="utf-8")
+            copied_ref = re.search(r"\[图片：([^｜\]]+)", copied_text).group(1)
+            self.assertRegex(copied_ref, r"^\.\./_media/images/[0-9a-f]{2}/[0-9a-f]{32}\.jpg$")
+            self.assertTrue((with_copy.diary_files[0].parent / copied_ref).is_file())
+            self.assertTrue((with_copy.raw_session_dir / copied_ref).is_file())
+            self.assertFalse((without_copy.output_session_dir.parent / "_media").exists())
 
     def test_real_shape_fixture_runs_through_raw_and_processed_outputs(self) -> None:
         session = _fixture("sessions.json")["sessions"][0]

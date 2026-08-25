@@ -17,6 +17,7 @@ from typing import Any, Callable, ClassVar, Mapping, Sequence
 from ...archiving import strip_date_suffix
 from ...asr import SenseVoiceTranscriber
 from ...config import Config
+from ...media_store import MEDIA_STORE_NAME
 from .bulk_state import BulkExportState, DateInterval
 from .client import WeflowApiClient, WeflowApiError
 from .failure_state import SessionFailureState
@@ -258,17 +259,18 @@ class WeflowApiBackend:
                             image_media_stats=image_media_stats,
                         )
                         interval_files.extend(path for path in published.rglob("*") if path.is_file())
+                        interval_files.extend(_referenced_cas_files(published, destination_root))
                         interval_message_count += len(day_messages)
 
                     state.record_completed(
                         talker,
                         display_name,
                         interval,
-                        interval_files,
+                        _unique_paths(interval_files),
                     )
                     completed_intervals += 1
                     messages_written += interval_message_count
-                    files_written.extend(interval_files)
+                    files_written.extend(_unique_paths(interval_files))
                     if image_media_stats.missing_image_paths or image_media_stats.missing_image_files:
                         marker = (
                             f"export_chat_image_media:{talker}:"
@@ -281,6 +283,21 @@ class WeflowApiBackend:
                             "有图片降级为 [图片]："
                             f"缺少本地路径 {image_media_stats.missing_image_paths} 条；"
                             f"路径指向的文件不存在 {image_media_stats.missing_image_files} 条。"
+                            "已继续导出。",
+                            file=sys.stderr,
+                        )
+                    if image_media_stats.missing_video_md5 or image_media_stats.missing_video_files:
+                        marker = (
+                            f"export_chat_video_media:{talker}:"
+                            f"missing_md5={image_media_stats.missing_video_md5}:"
+                            f"missing_file={image_media_stats.missing_video_files}"
+                        )
+                        self.partial_failures.append(marker)
+                        print(
+                            f"[WARN] 会话「{_readable_error_summary(display_name, limit=60)}」"
+                            "有视频降级为 [视频]："
+                            f"缺少 videoMd5 {image_media_stats.missing_video_md5} 条；"
+                            f"有 md5 但本地文件不存在 {image_media_stats.missing_video_files} 条。"
                             "已继续导出。",
                             file=sys.stderr,
                         )
@@ -380,6 +397,20 @@ class WeflowApiBackend:
                         f"[WARN] 会话「{readable_name}」有图片降级为 [图片]："
                         f"缺少本地路径 {image_media_stats.missing_image_paths} 条；"
                         f"路径指向的文件不存在 {image_media_stats.missing_image_files} 条。已继续导出。",
+                        file=sys.stderr,
+                    )
+                if image_media_stats.missing_video_md5 or image_media_stats.missing_video_files:
+                    marker = (
+                        f"export_chat_video_media:{talker}:"
+                        f"missing_md5={image_media_stats.missing_video_md5}:"
+                        f"missing_file={image_media_stats.missing_video_files}"
+                    )
+                    self.partial_failures.append(marker)
+                    readable_name = _readable_error_summary(display_name, limit=60)
+                    print(
+                        f"[WARN] 会话「{readable_name}」有视频降级为 [视频]："
+                        f"缺少 videoMd5 {image_media_stats.missing_video_md5} 条；"
+                        f"有 md5 但本地文件不存在 {image_media_stats.missing_video_files} 条。已继续导出。",
                         file=sys.stderr,
                     )
                 published_sessions += 1
@@ -500,6 +531,12 @@ class WeflowApiBackend:
                 print(
                     f"[WARN] 朋友圈有 {result.missing_media_posts} 条动态的媒体未解密，"
                     "已保留 URL 并继续导出。",
+                    file=sys.stderr,
+                )
+            if result.extension_conflicts:
+                print(
+                    f"[WARN] 朋友圈媒体有 {result.extension_conflicts} 个同 md5 不同扩展名，"
+                    "已复用 store 中既有文件。",
                     file=sys.stderr,
                 )
         finally:
@@ -751,7 +788,11 @@ def _stored_session_directory_collisions(
     if not raw_root.is_dir():
         return {}
     candidates: dict[str, dict[str, str]] = {}
-    for session_dir in sorted(path for path in raw_root.iterdir() if path.is_dir()):
+    for session_dir in sorted(
+        path
+        for path in raw_root.iterdir()
+        if path.is_dir() and path.name != MEDIA_STORE_NAME
+    ):
         directory = directory_key(session_dir.name)
         identities = candidates.setdefault(directory, {})
         for json_path in sorted(session_dir.glob("*.json")):
@@ -885,6 +926,34 @@ def _split_messages_by_day(
             )
         grouped.setdefault(message_day, []).append(message)
     return grouped
+
+
+def _referenced_cas_files(session_dir: Path, raw_root: Path) -> list[Path]:
+    """Resolve every non-empty chat media reference for state/output tracking."""
+
+    resolved_root = raw_root.resolve()
+    files: list[Path] = []
+    for json_path in sorted(session_dir.glob("*.json")):
+        payload = json.loads(json_path.read_text(encoding="utf-8"))
+        for message in payload.get("messages") or []:
+            if not isinstance(message, Mapping):
+                continue
+            reference = str(message.get("source") or "").strip()
+            if not reference:
+                continue
+            candidate = (json_path.parent / Path(reference)).resolve()
+            try:
+                candidate.relative_to(resolved_root)
+            except ValueError as exc:
+                raise ValueError(f"canonical 媒体引用越出导出根：{reference}") from exc
+            if not candidate.is_file():
+                raise FileNotFoundError(f"canonical 媒体引用不存在：{reference}")
+            files.append(candidate)
+    return _unique_paths(files)
+
+
+def _unique_paths(paths: Sequence[Path]) -> list[Path]:
+    return list(dict.fromkeys(Path(path) for path in paths))
 
 
 def _validate_bulk_destination_names(

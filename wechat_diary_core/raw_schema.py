@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from typing import Any
+
+from .media_store import MEDIA_SCHEME_KEY, MEDIA_SCHEME_VALUE
 
 
 SCHEMA_VERSION = 1
@@ -35,8 +38,18 @@ _CHAT_CONTENT_GROUP_LABELS = {
     "reply": "引用消息正文",
     "image": "图片消息",
     "voice": "语音消息",
+    "video": "视频消息",
     "other": "其他内容型消息",
 }
+
+_CAS_CHAT_REFERENCE_RE = re.compile(
+    r"^\.\./_media/(?P<class>images|voices|emojis|videos)/"
+    r"(?P<shard>[0-9a-f]{2})/(?P<md5>[0-9a-f]{32})\.(?P<ext>[a-z0-9]{1,16})$"
+)
+_CAS_ROOT_REFERENCE_RE = re.compile(
+    r"^_media/(?P<class>images|voices|emojis|videos)/"
+    r"(?P<shard>[0-9a-f]{2})/(?P<md5>[0-9a-f]{32})\.(?P<ext>[a-z0-9]{1,16})$"
+)
 
 _MOMENTS_FILTER_REQUIRED: dict[str, tuple[type, ...]] = {
     "usernames": (list,),
@@ -62,6 +75,7 @@ def validate_session_json(data: Any) -> None:
 
     session = data.get("session")
     messages = data.get("messages")
+    media_scheme = _validate_media_scheme(data.get("weflow"), issues)
     if not isinstance(session, dict):
         issues.append("session (object)")
     else:
@@ -81,6 +95,8 @@ def validate_session_json(data: Any) -> None:
                 continue
             _require_fields(message, path, _CHAT_MESSAGE_REQUIRED, issues)
             _validate_optional_reply_context(message.get("replyContext"), path, issues)
+            if media_scheme == MEDIA_SCHEME_VALUE:
+                _validate_cas_message_reference(message, path, issues)
             content_group = _chat_content_group(message)
             if content_group is not None:
                 counts = content_contract_counts[content_group]
@@ -163,6 +179,8 @@ def _chat_content_group(message: Mapping[str, Any]) -> str | None:
         return "image"
     if message_type == "语音消息":
         return "voice"
+    if message_type == "视频消息":
+        return "video"
     if message_type == "动画表情":
         # The renderer deterministically degrades this type to ``[表情]`` even
         # when the upstream export carries no textual body or local file.
@@ -185,7 +203,58 @@ def _message_has_renderable_payload(message: Mapping[str, Any], group: str) -> b
         )
     if group == "voice":
         return bool(content or source or message.get("transcribe_failed"))
+    if group == "video":
+        return bool(source or content == "[视频]")
     return bool(content)
+
+
+def _validate_media_scheme(value: Any, issues: list[str]) -> str:
+    if not isinstance(value, dict) or MEDIA_SCHEME_KEY not in value:
+        return ""
+    scheme = value.get(MEDIA_SCHEME_KEY)
+    if not isinstance(scheme, str):
+        issues.append(f"weflow.{MEDIA_SCHEME_KEY} (string)")
+        return ""
+    if scheme != MEDIA_SCHEME_VALUE:
+        issues.append(
+            f"weflow.{MEDIA_SCHEME_KEY}={scheme!r} 不受支持；当前契约为 {MEDIA_SCHEME_VALUE!r}"
+        )
+        return ""
+    return scheme
+
+
+def _validate_cas_message_reference(
+    message: Mapping[str, Any],
+    path: str,
+    issues: list[str],
+) -> None:
+    message_type = str(message.get("type") or "")
+    expected_class = {
+        "图片消息": "images",
+        "语音消息": "voices",
+        "动画表情": "emojis",
+        "视频消息": "videos",
+    }.get(message_type)
+    if expected_class is None:
+        return
+    source = str(message.get("source") or "")
+    if not source:
+        if message_type == "视频消息" and str(message.get("content") or "") != "[视频]":
+            issues.append(f"{path} cas-v1 视频缺少 source 时 content 必须为 [视频]")
+        return
+    match = _CAS_CHAT_REFERENCE_RE.fullmatch(source)
+    if match is None:
+        issues.append(f"{path}.source 不是合法 cas-v1 相对引用：{source!r}")
+        return
+    if match.group("class") != expected_class:
+        issues.append(
+            f"{path}.source class={match.group('class')} 与消息类型 {message_type} 不一致"
+        )
+    if match.group("shard") != match.group("md5")[:2]:
+        issues.append(f"{path}.source 的 md5 分片与文件名不一致")
+    if message_type in {"图片消息", "动画表情", "视频消息"}:
+        if str(message.get("content") or "") != source:
+            issues.append(f"{path}.content 必须与 cas-v1 source 使用同一媒体引用")
 
 
 def _validate_moments_media(value: Any, parent_path: str, issues: list[str]) -> None:
@@ -198,6 +267,38 @@ def _validate_moments_media(value: Any, parent_path: str, issues: list[str]) -> 
             continue
         if "localPath" in media:
             _require_type(media["localPath"], f"{path}.localPath", (str,), issues)
+            _validate_root_cas_reference(media["localPath"], f"{path}.localPath", issues)
+        live_photo = media.get("livePhoto")
+        if live_photo is not None:
+            if not isinstance(live_photo, dict):
+                issues.append(f"{path}.livePhoto (object)")
+            elif "localPath" in live_photo:
+                _require_type(live_photo["localPath"], f"{path}.livePhoto.localPath", (str,), issues)
+                _validate_root_cas_reference(
+                    live_photo["localPath"],
+                    f"{path}.livePhoto.localPath",
+                    issues,
+                    expected_class="videos",
+                )
+
+
+def _validate_root_cas_reference(
+    value: Any,
+    path: str,
+    issues: list[str],
+    *,
+    expected_class: str | None = None,
+) -> None:
+    if not isinstance(value, str) or not value.startswith("_media/"):
+        return
+    match = _CAS_ROOT_REFERENCE_RE.fullmatch(value)
+    if match is None:
+        issues.append(f"{path} 不是合法 cas-v1 根级相对引用：{value!r}")
+        return
+    if match.group("shard") != match.group("md5")[:2]:
+        issues.append(f"{path} 的 md5 分片与文件名不一致")
+    if expected_class is not None and match.group("class") != expected_class:
+        issues.append(f"{path} 必须引用 {expected_class} class")
 
 
 def _validate_moments_comments(value: Any, parent_path: str, issues: list[str]) -> None:

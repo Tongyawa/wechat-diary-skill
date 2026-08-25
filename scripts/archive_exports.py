@@ -16,6 +16,7 @@ if str(ROOT) not in sys.path:
 
 from wechat_diary_core.archiving import strip_date_suffix
 from wechat_diary_core.config import load_config
+from wechat_diary_core.media_store import MEDIA_SCHEME_KEY, MEDIA_SCHEME_VALUE, MEDIA_STORE_NAME
 from wechat_diary_core.raw_schema import RawSchemaError, validate_moments_json, validate_session_json
 from wechat_diary_core.workspace import merge_raw_exports_into_archive, merge_tree
 from wechat_diary_core.workspace_discovery import WorkspaceResolutionError, resolve_config_path
@@ -164,7 +165,11 @@ def _raw_ingest_pairs(
     pairs: list[tuple[Path, Path]] = []
     for entry in sorted(source.iterdir()):
         if entry.is_dir():
-            destination_root = archive_raw_root / strip_date_suffix(entry.name)
+            destination_root = archive_raw_root / (
+                MEDIA_STORE_NAME
+                if entry.name == MEDIA_STORE_NAME
+                else strip_date_suffix(entry.name)
+            )
             for path in sorted(entry.rglob("*")):
                 if path.is_file() and path.resolve() not in invalid_paths:
                     pairs.append((path, destination_root / path.relative_to(entry)))
@@ -316,7 +321,10 @@ def _chat_lineage(data: dict) -> str | None:
         return None
     source = str(metadata.get("source") or "").strip().casefold()
     if source == "http_api":
-        return "http_api"
+        media_scheme = str(metadata.get(MEDIA_SCHEME_KEY) or "").strip()
+        if not media_scheme or media_scheme == MEDIA_SCHEME_VALUE:
+            return "http_api"
+        return None
     generator = str(metadata.get("generator") or "").strip().casefold()
     if generator == "weflow":
         return "legacy_gui"
@@ -457,7 +465,12 @@ def _copy_raw_exports_except(source: Path, archive_raw_root: Path, invalid_paths
     count = 0
     for entry in sorted(source.iterdir()):
         if entry.is_dir():
-            count += _copy_tree_except(entry, archive_raw_root / strip_date_suffix(entry.name), invalid_paths)
+            destination_name = (
+                MEDIA_STORE_NAME
+                if entry.name == MEDIA_STORE_NAME
+                else strip_date_suffix(entry.name)
+            )
+            count += _copy_tree_except(entry, archive_raw_root / destination_name, invalid_paths)
             continue
         if entry.resolve() in invalid_paths:
             continue

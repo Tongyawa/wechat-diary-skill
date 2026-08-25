@@ -17,7 +17,13 @@
       "media": [
         {
           "url": "https://example.invalid/media/post-placeholder-1.jpg",
-          "thumb": "https://example.invalid/media/post-placeholder-1-thumb.jpg"
+          "thumb": "https://example.invalid/media/post-placeholder-1-thumb.jpg",
+          "localPath": "media/post-placeholder-1_0.jpg",
+          "livePhoto": {
+            "url": "https://example.invalid/media/post-placeholder-1-live.mp4",
+            "thumb": "https://example.invalid/media/post-placeholder-1-live-thumb.jpg",
+            "localPath": "media/post-placeholder-1_0_live.mp4"
+          }
         }
       ],
       "likes": [],

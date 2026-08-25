@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
+import os
 import tempfile
 import unittest
 from datetime import date, datetime
 from pathlib import Path
+from unittest.mock import patch
 
 from wechat_diary_core.backends.weflow_api.mapper import (
     ImageMediaStats,
@@ -222,10 +225,8 @@ class WeflowApiMapperTests(unittest.TestCase):
             message["content"] for message in payload["messages"] if message["type"] == "语音消息"
         ]
         self.assertEqual(len(voice_contents), 21)
-        self.assertEqual(
-            voice_contents,
-            [f"[语音转文字] 完整转写 voice-{index:02d}" for index in range(21)],
-        )
+        self.assertEqual(len(set(voice_contents)), 1)
+        self.assertRegex(voice_contents[0], r"^\[语音转文字\] 完整转写 [0-9a-f]{32}$")
 
     def test_range_export_uses_type_prefix_and_range_suffix_and_validates(self) -> None:
         session = _fixture("sessions.json")["sessions"][0]
@@ -246,6 +247,71 @@ class WeflowApiMapperTests(unittest.TestCase):
 
         self.assertEqual(destination.name, "私聊_示例联系人_20260701-20260805")
         validate_session_json(payload)
+
+    def test_video_cas_success_and_two_degradation_reasons_are_enumerable(self) -> None:
+        session = _fixture("sessions.json")["sessions"][0]
+        template = copy.deepcopy(_fixture("messages.json")["messages"][0])
+        token = "0123456789abcdef0123456789abcdef"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            video = root / "中文 视频.MP4"
+            video.write_bytes(b"real-shape-video-placeholder")
+            available = {
+                **template,
+                "localId": 5101,
+                "serverId": "video-available",
+                "localType": 43,
+                "createTime": 1785921801,
+                "content": f'<msg><videomsg md5="{token}" /></msg>',
+                "mediaLocalPath": str(video),
+                "mediaFileName": video.name,
+                "mediaType": "video",
+            }
+            missing_md5 = {
+                **template,
+                "localId": 5102,
+                "serverId": "video-no-md5",
+                "localType": 43,
+                "createTime": 1785921802,
+                "content": "[视频]",
+                "mediaLocalPath": "",
+            }
+            missing_file = {
+                **template,
+                "localId": 5103,
+                "serverId": "video-missing-file",
+                "localType": 43,
+                "createTime": 1785921803,
+                "content": f'<msg><videomsg rawmd5="{token}" /></msg>',
+                "mediaLocalPath": "",
+            }
+            stats = ImageMediaStats()
+            destination = write_session_export(
+                root / "raw",
+                session,
+                [missing_file, available, missing_md5],
+                start=date(2026, 8, 5),
+                end=date(2026, 8, 5),
+                contacts=_fixture("contacts.json")["contacts"],
+                image_media_stats=stats,
+            )
+            json_path = destination / f"{destination.name}.json"
+            raw_bytes = json_path.read_bytes()
+            payload = json.loads(raw_bytes)
+
+            self.assertFalse(raw_bytes.endswith(b"\n"))
+            self.assertEqual(payload["weflow"]["mediaScheme"], "cas-v1")
+            self.assertEqual(stats.missing_video_md5, 1)
+            self.assertEqual(stats.missing_video_files, 1)
+            videos = [message for message in payload["messages"] if message["type"] == "视频消息"]
+            self.assertEqual(len(videos), 3)
+            self.assertEqual(sum(bool(message["source"]) for message in videos), 1)
+            self.assertEqual(sum(message["content"] == "[视频]" for message in videos), 2)
+            reference = next(message["source"] for message in videos if message["source"])
+            digest = hashlib.md5(video.read_bytes()).hexdigest()
+            self.assertEqual(reference, f"../_media/videos/{digest[:2]}/{digest}.mp4")
+            self.assertTrue((json_path.parent / reference).is_file())
+            validate_session_json(payload)
 
     def test_session_failure_never_publishes_partial_live_directory(self) -> None:
         session = _fixture("sessions.json")["sessions"][0]
@@ -275,6 +341,54 @@ class WeflowApiMapperTests(unittest.TestCase):
             self.assertTrue(expected.exists())
             preserved = json.loads((expected / f"{expected.name}.json").read_text(encoding="utf-8"))
             self.assertEqual(preserved["messages"][0]["type"], "文本消息")
+
+    def test_session_publish_surfaces_persistent_lock_and_restores_previous_snapshot(self) -> None:
+        session = _fixture("sessions.json")["sessions"][0]
+        export_day = date(2026, 8, 5)
+        with tempfile.TemporaryDirectory() as tmp:
+            raw = Path(tmp) / "raw"
+            expected = raw / session_directory_name(session, export_day, export_day)
+            write_session_export(
+                raw,
+                session,
+                _fixture("messages.json")["messages"],
+                start=export_day,
+                end=export_day,
+                contacts=_fixture("contacts.json")["contacts"],
+            )
+            preserved_bytes = (expected / f"{expected.name}.json").read_bytes()
+            real_replace = os.replace
+            publish_attempts = 0
+
+            def replace_with_persistent_lock(source_path, destination_path):
+                nonlocal publish_attempts
+                source_path = Path(source_path)
+                destination_path = Path(destination_path)
+                if source_path.name.startswith(f"{expected.name}-") and destination_path == expected:
+                    publish_attempts += 1
+                    raise PermissionError("injected persistent directory lock")
+                return real_replace(source_path, destination_path)
+
+            with (
+                patch(
+                    "wechat_diary_core.backends.weflow_api.mapper.os.replace",
+                    side_effect=replace_with_persistent_lock,
+                ),
+                patch("wechat_diary_core.backends.weflow_api.mapper.time.sleep") as retry_sleep,
+                self.assertRaisesRegex(PermissionError, "persistent directory lock"),
+            ):
+                write_session_export(
+                    raw,
+                    session,
+                    _fixture("messages.json")["messages"],
+                    start=export_day,
+                    end=export_day,
+                    contacts=_fixture("contacts.json")["contacts"],
+                )
+
+            self.assertEqual(publish_attempts, 7)
+            self.assertEqual(retry_sleep.call_count, 6)
+            self.assertEqual((expected / f"{expected.name}.json").read_bytes(), preserved_bytes)
 
     def test_moments_real_shape_filters_locally_and_passes_validator(self) -> None:
         post = _fixture("timeline.json")["timeline"][0]
@@ -325,14 +439,18 @@ class WeflowApiMapperTests(unittest.TestCase):
             self.assertEqual(result.path.name, moments_filename(["wxid_contact_placeholder"], export_day))
             self.assertFalse(source.exists())
             self.assertEqual(len(payload["posts"]), 2)
-            self.assertEqual(payload["posts"][0]["media"][0]["localPath"], "media/post-placeholder-1_0.jpg")
-            self.assertTrue((raw / payload["posts"][0]["media"][0]["localPath"]).is_file())
-            self.assertTrue((raw / "media" / "post-placeholder-1_0_live.mp4").is_file())
+            primary_ref = payload["posts"][0]["media"][0]["localPath"]
+            live_ref = payload["posts"][0]["media"][0]["livePhoto"]["localPath"]
+            self.assertRegex(primary_ref, r"^_media/images/[0-9a-f]{2}/[0-9a-f]{32}\.jpg$")
+            self.assertRegex(live_ref, r"^_media/videos/[0-9a-f]{2}/[0-9a-f]{32}\.mp4$")
+            self.assertTrue((raw / primary_ref).is_file())
+            self.assertTrue((raw / live_ref).is_file())
             self.assertNotIn("localPath", payload["posts"][1]["media"][0])
             self.assertIn("url", payload["posts"][1]["media"][0])
             self.assertEqual(result.missing_media_posts, 1)
             self.assertEqual(result.published_media, 2)
-            self.assertFalse((raw / "media" / "foreign_0.jpg").exists())
+            foreign_digest = hashlib.md5(b"must-not-publish").hexdigest()
+            self.assertFalse(any((raw / "_media").rglob(f"{foreign_digest}.*")))
             self.assertEqual(list(raw.glob("朋友圈导出_*T*.json")), [])
 
 

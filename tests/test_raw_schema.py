@@ -235,8 +235,78 @@ class RawSchemaTests(unittest.TestCase):
         with self.assertRaisesRegex(RawSchemaError, r"语音消息共 1 条.*content/source"):
             validate_session_json(payload)
 
+    def test_cas_video_marker_distinguishes_new_degradation_and_validates_reference(self) -> None:
+        payload = _session_payload()
+        payload["weflow"] = {"source": "http_api", "mediaScheme": "cas-v1"}
+        digest = "ab" + "1" * 30
+        reference = f"../_media/videos/ab/{digest}.mp4"
+        available = copy.deepcopy(payload["messages"][0])
+        available.update(
+            {
+                "type": "视频消息",
+                "content": reference,
+                "source": reference,
+            }
+        )
+        degraded = copy.deepcopy(available)
+        degraded.update(
+            {
+                "localId": 2,
+                "createTime": 1778839201,
+                "content": "[视频]",
+                "source": "",
+            }
+        )
+        payload["messages"] = [available, degraded]
+
+        validate_session_json(payload)
+        self.assertEqual(
+            sum(
+                message["type"] == "视频消息" and message["source"] == ""
+                for message in payload["messages"]
+            ),
+            1,
+        )
+
+    def test_cas_reference_shape_check_has_a_positive_failure_control(self) -> None:
+        payload = _session_payload()
+        payload["weflow"] = {"source": "http_api", "mediaScheme": "cas-v1"}
+        message = payload["messages"][0]
+        message.update(
+            {
+                "type": "视频消息",
+                "content": "../_media/videos/ff/ab" + "1" * 30 + ".mp4",
+                "source": "../_media/videos/ff/ab" + "1" * 30 + ".mp4",
+            }
+        )
+
+        with self.assertRaisesRegex(RawSchemaError, r"md5 分片与文件名不一致"):
+            validate_session_json(payload)
+
+    def test_unknown_http_media_scheme_is_not_silently_accepted(self) -> None:
+        payload = _session_payload()
+        payload["weflow"] = {"source": "http_api", "mediaScheme": "future-v9"}
+
+        with self.assertRaisesRegex(RawSchemaError, r"mediaScheme=.*不受支持"):
+            validate_session_json(payload)
+
     def test_complete_moments_payload_passes(self) -> None:
         validate_moments_json(_moments_payload())
+
+    def test_moments_live_photo_cas_reference_requires_videos_class(self) -> None:
+        payload = _moments_payload()
+        digest = "ab" + "2" * 30
+        payload["posts"][0]["media"] = [
+            {
+                "localPath": f"_media/images/{digest[:2]}/{digest}.jpg",
+                "livePhoto": {
+                    "localPath": f"_media/images/{digest[:2]}/{digest}.mp4"
+                },
+            }
+        ]
+
+        with self.assertRaisesRegex(RawSchemaError, r"livePhoto.localPath 必须引用 videos"):
+            validate_moments_json(payload)
 
     def test_moments_missing_required_field_reports_field_name(self) -> None:
         payload = copy.deepcopy(_moments_payload())

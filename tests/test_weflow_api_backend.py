@@ -9,7 +9,10 @@ from datetime import date
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from wechat_diary_core.backends.weflow_api.backend import WeflowApiBackend
+from wechat_diary_core.backends.weflow_api.backend import (
+    WeflowApiBackend,
+    _stored_session_directory_collisions,
+)
 from wechat_diary_core.backends.weflow_api.client import WeflowApiError
 from wechat_diary_core.backends.weflow_api.failure_state import SessionFailureState
 from wechat_diary_core.backends.weflow_api.mapper import ImageMediaStats
@@ -191,6 +194,26 @@ def _seed_failure_state(root: Path, wxid: str, *, ignored: bool = False) -> Path
 
 
 class WeflowApiBackendTests(unittest.TestCase):
+    def test_media_store_is_not_a_stored_session_collision_candidate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            raw = Path(tmp)
+            media = raw / "_media"
+            media.mkdir()
+            for index in (1, 2):
+                payload = {
+                    "session": {
+                        "wxid": f"wxid_not_a_session_{index}",
+                        "displayName": f"假会话{index}",
+                    },
+                    "messages": [],
+                }
+                (media / f"trap-{index}.json").write_text(
+                    json.dumps(payload, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+
+            self.assertEqual(_stored_session_directory_collisions(raw), {})
+
     def test_client_factory_receives_control_and_message_timeouts(self) -> None:
         captured = {}
 
@@ -935,8 +958,67 @@ class WeflowApiBackendTests(unittest.TestCase):
         self.assertFalse(client.requested_media)
         self.assertEqual(image_media_stats.missing_image_paths, 0)
         self.assertEqual(image_media_stats.missing_image_files, 0)
+        self.assertEqual(image_media_stats.missing_video_md5, 0)
+        self.assertEqual(image_media_stats.missing_video_files, 0)
         self.assertEqual(backend.partial_failures, [])
         self.assertNotIn("[WARN]", errors.getvalue())
+
+    def test_missing_video_reasons_are_visible_and_do_not_abort_session(self) -> None:
+        class MissingVideoClient(_Client):
+            def fetch_sessions(self, *, limit):
+                return [{"username": "wxid_video_placeholder", "displayName": "视频会话占位"}]
+
+            def fetch_contacts(self, *, limit):
+                return [{"username": "wxid_video_placeholder", "displayName": "视频会话占位"}]
+
+            def fetch_messages(self, talker, **kwargs):
+                base = {
+                    "localType": 43,
+                    "isSend": 0,
+                    "senderUsername": talker,
+                    "rawContent": "",
+                    "parsedContent": "",
+                    "replyToMessageId": "",
+                    "quote": None,
+                    "mediaLocalPath": "",
+                }
+                return [
+                    {
+                        **base,
+                        "localId": 1,
+                        "serverId": "video-no-md5",
+                        "createTime": 1785921697,
+                        "content": "[视频]",
+                    },
+                    {
+                        **base,
+                        "localId": 2,
+                        "serverId": "video-missing-file",
+                        "createTime": 1785921698,
+                        "content": '<msg><videomsg md5="0123456789abcdef0123456789abcdef" /></msg>',
+                    },
+                ]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = _config(root)
+            backend = WeflowApiBackend(cfg)
+            backend._client = MissingVideoClient()
+            errors = io.StringIO()
+            with redirect_stderr(errors):
+                backend.export_chats(date(2026, 8, 5))
+            export = next(cfg.paths.raw.glob("私聊_视频会话占位_20260805/*.json"))
+            payload = json.loads(export.read_text(encoding="utf-8"))
+
+        self.assertEqual(
+            backend.partial_failures,
+            ["export_chat_video_media:wxid_video_placeholder:missing_md5=1:missing_file=1"],
+        )
+        self.assertIn("缺少 videoMd5 1 条", errors.getvalue())
+        self.assertIn("有 md5 但本地文件不存在 1 条", errors.getvalue())
+        self.assertTrue(all(message["type"] == "视频消息" for message in payload["messages"]))
+        self.assertTrue(all(message["content"] == "[视频]" for message in payload["messages"]))
+        validate_session_json(payload)
 
     def test_moments_media_failure_is_partial_and_canonical_json_still_publishes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

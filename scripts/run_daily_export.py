@@ -26,6 +26,7 @@ from wechat_diary_core.backends.weflow.driver import DriverCommandError, DriverU
 from wechat_diary_core.backends.weflow.launcher import stop_weflow_processes
 from wechat_diary_core.backup_state import evaluate_backup_state
 from wechat_diary_core.config import Config, load_config
+from wechat_diary_core.media_store import MEDIA_STORE_NAME
 from wechat_diary_core.preprocessing import archive_moments_for
 from wechat_diary_core.preprocessing import collect_voice_transcription_failures
 from wechat_diary_core.session_rename_alarm import (
@@ -751,9 +752,15 @@ def _validate_manual_raw_root(raw_root: Path) -> None:
         raise NotADirectoryError(
             f"Raw root is not a directory: {raw_root}。请将 canonical raw 放进该路径后重试。"
         )
-    if not any(raw_root.iterdir()):
+    has_root_json = any(path.is_file() for path in raw_root.glob("*.json"))
+    has_chat_json = any(
+        any(path.is_file() for path in child.glob("*.json"))
+        for child in raw_root.iterdir()
+        if child.is_dir() and child.name != MEDIA_STORE_NAME
+    )
+    if not (has_root_json or has_chat_json):
         raise FileNotFoundError(
-            f"Raw root is empty: {raw_root}。请将 canonical raw 放进该路径后重试。"
+            f"Raw root has no canonical JSON: {raw_root}。请将 canonical raw 放进该路径后重试。"
         )
 
 

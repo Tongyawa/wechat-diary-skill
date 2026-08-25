@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import tempfile
+import time
 import uuid
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -15,6 +16,14 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
+from ...media_store import (
+    MEDIA_SCHEME_KEY,
+    MEDIA_SCHEME_VALUE,
+    MEDIA_STORE_NAME,
+    chat_media_reference,
+    root_media_reference,
+    store_media_file,
+)
 from ...raw_schema import validate_moments_json, validate_session_json
 from ..weflow.naming import sanitize_session_name
 from .appmsg import AppmsgMeta, parse_appmsg
@@ -25,6 +34,15 @@ from .type_map import resolve_message_type, unpack_local_type
 class ImageMediaStats:
     missing_image_paths: int = 0
     missing_image_files: int = 0
+    missing_video_md5: int = 0
+    missing_video_files: int = 0
+    extension_conflicts: int = 0
+
+
+@dataclass(frozen=True)
+class _LocalizedMedia:
+    reference: str
+    path: Path
 
 
 def session_date_suffix(start: date, end: date) -> str:
@@ -111,7 +129,11 @@ def map_session_json(
             "messageCount": len(mapped_messages),
         },
         "messages": mapped_messages,
-        "weflow": {"source": "http_api", "format": "json"},
+        "weflow": {
+            "source": "http_api",
+            "format": "json",
+            MEDIA_SCHEME_KEY: MEDIA_SCHEME_VALUE,
+        },
     }
     validate_session_json(data)
     return data
@@ -150,7 +172,7 @@ def write_session_export(
     staging_dir = Path(tempfile.mkdtemp(prefix=f"{directory_name}-", dir=staging_parent))
     active_image_media_stats = image_media_stats or ImageMediaStats()
     try:
-        media_dir = staging_dir / "media"
+        media_dir = raw_root / MEDIA_STORE_NAME
         data = map_session_json(
             session,
             messages,
@@ -185,6 +207,7 @@ class MomentsExportResult:
     path: Path
     missing_media_posts: int
     published_media: int
+    extension_conflicts: int = 0
 
 
 def map_moments_json(
@@ -194,13 +217,17 @@ def map_moments_json(
     start: date,
     end: date,
     media_dir: Path | None = None,
+    media_store: Path | None = None,
 ) -> dict[str, Any]:
+    media_stats = ImageMediaStats()
     data, _missing_media_posts = _map_moments_with_stats(
         exported,
         usernames=usernames,
         start=start,
         end=end,
         media_dir=media_dir,
+        media_store=media_store,
+        media_stats=media_stats,
     )
     return data
 
@@ -212,6 +239,8 @@ def _map_moments_with_stats(
     start: date,
     end: date,
     media_dir: Path | None,
+    media_store: Path | None,
+    media_stats: ImageMediaStats,
 ) -> tuple[dict[str, Any], int]:
     targets = {str(value) for value in usernames if str(value)}
     if isinstance(exported, Mapping):
@@ -237,7 +266,13 @@ def _map_moments_with_stats(
         media = post.get("media") if isinstance(post.get("media"), list) else []
         comments = post.get("comments") if isinstance(post.get("comments"), list) else []
         post_id = str(post.get("id") or post.get("tid") or "")
-        mapped_media, media_missing = _map_moment_media_list(post_id, media, media_dir)
+        mapped_media, media_missing = _map_moment_media_list(
+            post_id,
+            media,
+            media_dir,
+            media_store,
+            media_stats,
+        )
         if media_missing:
             missing_media_posts += 1
         mapped.append(
@@ -298,12 +333,15 @@ def write_moments_export(
         raise ValueError("朋友圈导出 JSON 顶层必须是 object")
 
     media_source = staging_dir / "media"
+    media_stats = ImageMediaStats()
     data, missing_media_posts = _map_moments_with_stats(
         source_data,
         usernames=usernames,
         start=export_date,
         end=export_date,
         media_dir=media_source,
+        media_store=raw_root / MEDIA_STORE_NAME,
+        media_stats=media_stats,
     )
     destination = raw_root / moments_filename(usernames, export_date)
     canonical_stage = staging_dir / destination.name
@@ -315,24 +353,21 @@ def write_moments_export(
         source_path.unlink(missing_ok=True)
 
     published_media = 0
-    selected_media_prefixes = {
-        f"{post['id']}_" for post in data["posts"] if str(post.get("id") or "")
-    }
-    if media_source.is_dir():
-        for source_media in sorted(path for path in media_source.rglob("*") if path.is_file()):
-            if not any(source_media.name.startswith(prefix) for prefix in selected_media_prefixes):
-                continue
-            relative = source_media.relative_to(media_source)
-            destination_media = raw_root / "media" / relative
-            destination_media.parent.mkdir(parents=True, exist_ok=True)
-            os.replace(source_media, destination_media)
-            published_media += 1
 
     for post in data["posts"]:
         for media in post["media"]:
             relative_text = str(media.get("localPath") or "")
             if relative_text and not (raw_root / Path(relative_text)).is_file():
                 raise FileNotFoundError(f"朋友圈媒体发布后不存在：{relative_text}")
+            if relative_text:
+                published_media += 1
+            live_photo = media.get("livePhoto")
+            if isinstance(live_photo, Mapping):
+                live_relative = str(live_photo.get("localPath") or "")
+                if live_relative and not (raw_root / Path(live_relative)).is_file():
+                    raise FileNotFoundError(f"朋友圈 Live Photo 发布后不存在：{live_relative}")
+                if live_relative:
+                    published_media += 1
 
     # JSON is the live discovery marker, so it is published only after every
     # available media file is in place. Missing decrypted media stays URL-only.
@@ -341,6 +376,7 @@ def write_moments_export(
         path=destination,
         missing_media_posts=missing_media_posts,
         published_media=published_media,
+        extension_conflicts=media_stats.extension_conflicts,
     )
 
 
@@ -381,7 +417,7 @@ def _map_message(
     else:
         sender_display = _display_name(sender_record, sender)
 
-    relative_media = _localize_media(
+    localized_media = _localize_media(
         message,
         base,
         media_dir,
@@ -393,14 +429,13 @@ def _map_message(
         resolved.placeholder,
         base,
         app_type,
-        relative_media,
+        localized_media.reference if localized_media is not None else "",
         appmsg_text_max_chars,
     )
     emotion: dict[str, list[str]] | None = None
     if base == 34:
         content, emotion = _voice_content(
-            relative_media,
-            media_dir=media_dir,
+            localized_media,
             transcriber=transcriber,
             unavailable_reason=asr_unavailable_reason,
         )
@@ -412,7 +447,7 @@ def _map_message(
         "formattedTime": datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S"),
         "type": resolved.canonical,
         "content": content,
-        "source": relative_media or "",
+        "source": localized_media.reference if localized_media is not None else "",
         "isSend": is_send,
         "senderUsername": sender,
         "senderDisplayName": sender_display,
@@ -452,7 +487,7 @@ def _message_content(
     relative_media: str,
     appmsg_text_max_chars: int = 300,
 ) -> str:
-    if base in {3, 47}:
+    if base in {3, 43, 47}:
         return relative_media or placeholder
     if base in {1, 50, 10000}:
         return str(message.get("content") or message.get("rawContent") or placeholder)
@@ -544,15 +579,14 @@ def _render_appmsg(meta: AppmsgMeta, app_type: int, placeholder: str) -> str:
 
 
 def _voice_content(
-    relative_media: str,
+    localized_media: _LocalizedMedia | None,
     *,
-    media_dir: Path | None,
     transcriber: Any,
     unavailable_reason: str,
 ) -> tuple[str, dict[str, list[str]] | None]:
-    if not relative_media or media_dir is None:
+    if localized_media is None:
         return "[语音消息 - 转文字失败: 媒体缺失]", None
-    audio_path = media_dir.parent / Path(relative_media)
+    audio_path = localized_media.path
     if transcriber is None:
         return f"[语音消息 - 转文字失败: {unavailable_reason}]", None
     try:
@@ -582,32 +616,62 @@ def _localize_media(
     *,
     require_media: bool,
     image_media_stats: ImageMediaStats,
-) -> str:
-    if base not in {3, 34, 47} or media_dir is None:
-        return ""
+) -> _LocalizedMedia | None:
+    if base not in {3, 34, 43, 47} or media_dir is None:
+        return None
     source_text = str(message.get("mediaLocalPath") or "")
     if not source_text:
         if base == 3 and require_media:
             image_media_stats.missing_image_paths += 1
-        return ""
+        elif base == 43 and require_media:
+            if _video_md5(message):
+                image_media_stats.missing_video_files += 1
+            else:
+                image_media_stats.missing_video_md5 += 1
+        return None
     source = Path(source_text)
     if not source.is_file():
         # 声明了路径却找不到文件始终是异常；require_media=False 时正常响应不会进入此分支。
         if base == 3:
             image_media_stats.missing_image_files += 1
-        return ""
-    subdir = {3: "images", 34: "voices", 47: "emojis"}[base]
-    filename = sanitize_session_name(
-        message.get("mediaFileName") or source.name,
-        fallback=f"media_{message.get('localId') or uuid.uuid4().hex}",
-    )
-    destination_dir = media_dir / subdir
-    destination_dir.mkdir(parents=True, exist_ok=True)
-    destination = destination_dir / filename
-    if destination.exists() and destination.resolve() != source.resolve():
-        destination = destination_dir / f"{message.get('localId') or uuid.uuid4().hex}_{filename}"
-    shutil.copy2(source, destination)
-    return destination.relative_to(media_dir.parent).as_posix()
+        elif base == 43:
+            image_media_stats.missing_video_files += 1
+        return None
+    media_class = {3: "images", 34: "voices", 43: "videos", 47: "emojis"}[base]
+    stored = store_media_file(source, media_dir, media_class)
+    if stored.extension_conflict:
+        image_media_stats.extension_conflicts += 1
+    return _LocalizedMedia(chat_media_reference(stored.relative_path), stored.path)
+
+
+_VIDEO_MD5_PATTERNS = (
+    re.compile(r"<videomsg[^>]*\smd5\s*=\s*['\"]([a-fA-F0-9]+)['\"]", re.IGNORECASE),
+    re.compile(r"<videomsg[^>]*\srawmd5\s*=\s*['\"]([a-fA-F0-9]+)['\"]", re.IGNORECASE),
+    re.compile(r"<videomsg[^>]*\snewmd5\s*=\s*['\"]([a-fA-F0-9]+)['\"]", re.IGNORECASE),
+    re.compile(
+        r"<videomsg[^>]*\soriginsourcemd5\s*=\s*['\"]([a-fA-F0-9]+)['\"]",
+        re.IGNORECASE,
+    ),
+)
+
+
+def _video_md5(message: Mapping[str, Any]) -> str:
+    """Recover the video token omitted by WeFlow's API serializer.
+
+    The response retains the XML-bearing content fields, so use the same four
+    ``videomsg`` attributes recognized by the upstream exporter.
+    """
+
+    direct = str(message.get("videoMd5") or "").strip().lower()
+    if direct:
+        return direct
+    for field in ("content", "rawContent", "parsedContent"):
+        value = str(message.get(field) or "")
+        for pattern in _VIDEO_MD5_PATTERNS:
+            match = pattern.search(value)
+            if match:
+                return match.group(1).lower()
+    return ""
 
 
 def _roster_index(
@@ -632,19 +696,25 @@ def _map_moment_media_list(
     post_id: str,
     media: Sequence[Any],
     media_dir: Path | None,
+    media_store: Path | None,
+    media_stats: ImageMediaStats,
 ) -> tuple[list[dict[str, Any]], bool]:
     items = [item for item in media if isinstance(item, Mapping)]
     candidates: list[Path] = []
+    live_candidates: list[Path] = []
     if media_dir is not None and media_dir.is_dir() and post_id:
         prefix = f"{post_id}_"
+        matching = [
+            path
+            for path in media_dir.rglob("*")
+            if path.is_file() and path.name.startswith(prefix)
+        ]
         candidates = sorted(
-            (
-                path
-                for path in media_dir.rglob("*")
-                if path.is_file()
-                and path.name.startswith(prefix)
-                and not path.stem.endswith("_live")
-            ),
+            (path for path in matching if not path.stem.endswith("_live")),
+            key=_moment_media_sort_key,
+        )
+        live_candidates = sorted(
+            (path for path in matching if path.stem.endswith("_live")),
             key=_moment_media_sort_key,
         )
 
@@ -654,15 +724,58 @@ def _map_moment_media_list(
         mapped = dict(item)
         mapped.pop("mediaLocalPath", None)
         mapped.pop("localPath", None)
-        if index < len(candidates) and media_dir is not None:
-            relative = candidates[index].relative_to(media_dir)
-            mapped["localPath"] = (Path("media") / relative).as_posix()
+        primary = candidates[index] if index < len(candidates) else None
+        if primary is not None and media_store is not None:
+            media_class = "videos" if _is_video_path(primary) else "images"
+            stored = store_media_file(primary, media_store, media_class)
+            mapped["localPath"] = root_media_reference(stored.relative_path)
+            if stored.extension_conflict:
+                media_stats.extension_conflicts += 1
         else:
             # Preserve url/thumb and all other metadata. URL-only is the
             # canonical degradation for a post whose media was not decrypted.
             missing = True
+
+        live_photo = item.get("livePhoto")
+        if isinstance(live_photo, Mapping):
+            mapped_live = dict(live_photo)
+            live_reference = str(
+                mapped_live.pop("localPath", None)
+                or mapped_live.pop("mediaLocalPath", None)
+                or ""
+            )
+            live_source = _moment_media_source(media_dir, live_reference)
+            if live_source is None and primary is not None:
+                live_source = next(
+                    (
+                        path
+                        for path in live_candidates
+                        if path.stem == f"{primary.stem}_live"
+                    ),
+                    None,
+                )
+            if live_source is not None and media_store is not None:
+                stored_live = store_media_file(live_source, media_store, "videos")
+                mapped_live["localPath"] = root_media_reference(stored_live.relative_path)
+                if stored_live.extension_conflict:
+                    media_stats.extension_conflicts += 1
+            else:
+                missing = True
+            mapped["livePhoto"] = mapped_live
         mapped_items.append(mapped)
     return mapped_items, missing
+
+
+def _moment_media_source(media_dir: Path | None, reference: str) -> Path | None:
+    if media_dir is None or not reference:
+        return None
+    path = Path(reference)
+    candidates = [path] if path.is_absolute() else [media_dir.parent / path, media_dir / path.name]
+    return next((candidate for candidate in candidates if candidate.is_file()), None)
+
+
+def _is_video_path(path: Path) -> bool:
+    return path.suffix.lower() in {".mp4", ".mov", ".avi", ".mkv", ".webm"}
 
 
 def _moment_media_sort_key(path: Path) -> tuple[int, str]:
@@ -685,18 +798,34 @@ def _require_inside(path: Path, parent: Path, label: str) -> None:
         raise ValueError(f"{label} 不在 staging 目录内：{path}") from exc
 
 
+_DIRECTORY_REPLACE_RETRY_DELAYS_SEC = (0.01, 0.02, 0.05, 0.1, 0.2, 0.4)
+
+
+def _replace_path_with_retry(source: Path, destination: Path) -> None:
+    """Retry transient Windows sharing/scan locks around directory rename."""
+
+    for delay in (*_DIRECTORY_REPLACE_RETRY_DELAYS_SEC, None):
+        try:
+            os.replace(source, destination)
+            return
+        except PermissionError:
+            if delay is None:
+                raise
+            time.sleep(delay)
+
+
 def _replace_directory(source: Path, destination: Path) -> None:
     backup: Path | None = None
     if destination.exists():
         # Keep the old complete snapshot outside live raw while swapping; a
         # crash can leave a recoverable backup, never a discoverable half-run.
         backup = source.parent / f".{destination.name}.old-{uuid.uuid4().hex}"
-        os.replace(destination, backup)
+        _replace_path_with_retry(destination, backup)
     try:
-        os.replace(source, destination)
+        _replace_path_with_retry(source, destination)
     except Exception:
         if backup is not None and backup.exists() and not destination.exists():
-            os.replace(backup, destination)
+            _replace_path_with_retry(backup, destination)
         raise
     if backup is not None:
         shutil.rmtree(backup)

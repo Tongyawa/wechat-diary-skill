@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from wechat_diary_core.config import load_config
+from wechat_diary_core.chat_flow import _target_is_image
 from wechat_diary_core.preprocessing import run
 from wechat_diary_core.preprocessing import image_ocr
 from wechat_diary_core.preprocessing.image_ocr import _parse_paddle_result
@@ -18,6 +19,13 @@ class FakeOcrEngine:
 
 
 class PreprocessingTests(unittest.TestCase):
+    def test_cas_image_reference_is_a_positive_control_for_chat_and_ocr_predicates(self) -> None:
+        reference = "../_media/images/ab/ab111111111111111111111111111111.jpg"
+        self.assertTrue(_target_is_image({"content": reference}))
+        self.assertTrue(image_ocr._looks_like_image_ref(reference))
+        self.assertFalse(_target_is_image({"content": "文字提到了 ../_media/images/x.jpg"}))
+        self.assertFalse(image_ocr._looks_like_image_ref("文字提到了 ../_media/images/x.jpg"))
+
     def test_parse_paddle_result_dict_shape(self) -> None:
         result = [{"rec_texts": ["hello", "low"], "rec_scores": [0.9, 0.1]}]
 

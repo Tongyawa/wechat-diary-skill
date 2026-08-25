@@ -19,6 +19,7 @@ if str(ROOT) not in sys.path:
 
 from wechat_diary_core.archiving import archive, archive_chats_for
 from wechat_diary_core.config import Config, load_config
+from wechat_diary_core.media_store import MEDIA_STORE_NAME
 from wechat_diary_core.preprocessing import archive_moments_for
 from wechat_diary_core.preprocessing import collect_voice_transcription_failures
 from wechat_diary_core.workspace import merge_tree
@@ -226,7 +227,7 @@ def infer_single_day(raw_root: str | Path) -> str | None:
     if not root.exists():
         return None
     for child in root.iterdir():
-        if not child.is_dir():
+        if not child.is_dir() or child.name == MEDIA_STORE_NAME:
             continue
         if RANGE_SUFFIX_RE.search(child.name):
             has_range = True

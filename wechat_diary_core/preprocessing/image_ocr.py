@@ -9,6 +9,7 @@ import logging
 import os
 
 from ..config import PreprocessingConfig
+from ..media_store import is_media_reference
 from .image_vision import VisionDescriber, annotate_vision_descriptions, session_is_skipped
 
 
@@ -93,7 +94,7 @@ def annotate_image_messages(
 
     ``image_mode="preserve_paths"`` skips OCR entirely and records the relative
     image path on the message so chat_flow renders
-    ``[图片：media/images/xxx.jpg]`` — a downstream Agent reads the image
+    ``[图片：../_media/images/hh/<md5>.jpg]`` (or a legacy ``media/`` path) — a downstream Agent reads the image
     multimodally later (used by per-contact sidecar pipelines).
     """
     image_messages = [message for message in messages if _message_image_paths(message, base_dir)]
@@ -189,7 +190,7 @@ def _message_image_paths(message: Message, base_dir: Path) -> list[Path]:
 
 def _looks_like_image_ref(value: str) -> bool:
     normalized = value.replace("\\", "/")
-    return "media/images/" in normalized and Path(normalized).suffix.lower() in IMAGE_EXTENSIONS
+    return is_media_reference(normalized, "images") and Path(normalized).suffix.lower() in IMAGE_EXTENSIONS
 
 
 def _resolve_message_path(base_dir: Path, value: str) -> Path:

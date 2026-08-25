@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import secrets
@@ -8,7 +9,7 @@ import shutil
 import sys
 from dataclasses import dataclass, replace
 from datetime import date, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 
 
@@ -21,6 +22,11 @@ from wechat_diary_core.asr import SenseVoiceTranscriber
 from wechat_diary_core.backends.weflow_api.client import WeflowApiClient
 from wechat_diary_core.backends.weflow_api.mapper import ImageMediaStats, write_session_export
 from wechat_diary_core.config import Config, load_config
+from wechat_diary_core.media_store import (
+    MEDIA_STORE_NAME,
+    chat_media_reference,
+    store_media_file,
+)
 from wechat_diary_core.workspace import merge_tree
 from wechat_diary_core.workspace_discovery import WorkspaceResolutionError, resolve_config_path
 
@@ -50,6 +56,8 @@ class ExportOnDemandResult:
     merged_file: Path | None
     missing_image_paths: int = 0
     missing_image_files: int = 0
+    missing_video_md5: int = 0
+    missing_video_files: int = 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -136,6 +144,12 @@ def main(argv: list[str] | None = None) -> int:
             f"路径指向的文件不存在 {result.missing_image_files} 条。导出已继续。",
             file=sys.stderr,
         )
+    if result.missing_video_md5 or result.missing_video_files:
+        print(
+            f"[WARN] 视频已降级为 [视频]：缺少 videoMd5 {result.missing_video_md5} 条；"
+            f"有 md5 但本地文件不存在 {result.missing_video_files} 条。导出已继续。",
+            file=sys.stderr,
+        )
     return 0
 
 
@@ -202,6 +216,11 @@ def export_on_demand(
             appmsg_text_max_chars=api.appmsg_text_max_chars,
             image_media_stats=image_media_stats,
         )
+        canonical_replacements = _publish_raw_store(
+            staging_root / MEDIA_STORE_NAME,
+            raw_root / MEDIA_STORE_NAME,
+        )
+        _rewrite_canonical_references(staging_session_dir, canonical_replacements)
         processed_root = staging_root / "_processed" if merge_target is not None else root
         written = (archive_fn or archive)(
             staging_root,
@@ -228,7 +247,11 @@ def export_on_demand(
             shutil.rmtree(staging_root)
 
     if copy_media and merge_target is None:
-        _copy_media_tree(raw_session_dir / "media", output_session_dir / "media")
+        replacements = _copy_referenced_media(
+            raw_session_dir,
+            output_session_dir.parent / MEDIA_STORE_NAME,
+        )
+        _rewrite_media_references(diary_files, replacements)
     if merge_target is None:
         merged_file = _write_merged(output_session_dir, diary_files) if merged else None
     else:
@@ -246,6 +269,8 @@ def export_on_demand(
         merged_file=merged_file,
         missing_image_paths=image_media_stats.missing_image_paths,
         missing_image_files=image_media_stats.missing_image_files,
+        missing_video_md5=image_media_stats.missing_video_md5,
+        missing_video_files=image_media_stats.missing_video_files,
     )
 
 
@@ -369,7 +394,14 @@ def _merge_processed_session(
     source_name = DATE_SUFFIX_RE.sub("", raw_session_dir.name)
     source = processed_root / source_name
     if copy_media:
-        _copy_media_tree(raw_session_dir / "media", source / "media")
+        replacements = _copy_referenced_media(
+            raw_session_dir,
+            merge_target.parent / MEDIA_STORE_NAME,
+        )
+        _rewrite_media_references(
+            [Path(path) for path in written if Path(path).is_file()],
+            replacements,
+        )
     merge_tree(source, merge_target, move=True)
 
     diary_files: list[Path] = []
@@ -442,16 +474,90 @@ def _move_written_files(source: Path, target: Path, written: list[Path]) -> None
             current = current.parent
 
 
-def _copy_media_tree(source: Path, target: Path) -> None:
+def _publish_raw_store(source: Path, target: Path) -> dict[str, str]:
+    replacements: dict[str, str] = {}
     if not source.is_dir():
-        return
-    for child in source.rglob("*"):
-        if not child.is_file():
-            continue
+        return replacements
+    for child in sorted(path for path in source.rglob("*") if path.is_file()):
         relative = child.relative_to(source)
-        destination = target / relative
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(child, destination)
+        if len(relative.parts) != 3:
+            raise ValueError(f"staging CAS 文件布局无效：{relative.as_posix()}")
+        media_class, shard, filename = relative.parts
+        if shard != filename[:2]:
+            raise ValueError(f"staging CAS 分片与文件名不一致：{relative.as_posix()}")
+        stored = store_media_file(child, target, media_class)
+        if stored.relative_path.as_posix() != relative.as_posix():
+            old_reference = chat_media_reference(PurePosixPath(relative.as_posix()))
+            new_reference = chat_media_reference(stored.relative_path)
+            replacements[old_reference] = new_reference
+            child.unlink()
+            replacement = source / Path(stored.relative_path.as_posix())
+            replacement.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(stored.path, replacement)
+    return replacements
+
+
+def _rewrite_canonical_references(session_dir: Path, replacements: dict[str, str]) -> None:
+    if not replacements:
+        return
+    for json_path in sorted(session_dir.glob("*.json")):
+        payload = json.loads(json_path.read_text(encoding="utf-8"))
+        changed = False
+        for message in payload.get("messages") or []:
+            if not isinstance(message, dict):
+                continue
+            for field in ("source", "content"):
+                value = message.get(field)
+                if isinstance(value, str) and value in replacements:
+                    message[field] = replacements[value]
+                    changed = True
+        if changed:
+            json_path.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+
+
+def _copy_referenced_media(raw_session_dir: Path, target_store: Path) -> dict[str, str]:
+    replacements: dict[str, str] = {}
+    for json_path in sorted(raw_session_dir.glob("*.json")):
+        payload = json.loads(json_path.read_text(encoding="utf-8"))
+        for message in payload.get("messages") or []:
+            if not isinstance(message, dict):
+                continue
+            reference = str(message.get("source") or "").strip()
+            if not reference or reference in replacements:
+                continue
+            normalized = reference.replace("\\", "/")
+            parts = Path(normalized).parts
+            try:
+                store_index = parts.index(MEDIA_STORE_NAME)
+                media_class = parts[store_index + 1]
+            except (ValueError, IndexError) as exc:
+                raise ValueError(f"canonical 媒体引用形态无效：{reference}") from exc
+            source = (json_path.parent / Path(reference)).resolve()
+            if not source.is_file():
+                raise FileNotFoundError(f"canonical 媒体引用不存在：{reference}")
+            stored = store_media_file(source, target_store, media_class)
+            replacements[reference] = chat_media_reference(stored.relative_path)
+    return replacements
+
+
+def _rewrite_media_references(paths: list[Path], replacements: dict[str, str]) -> None:
+    changed_replacements = {
+        source: target for source, target in replacements.items() if source != target
+    }
+    if not changed_replacements:
+        return
+    for path in paths:
+        if not path.is_file():
+            continue
+        text = path.read_text(encoding="utf-8")
+        rewritten = text
+        for source, target in changed_replacements.items():
+            rewritten = rewritten.replace(source, target)
+        if rewritten != text:
+            path.write_text(rewritten, encoding="utf-8")
 
 
 def _write_merged(session_dir: Path, diary_files: list[Path]) -> Path | None:

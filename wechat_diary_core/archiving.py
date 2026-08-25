@@ -31,7 +31,7 @@ def archive(
     safety net for manual re-renders.
 
     ``image_mode="preserve_paths"`` disables OCR and renders
-    ``[图片：media/images/xxx.jpg]`` so a downstream Agent reads the image
+    ``[图片：../_media/images/hh/<md5>.jpg]`` (or a legacy ``media/`` path) so a downstream Agent reads the image
     multimodally (used by per-contact sidecar pipelines).
     """
     cfg = config or load_config()

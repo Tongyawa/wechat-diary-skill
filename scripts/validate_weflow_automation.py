@@ -271,7 +271,11 @@ def _latest_moments_report(root: Path) -> dict[str, object]:
 def _output_snapshot(root: Path) -> dict[str, float]:
     if not root.exists():
         return {}
-    return {child.name: _latest_modified_at(child) for child in root.iterdir()}
+    return {
+        child.name: _latest_modified_at(child)
+        for child in root.iterdir()
+        if child.name != "_media"
+    }
 
 
 def _changed_output_entries(root: Path, before: dict[str, float], started_at: float) -> list[str]:
@@ -279,6 +283,8 @@ def _changed_output_entries(root: Path, before: dict[str, float], started_at: fl
         return []
     changed: list[str] = []
     for child in root.iterdir():
+        if child.name == "_media":
+            continue
         modified_at = _latest_modified_at(child)
         if child.name not in before or modified_at > before[child.name] or modified_at >= started_at - 1:
             changed.append(child.name)

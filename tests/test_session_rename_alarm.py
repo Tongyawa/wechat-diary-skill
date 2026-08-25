@@ -12,6 +12,8 @@ from scripts.run_daily_export import _warn_if_archive_session_names_split
 from wechat_diary_core.session_rename_alarm import (
     SessionRenameMerge,
     SessionRenameReconciliation,
+    _archive_session_directories,
+    _current_session_targets,
     inspect_archive_session_names,
     update_session_rename_alarm,
     write_session_rename_report,
@@ -66,6 +68,29 @@ def _write_chat(root: Path, directory: str, filename: str, wxid: str, message_ti
 
 
 class SessionRenameAlarmTests(unittest.TestCase):
+    def test_media_store_is_skipped_by_archive_and_current_session_scans(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            media = root / "_media"
+            media.mkdir()
+            (media / "trap.json").write_text(
+                json.dumps(
+                    {
+                        "session": {
+                            "wxid": "wxid_not_a_session",
+                            "displayName": "假会话",
+                            "type": "私聊",
+                        },
+                        "messages": [],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(_archive_session_directories(root), {})
+            self.assertEqual(_current_session_targets(root), ({}, {}))
+
     def test_detects_same_wxid_in_two_human_named_directories(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             archive_raw = Path(tmp) / "archived" / "raw"

@@ -10,6 +10,7 @@ import stat
 
 from .archiving import strip_date_suffix
 from .config import Config, load_config
+from .media_store import MEDIA_STORE_NAME
 
 
 CleanupMode = Literal["archive", "delete", "skip"]
@@ -117,7 +118,7 @@ def merge_raw_exports_into_archive(
     suffix so every export of the same chat accumulates in one folder. The
     files inside keep their (date-suffixed) names, so different days coexist
     and a re-export of the same day overwrites the older copy. Root-level
-    non-session entries (moments json, the shared ``media/`` dir) merge under
+    non-session entries (moments json, the shared ``_media/`` store) merge under
     their own names.
     """
     source = Path(raw_root)
@@ -125,7 +126,10 @@ def merge_raw_exports_into_archive(
     count = 0
     for entry in sorted(source.iterdir()):
         if entry.is_dir():
-            count += merge_tree(entry, target_root / strip_date_suffix(entry.name), move=move)
+            destination_name = (
+                MEDIA_STORE_NAME if entry.name == MEDIA_STORE_NAME else strip_date_suffix(entry.name)
+            )
+            count += merge_tree(entry, target_root / destination_name, move=move)
         else:
             target_root.mkdir(parents=True, exist_ok=True)
             _replace_file(entry, target_root / entry.name, move=move)

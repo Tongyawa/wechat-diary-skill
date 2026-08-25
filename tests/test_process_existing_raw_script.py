@@ -116,6 +116,7 @@ class ProcessExistingRawScriptTests(unittest.TestCase):
             root = Path(tmp)
             (root / "私聊_A_20260609").mkdir()
             (root / "群聊_B_20260609").mkdir()
+            (root / "_media" / "images" / "20").mkdir(parents=True)
 
             self.assertEqual(infer_single_day(root), "2026-06-09")
 

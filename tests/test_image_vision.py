@@ -25,6 +25,7 @@ from wechat_diary_core.preprocessing.image_vision import (
     VisionError,
     annotate_vision_descriptions,
     build_chat_context,
+    _looks_like_image,
     normalize_description,
 )
 
@@ -45,6 +46,12 @@ def _image_paths(message: dict, base_dir: Path) -> list[Path]:
 
 
 class ImageVisionTests(unittest.TestCase):
+    def test_cas_image_reference_is_a_positive_control_for_context_detection(self) -> None:
+        self.assertTrue(
+            _looks_like_image("../_media/images/ab/ab111111111111111111111111111111.jpg")
+        )
+        self.assertFalse(_looks_like_image("正文提到了 ../_media/images/example.jpg"))
+
     def test_v2_prompt_version_default_and_fixed_instructions(self) -> None:
         self.assertEqual(PROMPT_VERSION, "img-v2")
         self.assertIn("你没写出来的信息就永远丢失了", SYSTEM_PROMPT)
