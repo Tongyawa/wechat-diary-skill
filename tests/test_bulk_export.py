@@ -258,7 +258,7 @@ class BulkExportTests(unittest.TestCase):
             backend = WeflowApiBackend(cfg)
             backend._client = client
 
-            with self.assertRaisesRegex(RuntimeError, "静默覆盖消息"):
+            with self.assertRaises(RuntimeError) as raised:
                 backend.export_chats_range(
                     export_day,
                     export_day,
@@ -267,6 +267,12 @@ class BulkExportTests(unittest.TestCase):
                     state_path=root / ".bulk-state.json",
                 )
 
+        # 锁语义而非措辞；并锁住项目硬规矩「守卫报错必须带上全部参与判断的值」——
+        # 只印一半会把排查引向错误方向，所以两个 wxid 都必须出现在消息里。
+        message = str(raised.exception)
+        self.assertIn("同一 canonical 会话目录", message)
+        self.assertIn("wxid_collision_a", message)
+        self.assertIn("wxid_collision_b", message)
         self.assertEqual(client.message_calls, [])
 
     def test_interruption_then_resume_skips_completed_session_and_matches_clean_run(self) -> None:
