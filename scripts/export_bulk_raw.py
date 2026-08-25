@@ -121,7 +121,8 @@ def main(argv: list[str] | None = None) -> int:
         f"续跑跳过 {result.resumed_intervals}；"
         f"消息 {result.messages_written}；"
         f"文件 {len(result.files_written)}；"
-        f"失败 {len(result.failures)}"
+        f"失败 {len(result.failures)}；"
+        f"群名册降级 {result.group_roster_failures}/{result.group_roster_attempts}"
     )
     if result.failures:
         print("批量导出未全部完成；修复失败原因后原命令重跑即可续跑。", file=sys.stderr)

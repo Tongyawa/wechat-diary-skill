@@ -49,6 +49,27 @@ class BulkExportResult:
     resumed_plans: int = 0
     reconciliation_path: Path | None = None
     reconciliation_differences: int = 0
+    group_roster_attempts: int = 0
+    group_roster_failures: int = 0
+    degraded_group_rosters: tuple[str, ...] = ()
+
+
+@dataclass
+class _GroupRosterStats:
+    attempted_sessions: int = 0
+    failed_sessions: list[str] = field(default_factory=list)
+    recent_results: list[bool] = field(default_factory=list)
+
+    def record(self, talker: str, *, succeeded: bool) -> None:
+        self.attempted_sessions += 1
+        if not succeeded:
+            self.failed_sessions.append(talker)
+        self.recent_results.append(succeeded)
+        del self.recent_results[:-5]
+
+    @property
+    def should_stop_bulk_export(self) -> bool:
+        return len(self.recent_results) == 5 and self.recent_results.count(False) >= 4
 
 
 @dataclass
@@ -255,6 +276,7 @@ class WeflowApiBackend:
         messages_written = 0
         files_written: list[Path] = []
         failures: dict[str, str] = dict(plan_failures)
+        group_roster_stats = _GroupRosterStats()
         for index, session in enumerate(selected_sessions, start=1):
             talker = str(session.get("username") or "")
             display_name = session_directory_display_name(session, contacts)
@@ -289,6 +311,7 @@ class WeflowApiBackend:
                 )
                 _validate_interval_partition(pending_interval, chunks)
                 for interval in chunks:
+                    interval_completed = False
                     print(
                         f"[INFO] [{index}/{len(selected_sessions)}] 导出会话「{display_name}」："
                         f"{interval.start} ~ {interval.end}"
@@ -301,12 +324,18 @@ class WeflowApiBackend:
                         media=self.config.export_backend.weflow_api.media_localize,
                         )
                         messages_by_day = _split_messages_by_day(messages, interval)
-                        if group_members is None:
-                            group_members = (
-                                self.client.fetch_group_members(talker)
-                                if messages and talker.endswith("@chatroom")
-                                else []
+                        if group_members is None and messages:
+                            group_members = self._group_members_or_fallback(
+                                talker,
+                                display_name,
+                                group_roster_stats,
+                                fallback_roots=(
+                                    destination_root,
+                                    self.config.paths.archived / "raw",
+                                    self.config.paths.raw,
+                                ),
                             )
+                        effective_group_members = group_members or []
                         transcriber, reason = self._asr()
                         interval_files: list[Path] = []
                         interval_message_count = 0
@@ -320,7 +349,7 @@ class WeflowApiBackend:
                             start=export_day,
                             end=export_day,
                             contacts=contacts,
-                            group_members=group_members,
+                            group_members=effective_group_members,
                             self_wxids=self.config.user.self_wxids,
                             transcriber=transcriber,
                             asr_unavailable_reason=reason,
@@ -341,6 +370,7 @@ class WeflowApiBackend:
                             daily_counts={day: len(day_messages) for day, day_messages in messages_by_day.items()},
                         )
                         completed_intervals += 1
+                        interval_completed = True
                         messages_written += interval_message_count
                         files_written.extend(_unique_paths(interval_files))
                         if image_media_stats.missing_image_paths or image_media_stats.missing_image_files:
@@ -380,6 +410,13 @@ class WeflowApiBackend:
                         self._record_session_failure(talker, reason, display_name)
                         break
 
+                    if interval_completed and group_roster_stats.should_stop_bulk_export:
+                        raise RuntimeError(
+                            "群成员名册服务疑似进入坏状态：最近 5 个有消息群中至少 4 个读取失败。"
+                            "当前块的消息已按 canonical/contacts/wxid 退路发布并记入续跑状态；"
+                            "请重启 WeFlow API 服务后用原命令续跑。"
+                        )
+
                 if talker in failures:
                     break
 
@@ -410,6 +447,9 @@ class WeflowApiBackend:
             resumed_plans=resumed_plans,
             reconciliation_path=reconciliation_path,
             reconciliation_differences=reconciliation_differences,
+            group_roster_attempts=group_roster_stats.attempted_sessions,
+            group_roster_failures=len(group_roster_stats.failed_sessions),
+            degraded_group_rosters=tuple(group_roster_stats.failed_sessions),
         )
 
     def _export_chats_daily(self, export_date: date) -> None:
@@ -428,6 +468,7 @@ class WeflowApiBackend:
         published_sessions = 0
         skipped_platform_accounts = 0
         ignored_failures = 0
+        group_roster_stats = _GroupRosterStats()
         for session in sessions:
             talker = str(session.get("username") or "")
             if not talker:
@@ -450,7 +491,15 @@ class WeflowApiBackend:
                     self._record_session_success(state, talker, display_name)
                     continue
                 messages_found += 1
-                members = self.client.fetch_group_members(talker) if talker.endswith("@chatroom") else []
+                members = self._group_members_or_fallback(
+                    talker,
+                    display_name,
+                    group_roster_stats,
+                    fallback_roots=(
+                        self.config.paths.raw,
+                        self.config.paths.archived / "raw",
+                    ),
+                )
                 transcriber, reason = self._asr()
                 image_media_stats = ImageMediaStats()
                 write_session_export(
@@ -546,9 +595,58 @@ class WeflowApiBackend:
             )
         if ignored_failures:
             print(f"[INFO] {ignored_failures} 个已忽略会话仍导出失败（明细见 runlog）")
+        if group_roster_stats.failed_sessions:
+            print(
+                "[WARN] 群成员名册降级汇总："
+                f"{len(group_roster_stats.failed_sessions)}/"
+                f"{group_roster_stats.attempted_sessions} 个有消息群改用 "
+                "canonical/contacts/wxid 退路；"
+                "消息均已继续导出。",
+                file=sys.stderr,
+            )
 
         if self.partial_failures and (successful_requests == 0 or (messages_found > 0 and published_sessions == 0)):
             raise RuntimeError("全部会话请求失败，未发布任何 canonical raw")
+
+    def _group_members_or_fallback(
+        self,
+        talker: str,
+        display_name: str,
+        stats: _GroupRosterStats,
+        *,
+        fallback_roots: Sequence[Path],
+    ) -> list[dict[str, Any]]:
+        if not talker.endswith("@chatroom"):
+            return []
+        try:
+            members = self.client.fetch_group_members(talker)
+            if not members:
+                raise RuntimeError("群成员接口返回空名册")
+        except Exception as exc:
+            stats.record(talker, succeeded=False)
+            members = _last_known_group_members(
+                talker,
+                display_name,
+                roots=fallback_roots,
+            )
+            fallback = "canonical" if members else "contacts"
+            marker = (
+                f"export_chat_group_roster:{talker}:"
+                f"fallback={fallback}:known_names={len(members)}"
+            )
+            if marker not in self.partial_failures:
+                self.partial_failures.append(marker)
+            readable_name = _readable_error_summary(display_name, limit=60)
+            reason = _readable_error_summary(str(exc), limit=100)
+            print(
+                f"[WARN] 会话「{readable_name}」群成员名册读取失败，"
+                f"已改用既有 canonical 名字（{len(members)} 人）/contacts/wxid 退路"
+                f"并继续导出：{reason}",
+                file=sys.stderr,
+            )
+            return members
+        stats.record(talker, succeeded=True)
+        return members
 
     def review_session_failures(
         self,
@@ -828,6 +926,79 @@ def _launch_weflow_normally(executable: Path) -> subprocess.Popen[Any]:
 def _readable_error_summary(value: str, limit: int = 180) -> str:
     text = " ".join(str(value or "未知错误").split())
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+
+def _last_known_group_members(
+    talker: str,
+    display_name: str,
+    *,
+    roots: Sequence[Path],
+) -> list[dict[str, Any]]:
+    """Recover same-group names from canonical output without creating roster state."""
+
+    stable_directory = strip_date_suffix(
+        session_directory_name(
+            {"username": talker, "displayName": display_name},
+            date(2000, 1, 1),
+            date(2000, 1, 1),
+        )
+    )
+    latest: dict[str, tuple[int, dict[str, Any]]] = {}
+    seen_directories: set[Path] = set()
+    for root_value in roots:
+        root = Path(root_value)
+        if not root.is_dir():
+            continue
+        try:
+            for session_dir in root.iterdir():
+                if (
+                    not session_dir.is_dir()
+                    or session_dir.name == MEDIA_STORE_NAME
+                    or not (
+                        session_dir.name == stable_directory
+                        or session_dir.name.startswith(f"{stable_directory}_")
+                    )
+                ):
+                    continue
+                resolved_dir = session_dir.resolve()
+                if resolved_dir in seen_directories:
+                    continue
+                seen_directories.add(resolved_dir)
+                for json_path in session_dir.glob("*.json"):
+                    try:
+                        payload = json.loads(json_path.read_text(encoding="utf-8"))
+                    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                        continue
+                    session = payload.get("session") if isinstance(payload, dict) else None
+                    messages = payload.get("messages") if isinstance(payload, dict) else None
+                    if not isinstance(session, dict) or str(session.get("wxid") or "") != talker:
+                        continue
+                    if not isinstance(messages, list):
+                        continue
+                    for message in messages:
+                        if not isinstance(message, dict):
+                            continue
+                        sender = str(message.get("senderUsername") or "").strip()
+                        sender_display = str(message.get("senderDisplayName") or "").strip()
+                        if not sender or not sender_display or sender_display == sender:
+                            continue
+                        try:
+                            timestamp = int(message.get("createTime") or 0)
+                        except (TypeError, ValueError):
+                            timestamp = 0
+                        record = {
+                            "wxid": sender,
+                            "displayName": sender_display,
+                            "groupNickname": str(message.get("senderNickname") or ""),
+                            "nickname": str(message.get("senderNickname") or ""),
+                            "remark": str(message.get("senderRemark") or ""),
+                        }
+                        previous = latest.get(sender)
+                        if previous is None or timestamp >= previous[0]:
+                            latest[sender] = (timestamp, record)
+        except OSError:
+            continue
+    return [latest[sender][1] for sender in sorted(latest)]
 
 
 def _is_platform_account(talker: str) -> bool:

@@ -60,7 +60,7 @@ python "$SkillRoot\scripts\export_on_demand.py" --session <wxid或显示名子�
 **⑤ 归档摄取** `python "$SkillRoot\scripts\archive_exports.py" --raw-root <旧raw> --processed-root <旧processed>`（默认复制保源；倒序覆盖会在整批写入前拒绝，移动与人工确认参数见 §5）
 **⑥ 打开产物** `powershell ... -File "$SkillRoot\scripts\Open-LatestInsights.ps1" -Workspace "$Workspace"`（按日期挑用 `Open-InsightsByDate.ps1`）
 **⑦ 初始化 worktree 配置**（在目标 worktree 根目录运行）`python "$SkillRoot\scripts\init_worktree_config.py"`
-**⑧ 批量 raw 导出**（先 `media=false` 建逐日 plan，再按目标消息数切块导出；显式落点、可续跑，不产 processed）`python "$SkillRoot\scripts\export_bulk_raw.py" --start <起> --end <止> --out <raw输出根> [--chunk-target 10000] [--replan]`
+**⑧ 批量 raw 导出**（先 `media=false` 建逐日 plan，再按目标消息数切块导出；显式落点、可续跑，不产 processed；群名册大面积失败时保住当前块后停下，重启 WeFlow API 服务即可续跑）`python "$SkillRoot\scripts\export_bulk_raw.py" --start <起> --end <止> --out <raw输出根> [--chunk-target 10000] [--replan]`
 
 ## 二次加工
 

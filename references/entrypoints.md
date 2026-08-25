@@ -50,7 +50,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$SkillRoot\scripts\run_dail
 
 ⚠️ **「with warnings」不等于「只是朋友圈失败」。** 失败清单里可能包含**几十个聊天会话**，也可能 sidecar 产出为 0。判断产物是否够用，**看控制台打印的实际计数**（`Diary processed files: N`、各类 sidecar 计数）和失败项清单，**不要凭「completed」三个字就假定聊天记录完整**。
 
-单会话失败只隔离它自己，不中断其余会话；失败记进工作区根 `.export-state.json`，连续多个导出日失败会在收尾列出待审查清单。精确的“消息数据库未找到”只有在会话至少一年无活动且归档 raw 从未出现该 wxid 时才进入 `noLocalRecords`；证据不足仍按真失败。
+单会话失败只隔离它自己，不中断其余会话；失败记进工作区根 `.export-state.json`，连续多个导出日失败会在收尾列出待审查清单。群成员名册读取失败不算整会话失败：消息仍会落盘，发送者名称依次退到同一群既有 canonical raw 的最后已知名字、contacts，真的都没有才显示 wxid；控制台和失败 marker 会逐会话列出降级、退路与取回的已知名字数，并在末尾打印降级数。精确的“消息数据库未找到”只有在会话至少一年无活动且归档 raw 从未出现该 wxid 时才进入 `noLocalRecords`；证据不足仍按真失败。
 
 ## 2. 处理已有 raw `process_existing_raw.py`
 
@@ -189,4 +189,5 @@ python "$SkillRoot\scripts\export_bulk_raw.py" --start 2026-07-02 --end 2026-08-
 
 默认可续跑：逐日 plan 写在输出根同级的 `.<输出目录名>.bulk-export-plan.json`，状态写 `.<输出目录名>.bulk-export-state.json`（运行中有同名 `.journal` 追加账本），均不混进 canonical raw，也不写日常 `.export-state.json`。plan 逐会话完成即可续跑，且把「请求失败」与「0 条消息」分开记录；每完成一个块立即记账。中断后原命令重跑会复用已有 plan、跳过已完成块。若 canonical JSON 或它引用的媒体文件被删除，该块会自动失效并重导。每轮还会写 `.<输出目录名>.bulk-export-reconciliation.json`，逐会话列出 plan/实际的逐日消息数、活跃天数与差异；两遍之间的新消息会被报告为漂移，不作为导出失败。
 
-退出码：`0` = 本次选择的会话全部完成或已由状态覆盖；`1` = 至少一个会话未完成，修复原因后原命令重跑即可；`2` = 工作区或会话选择错误。平台型会话是否跳过仍服从 `[daily_export].skip_official_accounts`。若两个不同 wxid 经名称净化后会写进同一个 canonical 目录，程序会在第一条消息请求前拒绝整批，避免后写会话静默覆盖先写会话。
+退出码：`0` = 本次选择的会话全部完成或已由状态覆盖；`1` = 至少一个会话未完成，修复原因后原命令重跑即可；`2` = 工作区或会话选择错误。群成员名册读取失败时，当前消息块仍按同群既有 canonical 名字/contacts/wxid 退路落盘，汇总会打印降级数；若最近 5 个有消息群中至少 4 个名册读取失败，程序会在当前块记入续跑状态后以退出码 `1` 停止，提示重启 WeFlow API 服务并用原命令续跑。平台型会话是否跳过仍服从 `[daily_export].skip_official_accounts`。若两个不同 wxid 经名称净化后会写进同一个 canonical 目录，程序会在第一条消息请求前拒绝整批，避免后写会话静默覆盖先写会话。
+
