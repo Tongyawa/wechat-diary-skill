@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 
-STATE_VERSION = 1
+STATE_VERSION = 2
 JOURNAL_COMPACT_AFTER = 200
 
 
@@ -52,7 +52,7 @@ class BulkExportState:
             payload = json.loads(state_path.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise ValueError(f"批量导出状态文件不可读，拒绝覆盖：{state_path}（{exc}）") from exc
-        if not isinstance(payload, dict) or payload.get("version") != STATE_VERSION:
+        if not isinstance(payload, dict) or payload.get("version") not in {1, STATE_VERSION}:
             raise ValueError(f"批量导出状态版本不受支持，拒绝覆盖：{state_path}")
         recorded_root = Path(str(payload.get("outputRoot") or "")).resolve()
         if recorded_root != resolved_root:
@@ -62,6 +62,7 @@ class BulkExportState:
             )
         if not isinstance(payload.get("sessions"), dict):
             raise ValueError(f"批量导出状态缺少 sessions 对象，拒绝覆盖：{state_path}")
+        _migrate_payload(payload)
         state = cls(state_path, resolved_root, payload)
         state._load_journal()
         return state
@@ -108,9 +109,11 @@ class BulkExportState:
             if record_start is None or record_end is None or not isinstance(daily_counts, dict):
                 continue
             for current in _days(max(start, record_start), min(end, record_end)):
-                value = daily_counts.get(current.isoformat())
+                # A valid completed interval proves every day was observed;
+                # sparse absence inside it therefore means a real zero.
+                value = daily_counts.get(current.isoformat(), 0)
                 if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-                    continue
+                    return None
                 # Later records intentionally win after a --force re-export.
                 counts[current] = value
         return counts if covered <= set(counts) else None
@@ -137,7 +140,9 @@ class BulkExportState:
             "start": interval.start.isoformat(),
             "end": interval.end.isoformat(),
             "files": sorted(set(canonical_files)),
-            "dailyCounts": {day.isoformat(): count for day, count in normalized_counts.items()},
+            "dailyCounts": {
+                day.isoformat(): count for day, count in normalized_counts.items() if count
+            },
         }
         self._record_event(
             {"op": "completed", "wxid": wxid, "displayName": display_name, "record": record}
@@ -160,6 +165,8 @@ class BulkExportState:
         )
 
     def save(self) -> None:
+        self.payload["version"] = STATE_VERSION
+        _sparsify_payload(self.payload)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         handle, temporary_name = tempfile.mkstemp(
             prefix=f".{self.path.name}.", suffix=".tmp", dir=self.path.parent
@@ -237,7 +244,7 @@ class BulkExportState:
                     and item.get("end") == end
                 )
             ]
-            completed.append(dict(record))
+            completed.append(_sparsify_record(dict(record)))
             session.pop("lastFailure", None)
             return
         if op == "failure":
@@ -367,6 +374,34 @@ def _normalize_daily_counts(
     if outside:
         raise ValueError(f"批量导出实际逐日消息数越出区间：{outside[0]}")
     return normalized
+
+
+def _migrate_payload(payload: dict[str, Any]) -> None:
+    payload["version"] = STATE_VERSION
+    _sparsify_payload(payload)
+
+
+def _sparsify_payload(payload: dict[str, Any]) -> None:
+    sessions = payload.get("sessions", {})
+    if not isinstance(sessions, dict):
+        return
+    for session in sessions.values():
+        records = session.get("completed", []) if isinstance(session, dict) else []
+        if isinstance(records, list):
+            for index, record in enumerate(records):
+                if isinstance(record, dict):
+                    records[index] = _sparsify_record(record)
+
+
+def _sparsify_record(record: dict[str, Any]) -> dict[str, Any]:
+    daily_counts = record.get("dailyCounts")
+    if isinstance(daily_counts, dict):
+        record["dailyCounts"] = {
+            str(day): value
+            for day, value in daily_counts.items()
+            if not (isinstance(value, int) and not isinstance(value, bool) and value == 0)
+        }
+    return record
 
 
 def _days(start: date, end: date):

@@ -3,9 +3,10 @@ from __future__ import annotations
 import io
 import json
 import os
+import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -17,9 +18,11 @@ from wechat_diary_core.backends.weflow_api.backend import (
     WeflowApiBackend,
     _chunk_interval_by_messages,
     _validate_interval_partition,
+    _write_bulk_reconciliation,
 )
+from wechat_diary_core.backends.weflow_api.bulk_plan import BulkExportPlan
 from wechat_diary_core.backends.weflow_api.bulk_state import BulkExportState, DateInterval
-from wechat_diary_core.backends.weflow_api.client import WeflowApiClient
+from wechat_diary_core.backends.weflow_api.client import WeflowApiClient, WeflowApiError
 from wechat_diary_core.config import load_config
 from wechat_diary_core.raw_schema import validate_session_json
 
@@ -545,6 +548,7 @@ class BulkExportTests(unittest.TestCase):
                 raw_root=raw_root,
                 sessions=[session],
                 state_path=state_path,
+                expand_range=True,
             )
             exported_days = sorted(path.parent.name[-8:] for path in raw_root.glob("*/*.json"))
 
@@ -559,6 +563,81 @@ class BulkExportTests(unittest.TestCase):
             exported_days,
             ["20260801", "20260802", "20260803", "20260804", "20260805"],
         )
+
+    def test_existing_plan_rejects_implicit_range_change_and_any_shrink(self) -> None:
+        first, initial_end, extended_end = (
+            date(2026, 8, 1),
+            date(2026, 8, 3),
+            date(2026, 8, 5),
+        )
+        session = {"username": "wxid_frozen_range", "displayName": "冻结区间会话"}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            raw_root = root / "raw"
+            state_path = root / ".state.json"
+            backend = WeflowApiBackend(_config(root))
+            backend._client = _BulkClient([session], {session["username"]: []})
+            backend.export_chats_range(
+                first,
+                initial_end,
+                raw_root=raw_root,
+                sessions=[session],
+                state_path=state_path,
+            )
+
+            frozen_resume = WeflowApiBackend(_config(root))
+            frozen_client = _BulkClient([session], {session["username"]: []})
+            frozen_resume._client = frozen_client
+            frozen_result = frozen_resume.export_chats_range(
+                None,
+                None,
+                raw_root=raw_root,
+                sessions=[session],
+                state_path=state_path,
+            )
+
+            rejected = WeflowApiBackend(_config(root))
+            rejected_client = _BulkClient([session], {session["username"]: []})
+            rejected._client = rejected_client
+            with self.assertRaisesRegex(ValueError, "plan 区间是 .*本次请求"):
+                rejected.export_chats_range(
+                    first,
+                    extended_end,
+                    raw_root=raw_root,
+                    sessions=[session],
+                    state_path=state_path,
+                )
+
+            shrink = WeflowApiBackend(_config(root))
+            shrink._client = _BulkClient([session], {session["username"]: []})
+            with self.assertRaisesRegex(ValueError, "只能扩、不能缩"):
+                shrink.export_chats_range(
+                    date(2026, 8, 2),
+                    extended_end,
+                    raw_root=raw_root,
+                    sessions=[session],
+                    state_path=state_path,
+                    expand_range=True,
+                )
+
+        self.assertEqual(rejected_client.message_calls, [])
+        self.assertEqual(frozen_client.message_calls, [])
+        self.assertEqual(frozen_result.resumed_plans, 1)
+
+    def test_missing_dates_without_a_plan_fails_loudly(self) -> None:
+        session = {"username": "wxid_first_run", "displayName": "首次运行会话"}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            backend = WeflowApiBackend(_config(root))
+            backend._client = _BulkClient([session], {})
+            with self.assertRaisesRegex(ValueError, "首次运行时显式提供 --start 与 --end"):
+                backend.export_chats_range(
+                    None,
+                    None,
+                    raw_root=root / "raw",
+                    sessions=[session],
+                    state_path=root / ".state.json",
+                )
 
     def test_message_target_chunking_keeps_every_day_and_rejects_bad_partitions(self) -> None:
         first = date(2026, 8, 1)
@@ -619,11 +698,208 @@ class BulkExportTests(unittest.TestCase):
 
         empty_plan = plan["sessions"][empty["username"]]
         failed_plan = plan["sessions"][failed["username"]]
-        self.assertEqual(empty_plan["dailyCounts"], {first.isoformat(): 0, second.isoformat(): 0})
+        self.assertEqual(empty_plan["dailyCounts"], {})
         self.assertNotIn("lastFailure", empty_plan)
         self.assertIn("lastFailure", failed_plan)
         self.assertNotIn("dailyCounts", failed_plan)
         self.assertIn(failed["username"], result.failures)
+
+    def test_real_v1_shapes_migrate_sparse_without_losing_zero_coverage(self) -> None:
+        fixture = json.loads(
+            (Path(__file__).parent / "fixtures" / "bulk_export_v1_real_shape.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        first, second = date(2026, 8, 1), date(2026, 8, 2)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            raw_root = root / "raw"
+            canonical = raw_root / "中性活跃会话" / "2026-08-02.json"
+            canonical.parent.mkdir(parents=True)
+            canonical.write_text('{"messages": []}', encoding="utf-8")
+
+            plan_payload = fixture["plan"]
+            plan_payload["outputRoot"] = str(raw_root.resolve())
+            plan_path = root / ".plan.json"
+            plan_path.write_text(json.dumps(plan_payload, ensure_ascii=False), encoding="utf-8")
+            plan = BulkExportPlan.load(plan_path, raw_root)
+            self.assertEqual(
+                plan.daily_counts("wxid_neutral_active", first, second),
+                {first: 0, second: 3},
+            )
+            self.assertEqual(plan.recorded_range(), DateInterval(first, second))
+            plan.save()
+            migrated_plan = json.loads(plan_path.read_text(encoding="utf-8"))
+
+            state_payload = fixture["state"]
+            state_payload["outputRoot"] = str(raw_root.resolve())
+            state_path = root / ".state.json"
+            state_path.write_text(json.dumps(state_payload, ensure_ascii=False), encoding="utf-8")
+            state = BulkExportState.load(state_path, raw_root)
+            self.assertEqual(
+                state.completed_daily_counts("wxid_neutral_active", first, second),
+                {first: 0, second: 4},
+            )
+            state.save()
+            migrated_state = json.loads(state_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(migrated_plan["version"], 2)
+        self.assertEqual(
+            migrated_plan["sessions"]["wxid_neutral_active"]["dailyCounts"],
+            {second.isoformat(): 3},
+        )
+        self.assertEqual(migrated_state["version"], 2)
+        self.assertEqual(
+            migrated_state["sessions"]["wxid_neutral_active"]["completed"][0]["dailyCounts"],
+            {second.isoformat(): 4},
+        )
+        self.assertEqual(fixture["reconciliation"]["sessions"][0]["status"], "drift_or_incomplete")
+
+    def test_plan_with_a_coverage_gap_refuses_to_supply_denominator(self) -> None:
+        first = date(2026, 8, 1)
+        missing = date(2026, 8, 2)
+        last = date(2026, 8, 3)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            raw_root = root / "raw"
+            plan_path = root / ".plan.json"
+            plan_path.write_text(
+                json.dumps(
+                    {
+                        "version": 2,
+                        "outputRoot": str(raw_root.resolve()),
+                        "range": {"start": first.isoformat(), "end": last.isoformat()},
+                        "sessions": {
+                            "wxid_gap_placeholder": {
+                                "displayName": "覆盖缺口会话",
+                                "completed": [
+                                    {"start": first.isoformat(), "end": first.isoformat()},
+                                    {"start": last.isoformat(), "end": last.isoformat()},
+                                ],
+                                "dailyCounts": {first.isoformat(): 2, last.isoformat(): 1},
+                            }
+                        },
+                        "noLocalRecords": {},
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            plan = BulkExportPlan.load(plan_path, raw_root)
+
+            # 阳性对照：若覆盖证据被错误地补成连续区间，判据必须先能变绿。
+            self.assertEqual(plan.uncovered("wxid_gap_placeholder", first, last), [DateInterval(missing, missing)])
+            self.assertIsNone(plan.daily_counts("wxid_gap_placeholder", first, last))
+
+    def test_no_local_records_is_classified_once_skipped_then_explicitly_retried(self) -> None:
+        class MissingDatabaseClient(_BulkClient):
+            def fetch_messages(self, talker, *, start, end, **_kwargs):
+                self.message_calls.append((talker, start, end))
+                raise WeflowApiError(
+                    "WeFlow API HTTP 500: /api/v1/messages — 创建游标失败: -3（消息数据库未找到）",
+                    status=500,
+                )
+
+        export_day = date(2026, 8, 5)
+        session = {
+            "username": "wxid_no_local_placeholder",
+            "displayName": "本机无记录会话",
+            "lastTimestamp": None,
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            raw_root = root / "raw"
+            state_path = root / ".state.json"
+            first_client = MissingDatabaseClient([session], {})
+            first = WeflowApiBackend(_config(root))
+            first._client = first_client
+            first_result = first.export_chats_range(
+                export_day,
+                export_day,
+                raw_root=raw_root,
+                sessions=[session],
+                state_path=state_path,
+            )
+
+            skipped_client = MissingDatabaseClient([session], {})
+            skipped = WeflowApiBackend(_config(root))
+            skipped._client = skipped_client
+            skipped_result = skipped.export_chats_range(
+                export_day,
+                export_day,
+                raw_root=raw_root,
+                sessions=[session],
+                state_path=state_path,
+            )
+
+            retry_client = _BulkClient([session], {session["username"]: []})
+            retry = WeflowApiBackend(_config(root))
+            retry._client = retry_client
+            retry_result = retry.export_chats_range(
+                export_day,
+                export_day,
+                raw_root=raw_root,
+                sessions=[session],
+                state_path=state_path,
+                retry_no_local_records=True,
+            )
+            plan = json.loads(
+                state_path.with_name(f"{state_path.name}.plan.json").read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(len(first_client.message_calls), 1)
+        self.assertEqual(first_result.failures, {})
+        self.assertEqual(first_result.no_local_records, 1)
+        self.assertEqual(skipped_client.message_calls, [])
+        self.assertEqual(skipped_result.no_local_records, 1)
+        self.assertEqual(len(retry_client.message_calls), 2)
+        self.assertEqual(retry_result.no_local_records, 0)
+        self.assertNotIn(session["username"], plan["noLocalRecords"])
+
+    def test_daily_no_local_state_seeds_bulk_plan_without_an_api_retry(self) -> None:
+        export_day = date(2026, 8, 5)
+        session = {
+            "username": "wxid_known_empty_placeholder",
+            "displayName": "已知空会话",
+            "lastTimestamp": None,
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".export-state.json").write_text(
+                json.dumps(
+                    {
+                        "version": 3,
+                        "failures": {},
+                        "ignored": {},
+                        "noLocalRecords": {
+                            session["username"]: {
+                                "wxid": session["username"],
+                                "displayName": session["displayName"],
+                                "firstDetectedDate": "2026-08-01",
+                                "lastDetectedDate": "2026-08-04",
+                                "lastTimestamp": None,
+                                "lastError": "neutral verified empty-session evidence",
+                            }
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            client = _BulkClient([session], {})
+            backend = WeflowApiBackend(_config(root))
+            backend._client = client
+            result = backend.export_chats_range(
+                export_day,
+                export_day,
+                raw_root=root / "raw",
+                sessions=[session],
+                state_path=root / ".state.json",
+            )
+
+        self.assertEqual(client.message_calls, [])
+        self.assertEqual(result.failures, {})
+        self.assertEqual(result.no_local_records, 1)
 
     def test_plan_is_media_free_and_uses_the_export_day_splitter(self) -> None:
         class CaptureMediaClient(_BulkClient):
@@ -782,6 +1058,40 @@ class BulkExportTests(unittest.TestCase):
         self.assertEqual(entry["differences"][0]["plannedMessages"], 1)
         self.assertEqual(entry["differences"][0]["exportedMessages"], 0)
 
+    def test_bulk_result_uses_current_contact_name_for_operator_output(self) -> None:
+        class CurrentContactClient(_BulkClient):
+            def fetch_contacts(self, *, limit):
+                return [
+                    {
+                        "username": "wxid_current_name_placeholder",
+                        "displayName": "名册当前名称",
+                    }
+                ]
+
+        export_day = date(2026, 8, 5)
+        session = {
+            "username": "wxid_current_name_placeholder",
+            "displayName": "会话陈旧快照",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            backend = WeflowApiBackend(_config(root))
+            backend._client = CurrentContactClient(
+                [session], {session["username"]: [_message_for(export_day, 1)]}
+            )
+            result = backend.export_chats_range(
+                export_day,
+                export_day,
+                raw_root=root / "bulk-raw",
+                sessions=[session],
+                state_path=root / ".bulk-state.json",
+            )
+
+        self.assertEqual(
+            result.session_display_names,
+            {"wxid_current_name_placeholder": "名册当前名称"},
+        )
+
     def test_block_state_uses_a_journal_between_compactions(self) -> None:
         export_day = date(2026, 8, 5)
         with tempfile.TemporaryDirectory() as tmp:
@@ -819,6 +1129,7 @@ class BulkExportTests(unittest.TestCase):
     def test_bulk_failure_uses_own_state_and_never_writes_daily_failure_state(self) -> None:
         class FailingClient(_BulkClient):
             def fetch_messages(self, talker, *, start, end, **_kwargs):
+                self.message_calls.append((talker, start, end))
                 raise RuntimeError("injected bulk failure")
 
         session = {"username": "wxid_failure_placeholder", "displayName": "失败会话占位"}
@@ -836,11 +1147,21 @@ class BulkExportTests(unittest.TestCase):
                 sessions=[session],
                 state_path=state_path,
             )
+            second_result = backend.export_chats_range(
+                date(2026, 8, 1),
+                date(2026, 8, 2),
+                raw_root=root / "bulk-raw",
+                sessions=[session],
+                state_path=state_path,
+            )
             self.assertIn(session["username"], result.failures)
+            self.assertIn(session["username"], second_result.failures)
+            self.assertEqual(len(backend.client.message_calls), 2)
             plan_path = state_path.with_name(f"{state_path.name}.plan.json")
             plan = json.loads(plan_path.read_text(encoding="utf-8"))
             self.assertIn("lastFailure", plan["sessions"][session["username"]])
-            self.assertFalse(state_path.exists())
+            self.assertTrue(state_path.exists())
+            self.assertEqual(json.loads(state_path.read_text(encoding="utf-8"))["version"], 2)
             self.assertFalse((root / ".export-state.json").exists())
 
     def test_cli_session_queries_are_repeatable_and_deduplicated(self) -> None:
@@ -871,11 +1192,84 @@ class BulkExportTests(unittest.TestCase):
                 "--chunk-target",
                 "321",
                 "--replan",
+                "--expand-range",
+                "--retry-no-local-records",
+                "--log",
+                "driver.log",
             ]
         )
 
         self.assertEqual(args.chunk_target, 321)
         self.assertTrue(args.replan)
+        self.assertTrue(args.expand_range)
+        self.assertTrue(args.retry_no_local_records)
+        self.assertEqual(args.log, "driver.log")
+
+    def test_cli_accepts_frozen_range_resume_without_dates(self) -> None:
+        args = export_bulk_raw.build_parser().parse_args(["--out", "synthetic-output"])
+
+        self.assertIsNone(args.start)
+        self.assertIsNone(args.end)
+
+    def test_driver_log_appends_timestamped_lines_without_changing_console(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "driver.log"
+            output, errors = io.StringIO(), io.StringIO()
+            with redirect_stdout(output), redirect_stderr(errors):
+                with export_bulk_raw._driver_log(str(log_path)):
+                    print("stdout 原文")
+                    print("stderr 原文", file=sys.stderr)
+                with export_bulk_raw._driver_log(str(log_path)):
+                    print("第二轮")
+            lines = log_path.read_text(encoding="utf-8").splitlines()
+
+        self.assertEqual(output.getvalue(), "stdout 原文\n第二轮\n")
+        self.assertEqual(errors.getvalue(), "stderr 原文\n")
+        self.assertEqual(len(lines), 3)
+        self.assertTrue(all(line.startswith("[") and line[3] == ":" and line[6] == ":" for line in lines))
+        self.assertTrue(lines[0].endswith("stdout 原文"))
+        self.assertTrue(lines[1].endswith("stderr 原文"))
+        self.assertTrue(lines[2].endswith("第二轮"))
+
+    def test_driver_log_also_captures_argument_errors(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "driver.log"
+            errors = io.StringIO()
+            with redirect_stderr(errors), self.assertRaises(SystemExit):
+                export_bulk_raw.main(
+                    [
+                        "--start",
+                        "2026-08-01",
+                        "--out",
+                        "neutral-output",
+                        "--log",
+                        str(log_path),
+                    ]
+                )
+            log_text = log_path.read_text(encoding="utf-8")
+
+        self.assertIn("--start 与 --end 必须同时提供或同时省略", errors.getvalue())
+        self.assertIn("--start 与 --end 必须同时提供或同时省略", log_text)
+        self.assertTrue(all(line.startswith("[") for line in log_text.splitlines()))
+
+    def test_failure_list_groups_display_names_by_normalized_fingerprint(self) -> None:
+        failures = {
+            "wxid_neutral_a": "HTTP 500 wxid_neutral_a request 41 failed",
+            "wxid_neutral_b": "HTTP 503 wxid_neutral_b request 99 failed",
+        }
+        session_display_names = {
+            "wxid_neutral_a": "名册当前名称甲",
+            "wxid_neutral_b": "名册当前名称乙",
+        }
+        errors = io.StringIO()
+        with redirect_stderr(errors):
+            export_bulk_raw._print_failure_groups(failures, session_display_names)
+
+        text = errors.getvalue()
+        self.assertIn("失败清单（按指纹分组）", text)
+        self.assertIn("指纹（2 个）", text)
+        self.assertIn("名册当前名称甲", text)
+        self.assertIn("名册当前名称乙", text)
 
     def test_cli_passes_explicit_range_selection_output_and_resume_state_to_backend(self) -> None:
         sessions = [
@@ -936,8 +1330,126 @@ class BulkExportTests(unittest.TestCase):
         )
         self.assertEqual(call.kwargs["chunk_target"], 10_000)
         self.assertFalse(call.kwargs["replan"])
+        self.assertFalse(call.kwargs["expand_range"])
+        self.assertFalse(call.kwargs["retry_no_local_records"])
         fake_backend.prepare_bulk_export.assert_called_once_with()
         fake_backend.shutdown.assert_called_once_with()
+
+    def test_cli_guard_stop_prints_reconciliation_and_summary_before_exit_one(self) -> None:
+        session = {"username": "synthetic-health@chatroom", "displayName": "中性健康群"}
+        fake_backend = Mock()
+        fake_backend.client.fetch_sessions.return_value = [session]
+        fake_backend.export_chats_range.return_value = BulkExportResult(
+            requested_sessions=1,
+            completed_intervals=1,
+            resumed_intervals=0,
+            skipped_platform_accounts=0,
+            messages_written=1,
+            files_written=(),
+            failures={},
+            reconciliation_path=Path("neutral-reconciliation.json"),
+            stopped_reason="群成员名册服务疑似进入坏状态；请重启后续跑",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = _config(root)
+            output, errors = io.StringIO(), io.StringIO()
+            with (
+                patch.object(export_bulk_raw, "load_config", return_value=cfg),
+                patch.object(export_bulk_raw, "resolve_config_path", return_value=root / "config.toml"),
+                patch.object(export_bulk_raw, "WeflowApiBackend", return_value=fake_backend),
+                redirect_stdout(output),
+                redirect_stderr(errors),
+            ):
+                code = export_bulk_raw.main(
+                    [
+                        "--start",
+                        "2026-08-01",
+                        "--end",
+                        "2026-08-01",
+                        "--out",
+                        str(root / "raw"),
+                    ]
+                )
+
+        self.assertEqual(code, 1)
+        self.assertIn("对账：neutral-reconciliation.json", output.getvalue())
+        self.assertIn("汇总：", output.getvalue())
+        self.assertIn("批量 raw 导出停止", errors.getvalue())
+
+    def test_cli_incomplete_coverage_is_visible_and_exits_one(self) -> None:
+        session = {"username": "wxid_coverage_placeholder", "displayName": "覆盖会话占位"}
+        start = date(2024, 1, 1)
+        end = date(2024, 1, 5)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            raw_root = root / "raw"
+            plan = BulkExportPlan.load(root / ".plan.json", raw_root)
+            plan.resolve_range(start, end, allow_expand=False)
+            plan.record_completed(
+                session["username"],
+                session["displayName"],
+                DateInterval(start, end),
+                {},
+            )
+            state = BulkExportState.load(root / ".state.json", raw_root)
+            state.record_completed(
+                session["username"],
+                session["displayName"],
+                DateInterval(start, date(2024, 1, 2)),
+                [],
+                daily_counts={},
+            )
+            reconciliation_path, differences, incomplete_days = _write_bulk_reconciliation(
+                raw_root,
+                plan,
+                state,
+                [session],
+                contacts=[session],
+                start=start,
+                end=end,
+                skip_platform_accounts=True,
+            )
+            fake_backend = Mock()
+            fake_backend.client.fetch_sessions.return_value = [session]
+            fake_backend.export_chats_range.return_value = BulkExportResult(
+                requested_sessions=1,
+                completed_intervals=1,
+                resumed_intervals=0,
+                skipped_platform_accounts=0,
+                messages_written=0,
+                files_written=(),
+                failures={},
+                reconciliation_path=reconciliation_path,
+                reconciliation_differences=differences,
+                reconciliation_incomplete_coverage_days=incomplete_days,
+                session_display_names={session["username"]: session["displayName"]},
+            )
+            cfg = _config(root)
+            output, errors = io.StringIO(), io.StringIO()
+            with (
+                patch.object(export_bulk_raw, "load_config", return_value=cfg),
+                patch.object(export_bulk_raw, "resolve_config_path", return_value=root / "config.toml"),
+                patch.object(export_bulk_raw, "WeflowApiBackend", return_value=fake_backend),
+                redirect_stdout(output),
+                redirect_stderr(errors),
+            ):
+                code = export_bulk_raw.main(
+                    [
+                        "--start",
+                        start.isoformat(),
+                        "--end",
+                        end.isoformat(),
+                        "--out",
+                        str(raw_root),
+                    ]
+                )
+
+        self.assertEqual(differences, 0)
+        self.assertEqual(incomplete_days, 3)
+        self.assertEqual(code, 1)
+        self.assertIn("差异日 0；覆盖缺口 3", output.getvalue())
+        self.assertIn("覆盖不完整", errors.getvalue())
 
 
 def _tree_bytes(root: Path) -> dict[str, bytes]:

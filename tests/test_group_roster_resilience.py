@@ -319,18 +319,22 @@ class GroupRosterResilienceTests(unittest.TestCase):
             )
             first_backend = WeflowApiBackend(_config(root))
             first_backend._client = first_client
-            with self.assertRaisesRegex(RuntimeError, "重启 WeFlow API 服务后用原命令续跑"):
-                first_backend.export_chats_range(
-                    export_day,
-                    export_day,
-                    raw_root=raw_root,
-                    sessions=sessions,
-                    state_path=state_path,
-                )
+            first_result = first_backend.export_chats_range(
+                export_day,
+                export_day,
+                raw_root=raw_root,
+                sessions=sessions,
+                state_path=state_path,
+            )
 
             first_payloads = sorted(raw_root.glob("*/*.json"))
             self.assertEqual(len(first_payloads), 5)
             self.assertFalse(any("Group 6" in str(path) for path in first_payloads))
+            self.assertIn("重启 WeFlow API 服务后用原命令续跑", first_result.stopped_reason)
+            self.assertTrue(state_path.is_file())
+            self.assertTrue(first_result.reconciliation_path.is_file())
+            reconciliation = json.loads(first_result.reconciliation_path.read_text(encoding="utf-8"))
+            self.assertEqual(reconciliation["incompleteCoverageDays"], 1)
 
             resumed_client = _RosterClient(sessions, messages)
             resumed_backend = WeflowApiBackend(_config(root))

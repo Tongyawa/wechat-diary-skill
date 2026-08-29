@@ -61,7 +61,7 @@ python "$SkillRoot\scripts\export_on_demand.py" --session <wxid或显示名子�
 **⑤ 归档摄取** `python "$SkillRoot\scripts\archive_exports.py" --raw-root <旧raw> --processed-root <旧processed>`（默认复制保源；倒序覆盖会在整批写入前拒绝，移动与人工确认参数见 §5）
 **⑥ 打开产物** `powershell ... -File "$SkillRoot\scripts\Open-LatestInsights.ps1" -Workspace "$Workspace"`（按日期挑用 `Open-InsightsByDate.ps1`）
 **⑦ 初始化 worktree 配置**（在目标 worktree 根目录运行）`python "$SkillRoot\scripts\init_worktree_config.py"`
-**⑧ 批量 raw 导出**（先 `media=false` 建逐日 plan，再按目标消息数切块导出；显式落点、可续跑，不产 processed；群名册大面积失败时保住当前块后停下，重启 WeFlow API 服务即可续跑）`python "$SkillRoot\scripts\export_bulk_raw.py" --start <起> --end <止> --out <raw输出根> [--chunk-target 10000] [--replan]`
+**⑧ 批量 raw 导出**（首跑显式给起止日，plan 冻结区间；续跑只给同一 `--out`，不随日期漂移。先 `media=false` 建稀疏逐日 plan，再按目标消息数切块；本机无记录会话默认零请求，群名册大面积失败时先留对账再停）`python "$SkillRoot\scripts\export_bulk_raw.py" --out <raw输出根> [--start <起> --end <止>] [--chunk-target 10000] [--replan]`
 **⑨ 群名字回填**（纯离线；默认预览，显式 `--apply` 才只改未解析的名字派生字段）`python "$SkillRoot\scripts\backfill_group_names.py" --raw-root <canonical raw根> [--apply]`
 
 ## 二次加工
