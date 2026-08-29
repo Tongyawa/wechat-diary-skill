@@ -1,0 +1,91 @@
+{
+  "plan": {
+    "outputRoot": "<OUTPUT_ROOT>",
+    "sessions": {
+      "wxid_neutral_active": {
+        "completed": [
+          {
+            "end": "2026-08-02",
+            "start": "2026-08-01"
+          }
+        ],
+        "dailyCounts": {
+          "2026-08-01": 0,
+          "2026-08-02": 3
+        },
+        "displayName": "中性活跃会话"
+      },
+      "wxid_neutral_failed": {
+        "displayName": "中性失败会话",
+        "lastFailure": {
+          "end": "2026-08-02",
+          "error": "WeFlow API HTTP 500: /api/v1/messages — 创建游标失败: -3（消息数据库未找到）",
+          "start": "2026-08-01"
+        }
+      }
+    },
+    "version": 1
+  },
+  "reconciliation": {
+    "differenceCount": 1,
+    "outputRoot": "<OUTPUT_ROOT>",
+    "range": {
+      "end": "2026-08-02",
+      "start": "2026-08-01"
+    },
+    "sessions": [
+      {
+        "differences": [
+          {
+            "day": "2026-08-02",
+            "exportedMessages": 4,
+            "plannedMessages": 3
+          }
+        ],
+        "displayName": "中性活跃会话",
+        "exportedActiveDays": 1,
+        "exportedCoverageDays": 2,
+        "exportedDailyCounts": {
+          "2026-08-01": 0,
+          "2026-08-02": 4
+        },
+        "exportedMessages": 4,
+        "plannedActiveDays": 1,
+        "plannedDailyCounts": {
+          "2026-08-01": 0,
+          "2026-08-02": 3
+        },
+        "plannedMessages": 3,
+        "range": {
+          "end": "2026-08-02",
+          "start": "2026-08-01"
+        },
+        "session": "wxid_neutral_active",
+        "status": "drift_or_incomplete"
+      }
+    ],
+    "version": 1
+  },
+  "state": {
+    "outputRoot": "<OUTPUT_ROOT>",
+    "sessions": {
+      "wxid_neutral_active": {
+        "completed": [
+          {
+            "dailyCounts": {
+              "2026-08-01": 0,
+              "2026-08-02": 4
+            },
+            "end": "2026-08-02",
+            "files": [
+              "中性活跃会话/2026-08-02.json"
+            ],
+            "start": "2026-08-01"
+          }
+        ],
+        "displayName": "中性活跃会话"
+      }
+    },
+    "version": 1
+  }
+}

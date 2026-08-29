@@ -45,13 +45,17 @@ class BulkExportResult:
     messages_written: int
     files_written: tuple[Path, ...]
     failures: dict[str, str]
+    no_local_records: int = 0
     planned_sessions: int = 0
     resumed_plans: int = 0
     reconciliation_path: Path | None = None
     reconciliation_differences: int = 0
+    reconciliation_incomplete_coverage_days: int = 0
+    session_display_names: dict[str, str] = field(default_factory=dict)
     group_roster_attempts: int = 0
     group_roster_failures: int = 0
     degraded_group_rosters: tuple[str, ...] = ()
+    stopped_reason: str | None = None
 
 
 @dataclass
@@ -173,8 +177,8 @@ class WeflowApiBackend:
 
     def export_chats_range(
         self,
-        start: date,
-        end: date,
+        start: date | None,
+        end: date | None,
         *,
         raw_root: Path | None = None,
         sessions: Sequence[Mapping[str, Any]] | None = None,
@@ -183,14 +187,14 @@ class WeflowApiBackend:
         plan_path: Path | None = None,
         chunk_target: int = 10_000,
         replan: bool = False,
+        expand_range: bool = False,
+        retry_no_local_records: bool = False,
         _daily_compat: bool = False,
     ) -> BulkExportResult | None:
         """Export selected sessions over an inclusive range as one canonical file per active day."""
 
-        if start > end:
-            raise ValueError("批量导出的起始日期不能晚于结束日期")
         if _daily_compat:
-            if start != end:
+            if start is None or end is None or start != end:
                 raise ValueError("日常兼容路径只接受单日范围")
             self._export_chats_daily(start)
             return None
@@ -209,6 +213,11 @@ class WeflowApiBackend:
             f"{state_file.name}.plan.json"
         )
         plan = BulkExportPlan.load(plan_file, destination_root)
+        start, end, previous_range = plan.resolve_range(
+            start,
+            end,
+            allow_expand=expand_range,
+        )
         self.partial_failures.clear()
         if sessions is None:
             selected_sessions, contacts = self._export_roster()
@@ -219,15 +228,62 @@ class WeflowApiBackend:
             contacts = self._contacts_cache
         if not selected_sessions:
             raise RuntimeError("WeFlow API 没有返回可导出的会话，拒绝把空结果当成功")
+        session_display_names = {
+            talker: session_directory_display_name(session, contacts)
+            for session in selected_sessions
+            if (talker := str(session.get("username") or ""))
+        }
         _validate_bulk_destination_names(
             selected_sessions,
             contacts=contacts,
             skip_platform_accounts=self.config.daily_export.skip_official_accounts,
         )
 
+        # Reuse the daily chain's already-classified third state. This imports
+        # evidence, not a second predicate; new bulk failures still go through
+        # the exact same four-evidence classifier below.
+        if not retry_no_local_records:
+            daily_failure_state = self._load_failure_state()
+            for session in selected_sessions:
+                talker = str(session.get("username") or "")
+                known = daily_failure_state.no_local_records.get(talker)
+                if (
+                    not talker
+                    or not isinstance(known, dict)
+                    or plan.is_no_local_records(talker)
+                    or plan.has_completed(talker)
+                ):
+                    continue
+                plan.record_no_local_records(
+                    talker,
+                    session_directory_display_name(session, contacts),
+                    end,
+                    str(known.get("lastError") or "日常导出已判定本机无记录"),
+                    last_timestamp=known.get("lastTimestamp"),
+                    first_detected_date=str(known.get("firstDetectedDate") or "") or None,
+                )
+
+        if previous_range is not None:
+            affected = sum(
+                1
+                for session in selected_sessions
+                if (talker := str(session.get("username") or ""))
+                and not (
+                    self.config.daily_export.skip_official_accounts
+                    and _is_platform_account(talker)
+                )
+                and not plan.is_no_local_records(talker)
+                and bool(plan.uncovered(talker, start, end))
+            )
+            print(
+                f"[INFO] 本次把区间从 {previous_range.start}~{previous_range.end} "
+                f"扩到 {start}~{end}，需为 {affected} 个会话补规划"
+            )
+
         planned_sessions = 0
         resumed_plans = 0
         plan_failures: dict[str, str] = {}
+        historical_evidence: tuple[set[str], bool] | None = None
         for index, session in enumerate(selected_sessions, start=1):
             talker = str(session.get("username") or "")
             display_name = session_directory_display_name(session, contacts)
@@ -235,6 +291,11 @@ class WeflowApiBackend:
                 self.config.daily_export.skip_official_accounts and _is_platform_account(talker)
             ):
                 continue
+            if plan.is_no_local_records(talker):
+                if retry_no_local_records:
+                    plan.clear_no_local_records(talker)
+                else:
+                    continue
             if replan:
                 plan.invalidate(talker, start, end)
             pending_plan = plan.uncovered(talker, start, end)
@@ -264,11 +325,44 @@ class WeflowApiBackend:
                     planned_this_session = True
                 except Exception as exc:
                     reason = _readable_error_summary(str(exc), limit=500)
-                    plan_failures[talker] = reason
-                    plan.record_failure(talker, display_name, interval, reason)
+                    if historical_evidence is None:
+                        historical_evidence = _historical_export_wxids(
+                            self.config.paths.archived / "raw"
+                        )
+                    historical_wxids, history_scan_complete = historical_evidence
+                    historical_wxids = {
+                        *historical_wxids,
+                        *(
+                            str(candidate.get("username") or "")
+                            for candidate in selected_sessions
+                            if plan.has_completed(str(candidate.get("username") or ""))
+                        ),
+                    }
+                    is_no_local_records, last_timestamp = _is_no_local_records_failure(
+                        exc,
+                        dict(session),
+                        end,
+                        historical_wxids=historical_wxids,
+                        history_scan_complete=history_scan_complete,
+                    )
+                    if is_no_local_records:
+                        plan.record_no_local_records(
+                            talker,
+                            display_name,
+                            end,
+                            str(exc),
+                            last_timestamp=last_timestamp,
+                        )
+                    else:
+                        plan_failures[talker] = reason
+                        plan.record_failure(talker, display_name, interval, reason)
                     break
             if planned_this_session and talker not in plan_failures:
                 planned_sessions += 1
+
+        # Compact a legacy 108 MB v1 plan exactly once after planning. The
+        # journal keeps every per-session checkpoint crash-safe before this.
+        plan.save()
 
         completed_intervals = 0
         resumed_intervals = 0
@@ -277,7 +371,10 @@ class WeflowApiBackend:
         files_written: list[Path] = []
         failures: dict[str, str] = dict(plan_failures)
         group_roster_stats = _GroupRosterStats()
+        stopped_reason: str | None = None
         for index, session in enumerate(selected_sessions, start=1):
+            if stopped_reason is not None:
+                break
             talker = str(session.get("username") or "")
             display_name = session_directory_display_name(session, contacts)
             if not talker:
@@ -286,6 +383,8 @@ class WeflowApiBackend:
                 continue
             if self.config.daily_export.skip_official_accounts and _is_platform_account(talker):
                 skipped_platform_accounts += 1
+                continue
+            if plan.is_no_local_records(talker):
                 continue
 
             daily_plan = plan.daily_counts(talker, start, end)
@@ -411,13 +510,14 @@ class WeflowApiBackend:
                         break
 
                     if interval_completed and group_roster_stats.should_stop_bulk_export:
-                        raise RuntimeError(
+                        stopped_reason = (
                             "群成员名册服务疑似进入坏状态：最近 5 个有消息群中至少 4 个读取失败。"
                             "当前块的消息已按 canonical/contacts/wxid 退路发布并记入续跑状态；"
                             "请重启 WeFlow API 服务后用原命令续跑。"
                         )
+                        break
 
-                if talker in failures:
+                if talker in failures or stopped_reason is not None:
                     break
 
         if skipped_platform_accounts:
@@ -425,7 +525,14 @@ class WeflowApiBackend:
                 f"[INFO] 已跳过 {skipped_platform_accounts} 个公众号/企业微信/客服会话"
                 "（skip_official_accounts=true）"
             )
-        reconciliation_path, reconciliation_differences = _write_bulk_reconciliation(
+        # Guard-triggered stops still leave a compact state snapshot and a full
+        # reconciliation report before the driver chooses a nonzero exit.
+        state.save()
+        (
+            reconciliation_path,
+            reconciliation_differences,
+            reconciliation_incomplete_coverage_days,
+        ) = _write_bulk_reconciliation(
             destination_root,
             plan,
             state,
@@ -443,13 +550,27 @@ class WeflowApiBackend:
             messages_written=messages_written,
             files_written=tuple(files_written),
             failures=failures,
+            no_local_records=plan.no_local_records_count(
+                {
+                    talker
+                    for session in selected_sessions
+                    if (talker := str(session.get("username") or ""))
+                    and not (
+                        self.config.daily_export.skip_official_accounts
+                        and _is_platform_account(talker)
+                    )
+                }
+            ),
             planned_sessions=planned_sessions,
             resumed_plans=resumed_plans,
             reconciliation_path=reconciliation_path,
             reconciliation_differences=reconciliation_differences,
+            reconciliation_incomplete_coverage_days=reconciliation_incomplete_coverage_days,
+            session_display_names=session_display_names,
             group_roster_attempts=group_roster_stats.attempted_sessions,
             group_roster_failures=len(group_roster_stats.failed_sessions),
             degraded_group_rosters=tuple(group_roster_stats.failed_sessions),
+            stopped_reason=stopped_reason,
         )
 
     def _export_chats_daily(self, export_date: date) -> None:
@@ -1332,11 +1453,12 @@ def _write_bulk_reconciliation(
     start: date,
     end: date,
     skip_platform_accounts: bool,
-) -> tuple[Path, int]:
+) -> tuple[Path, int, int]:
     """Write an inspectable plan-vs-actual report; drift is evidence, not failure."""
 
     entries: list[dict[str, Any]] = []
     difference_count = 0
+    incomplete_coverage_days = 0
     for index, session in enumerate(sessions, start=1):
         talker = str(session.get("username") or "")
         display_name = session_directory_display_name(session, contacts)
@@ -1354,6 +1476,10 @@ def _write_bulk_reconciliation(
             entry["status"] = "skipped_platform_account"
             entries.append(entry)
             continue
+        if plan.is_no_local_records(talker):
+            entry["status"] = "no_local_records"
+            entries.append(entry)
+            continue
         planned = plan.daily_counts(talker, start, end)
         if planned is None:
             entry["status"] = "plan_unavailable"
@@ -1362,8 +1488,12 @@ def _write_bulk_reconciliation(
             continue
         actual = state.completed_daily_counts(talker, start, end)
         covered = state.covered_days(talker, start, end)
+        missing_coverage_days = (end - start).days + 1 - len(covered)
+        incomplete_coverage_days += missing_coverage_days
         differences: list[dict[str, Any]] = []
         for current in _days_inclusive(start, end):
+            if current not in covered:
+                continue
             expected = planned[current]
             observed = actual.get(current) if actual is not None else None
             if expected != observed:
@@ -1374,13 +1504,20 @@ def _write_bulk_reconciliation(
             {
                 "plannedMessages": sum(planned.values()),
                 "plannedActiveDays": sum(1 for value in planned.values() if value),
-                "plannedDailyCounts": {day.isoformat(): planned[day] for day in sorted(planned)},
+                "plannedCoverageDays": (end - start).days + 1,
+                "plannedDailyCounts": {
+                    day.isoformat(): planned[day] for day in sorted(planned) if planned[day]
+                },
                 "exportedMessages": sum(actual.values()) if actual is not None else None,
                 "exportedActiveDays": sum(1 for value in actual.values() if value) if actual is not None else None,
                 "exportedDailyCounts": (
-                    {day.isoformat(): actual[day] for day in sorted(actual)} if actual is not None else None
+                    {day.isoformat(): actual[day] for day in sorted(actual) if actual[day]}
+                    if actual is not None
+                    else None
                 ),
                 "exportedCoverageDays": len(covered),
+                "missingCoverageDays": missing_coverage_days,
+                "missingCoverage": _missing_coverage_intervals(start, end, covered),
                 "differences": differences,
             }
         )
@@ -1393,14 +1530,15 @@ def _write_bulk_reconciliation(
         entries.append(entry)
     path = raw_root.parent / f".{raw_root.name}.bulk-export-reconciliation.json"
     payload = {
-        "version": 1,
+        "version": 2,
         "outputRoot": str(raw_root.resolve()),
         "range": {"start": start.isoformat(), "end": end.isoformat()},
         "sessions": entries,
         "differenceCount": difference_count,
+        "incompleteCoverageDays": incomplete_coverage_days,
     }
     _write_json_atomically(path, payload)
-    return path, difference_count
+    return path, difference_count, incomplete_coverage_days
 
 
 def _write_json_atomically(path: Path, payload: Mapping[str, Any]) -> None:
@@ -1422,6 +1560,24 @@ def _days_inclusive(start: date, end: date):
     while current <= end:
         yield current
         current += timedelta(days=1)
+
+
+def _missing_coverage_intervals(
+    start: date, end: date, covered: set[date]
+) -> list[dict[str, str]]:
+    intervals: list[dict[str, str]] = []
+    cursor = start
+    while cursor <= end:
+        if cursor in covered:
+            cursor += timedelta(days=1)
+            continue
+        missing_start = cursor
+        while cursor <= end and cursor not in covered:
+            cursor += timedelta(days=1)
+        intervals.append(
+            {"start": missing_start.isoformat(), "end": (cursor - timedelta(days=1)).isoformat()}
+        )
+    return intervals
 
 
 def _referenced_cas_files(session_dir: Path, raw_root: Path) -> list[Path]:
