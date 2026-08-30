@@ -124,11 +124,13 @@ Pop-Location
 
 ```powershell
 Push-Location $Workspace
-python "$SkillRoot\scripts\export_bulk_raw.py" --start 2020-01-01 --end 2026-08-25 --out .\批量导出
+python "$SkillRoot\scripts\export_bulk_raw.py" --out .\批量导出
 Pop-Location
 ```
 
-首次运行时 `--start` / `--end` 必须同时给，`--out` 始终必填。plan 会冻结首跑区间；后续只给同一个 `--out` 就会续跑该区间，不因跨天变成另一个任务。显式改变区间默认拒绝；确认要扩大时加 `--expand-range`，只能扩、不能缩。`--session` 可重复，用来只导一组会话；省略即全部会话。
+`--out` 始终必填。省略 `--start` / `--end` 时，每次都按 config.toml 的 `[bulk_export]` 解析区间：`start` 默认 `2010-01-01`，空 `end` 默认滚动到昨天；已有 plan 只补新增日期，不重规划已覆盖历史。配置只能让 plan 区间不变或扩大，显式写出的内缩边界会被拒绝；想停止向前滚动，就给 `[bulk_export].end` 写一个具体日期。CLI 同时显式给两个日期时仍走独立守卫：与 plan 不一致默认拒绝，确认扩大才加 `--expand-range`，且永远不能缩。任何实际扩区间都会打印旧区间、新区间和需补规划的会话数。`--session` 可重复，用来只导一组会话；省略即全部会话。
+
+只想在开跑前确认实际区间，可加 `--print-range`。它完全离线，只读 config 与 plan，向 stdout 输出一行可直接解析的 JSON，不读取会话名册、不写 plan/state/journal；即使同时给 `--log` 也不会创建日志。
 
 **它分两遍跑，这是它能中断续跑的原因**：
 

@@ -27,6 +27,10 @@ class ConfigTests(unittest.TestCase):
         self.assertIsNone(cfg.asr.worker_script)
         self.assertEqual(cfg.asr.worker_startup_timeout_sec, 180)
         self.assertEqual(cfg.asr.worker_request_timeout_sec, 120)
+        self.assertEqual(cfg.bulk_export.start, "2010-01-01")
+        self.assertEqual(cfg.bulk_export.end, "")
+        self.assertFalse(cfg.bulk_export.start_configured)
+        self.assertFalse(cfg.bulk_export.end_configured)
 
     def test_reads_weflow_api_and_sensevoice_settings(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -210,6 +214,24 @@ skip_official_accounts = false
         self.assertEqual(cfg.daily_export.cleanup_mode, "delete")
         self.assertFalse(cfg.daily_export.restart_weflow)
         self.assertFalse(cfg.daily_export.skip_official_accounts)
+
+    def test_load_config_reads_bulk_export_range_and_explicit_flags(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.toml"
+            config_path.write_text(
+                """
+[bulk_export]
+start = "20210203"
+end = "2021-04-05"
+""".strip(),
+                encoding="utf-8",
+            )
+            cfg = load_config(config_path)
+
+        self.assertEqual(cfg.bulk_export.start, "20210203")
+        self.assertEqual(cfg.bulk_export.end, "2021-04-05")
+        self.assertTrue(cfg.bulk_export.start_configured)
+        self.assertTrue(cfg.bulk_export.end_configured)
 
     def test_load_config_can_disable_group_context_filtering(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

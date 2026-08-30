@@ -8,6 +8,8 @@ import sys
 import unittest
 from pathlib import Path
 
+from wechat_diary_core.config import DEFAULT_CONFIG
+
 
 ROOT = Path(__file__).resolve().parents[1]
 POWERSHELL = shutil.which("powershell.exe")
@@ -122,6 +124,16 @@ $ast.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath }
 
 
 class EntrypointParameterContractTests(unittest.TestCase):
+    def test_bulk_export_rolling_config_and_print_range_are_documented(self) -> None:
+        text = (ROOT / "references" / "entrypoints.md").read_text(encoding="utf-8")
+        configured = DEFAULT_CONFIG["bulk_export"]
+
+        self.assertEqual(configured, {"start": "2010-01-01", "end": ""})
+        self.assertIn("[bulk_export]", text)
+        self.assertIn("空 `end` 会滚动补到昨天", text)
+        self.assertIn("想让区间冻结不再前移", text)
+        self.assertIn("`--print-range`", text)
+
     def test_documented_parameters_match_live_entrypoints(self) -> None:
         documented = documented_options()
         expected_scripts = PYTHON_ENTRYPOINTS | POWERSHELL_ENTRYPOINTS

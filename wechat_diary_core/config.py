@@ -120,6 +120,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "cleanup_mode": "archive",
         "restart_weflow": True,
     },
+    "bulk_export": {
+        "start": "2010-01-01",
+        # Empty means yesterday on every run without explicit CLI dates. The
+        # recorded plan range is only ever preserved or expanded.
+        "end": "",
+    },
 }
 
 
@@ -309,6 +315,18 @@ class DailyExportConfig:
 
 
 @dataclass(frozen=True)
+class BulkExportConfig:
+    """Range used whenever bulk export runs without explicit CLI dates."""
+
+    start: str
+    end: str
+    # These flags retain explicit fixed-date intent after deep merge so an
+    # inward boundary can be rejected instead of mistaken for a rolling default.
+    start_configured: bool
+    end_configured: bool
+
+
+@dataclass(frozen=True)
 class Config:
     user: UserConfig
     paths: PathsConfig
@@ -322,6 +340,7 @@ class Config:
     skills: SkillsConfig
     backup: BackupConfig
     daily_export: DailyExportConfig
+    bulk_export: BulkExportConfig
     base_dir: Path
     raw: dict[str, Any]
     # Values explicitly present in config.toml, before defaults are merged.
@@ -360,6 +379,8 @@ def _build_config(raw: dict[str, Any], base_dir: Path, *, source: dict[str, Any]
     template = automation["template_fallback"]
     geometry = automation["window_geometry"]
     daily_export = raw["daily_export"]
+    bulk_export = raw["bulk_export"]
+    source_bulk_export = source.get("bulk_export") or {}
 
     driver = str(automation["driver"]).strip().lower()
     if driver not in {"cdp", "uia", "template"}:
@@ -526,6 +547,12 @@ def _build_config(raw: dict[str, Any], base_dir: Path, *, source: dict[str, Any]
             voice_fallback_script=_optional_path(base_dir, daily_export.get("voice_fallback_script")),
             cleanup_mode=cleanup_mode,
             restart_weflow=bool(daily_export.get("restart_weflow", True)),
+        ),
+        bulk_export=BulkExportConfig(
+            start=str(bulk_export.get("start", "")).strip(),
+            end=str(bulk_export.get("end", "")).strip(),
+            start_configured="start" in source_bulk_export,
+            end_configured="end" in source_bulk_export,
         ),
         base_dir=base_dir,
         raw=copy.deepcopy(raw),
