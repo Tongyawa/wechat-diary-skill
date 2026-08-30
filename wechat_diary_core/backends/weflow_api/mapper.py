@@ -452,12 +452,18 @@ def _map_message(
         else:
             sender = talker
 
-    roster = members if is_group else contacts
-    sender_record = roster.get(sender) or contacts.get(sender) or {}
+    member_record = members.get(sender) if is_group else None
+    contact_record = contacts.get(sender) or {}
+    sender_record = member_record or contact_record
     if sender == talker and not sender_record:
         sender_display = session_display_name
+    elif member_record:
+        sender_display = _group_member_display_name(
+            member_record,
+            _display_name(contact_record, sender),
+        )
     else:
-        sender_display = _display_name(sender_record, sender)
+        sender_display = _display_name(contact_record, sender)
 
     localized_media = _localize_media(
         message,
@@ -494,10 +500,10 @@ def _map_message(
         "senderUsername": sender,
         "senderDisplayName": sender_display,
         "senderRemark": str(sender_record.get("remark") or ""),
-        "senderNickname": str(
-            sender_record.get("nickname") or sender_record.get("groupNickname") or ""
-        ),
+        "senderNickname": str(sender_record.get("nickname") or ""),
     }
+    if is_group:
+        mapped["senderGroupNickname"] = str(sender_record.get("groupNickname") or "")
     server_id = message.get("serverId")
     if server_id not in (None, ""):
         mapped["platformMessageId"] = str(server_id)
@@ -512,11 +518,21 @@ def _map_message(
         elif quote.get("platformMessageId") not in (None, ""):
             mapped["replyToMessageId"] = str(quote["platformMessageId"])
         quoted_sender = str(quote.get("sender") or "")
+        quoted_member_record = members.get(quoted_sender) if is_group else None
+        quoted_contact_record = contacts.get(quoted_sender) or {}
+        quoted_roster_name = (
+            _group_member_display_name(
+                quoted_member_record,
+                _display_name(quoted_contact_record, quoted_sender),
+            )
+            if quoted_member_record
+            else _display_name(quoted_contact_record, quoted_sender)
+        )
         mapped["quotedContent"] = str(quote.get("content") or "")
         mapped["quotedSender"] = quoted_sender
         mapped["quotedSenderDisplayName"] = str(
             quote.get("accountName")
-            or _display_name(members.get(quoted_sender) or contacts.get(quoted_sender) or {}, quoted_sender)
+            or quoted_roster_name
         )
     return mapped
 
@@ -729,6 +745,17 @@ def _display_name(record: Mapping[str, Any], fallback: str) -> str:
         or record.get("groupNickname")
         or record.get("nickname")
         or record.get("remark")
+        or fallback
+        or "未知"
+    )
+
+
+def _group_member_display_name(record: Mapping[str, Any], fallback: str) -> str:
+    return str(
+        record.get("remark")
+        or record.get("groupNickname")
+        or record.get("nickname")
+        or record.get("_canonicalDisplayName")
         or fallback
         or "未知"
     )

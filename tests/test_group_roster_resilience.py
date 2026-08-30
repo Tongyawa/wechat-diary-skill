@@ -14,6 +14,10 @@ from wechat_diary_core.backends.weflow_api.backend import (
     WeflowApiBackend,
     _last_known_group_members,
 )
+from wechat_diary_core.backends.weflow_api.client import (
+    GROUP_ROSTER_RETRY_COOLDOWN_SECONDS,
+    fetch_group_members_with_retry,
+)
 from wechat_diary_core.config import load_config
 from wechat_diary_core.raw_schema import validate_session_json
 
@@ -74,11 +78,13 @@ class _RosterClient:
         messages: dict[str, list[dict]],
         *,
         failed_rosters: set[str] | None = None,
+        roster_failures_before_success: dict[str, int] | None = None,
         extra_contacts: list[dict] | None = None,
     ) -> None:
         self.sessions = sessions
         self.messages = messages
         self.failed_rosters = failed_rosters or set()
+        self.roster_failures_before_success = dict(roster_failures_before_success or {})
         self.extra_contacts = extra_contacts or []
         self.group_member_calls: list[str] = []
         self.message_calls: list[tuple[str, bool]] = []
@@ -111,16 +117,102 @@ class _RosterClient:
         self.group_member_calls.append(talker)
         if talker in self.failed_rosters:
             raise RuntimeError("synthetic group roster timeout")
+        remaining = self.roster_failures_before_success.get(talker, 0)
+        if remaining > 0:
+            self.roster_failures_before_success[talker] = remaining - 1
+            raise RuntimeError("synthetic transient group roster timeout")
         return [
             {
                 "wxid": "wxid_member_placeholder",
                 "displayName": "Synthetic Member",
                 "nickname": "Synthetic Member",
+                "remark": "",
+                "alias": "",
+                "groupNickname": "Synthetic Group Member",
+                "avatarUrl": "",
+                "isOwner": False,
+                "isFriend": True,
+                "messageCount": 0,
             }
         ]
 
 
 class GroupRosterResilienceTests(unittest.TestCase):
+    def test_roster_retry_contract_uses_fake_clock_and_only_fails_after_exhaustion(self) -> None:
+        talker = "synthetic-retry@chatroom"
+        success = _RosterClient([], {})
+        success_sleeps: list[float] = []
+        self.assertTrue(
+            fetch_group_members_with_retry(success, talker, sleep=success_sleeps.append)
+        )
+        self.assertEqual(success.group_member_calls, [talker])
+        self.assertEqual(success_sleeps, [])
+
+        transient = _RosterClient(
+            [],
+            {},
+            roster_failures_before_success={talker: 2},
+        )
+        transient_sleeps: list[float] = []
+        self.assertTrue(
+            fetch_group_members_with_retry(
+                transient,
+                talker,
+                sleep=transient_sleeps.append,
+            )
+        )
+        self.assertEqual(transient.group_member_calls, [talker, talker, talker])
+        self.assertEqual(
+            transient_sleeps,
+            [GROUP_ROSTER_RETRY_COOLDOWN_SECONDS] * 2,
+        )
+        self.assertGreaterEqual(min(transient_sleeps), 20)
+
+        exhausted = _RosterClient([], {}, failed_rosters={talker})
+        exhausted_sleeps: list[float] = []
+        with self.assertRaisesRegex(RuntimeError, "synthetic group roster timeout"):
+            fetch_group_members_with_retry(
+                exhausted,
+                talker,
+                sleep=exhausted_sleeps.append,
+            )
+        self.assertEqual(exhausted.group_member_calls, [talker, talker, talker])
+        self.assertEqual(
+            exhausted_sleeps,
+            [GROUP_ROSTER_RETRY_COOLDOWN_SECONDS] * 2,
+        )
+
+    def test_bulk_health_signal_ignores_roster_that_recovers_on_retry(self) -> None:
+        export_day = date(2026, 8, 25)
+        talker = "synthetic-recovered@chatroom"
+        sessions = [{"username": talker, "displayName": "Synthetic Recovered Group"}]
+        messages = {talker: [_message(export_day, 1, "wxid_member_placeholder")]}
+        client = _RosterClient(
+            sessions,
+            messages,
+            roster_failures_before_success={talker: 2},
+        )
+        sleeps: list[float] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            backend = WeflowApiBackend(_config(root))
+            backend._client = client
+            backend.sleep = sleeps.append
+            result = backend.export_chats_range(
+                export_day,
+                export_day,
+                raw_root=root / "bulk-raw",
+                sessions=sessions,
+                state_path=root / ".bulk-state.json",
+            )
+
+        self.assertEqual(client.group_member_calls, [talker, talker, talker])
+        self.assertEqual(sleeps, [GROUP_ROSTER_RETRY_COOLDOWN_SECONDS] * 2)
+        self.assertEqual(result.group_roster_attempts, 1)
+        self.assertEqual(result.group_roster_failures, 0)
+        self.assertEqual(result.degraded_group_rosters, ())
+        self.assertEqual(backend.partial_failures, [])
+
     def test_daily_roster_failure_preserves_every_message_and_enumerates_fallback(self) -> None:
         export_day = date(2026, 8, 25)
         talker = "synthetic-daily@chatroom"
@@ -197,6 +289,7 @@ class GroupRosterResilienceTests(unittest.TestCase):
             )
             backend = WeflowApiBackend(cfg)
             backend._client = client
+            backend.sleep = lambda _seconds: None
             errors = io.StringIO()
             with redirect_stderr(errors):
                 backend.export_chats(export_day)
@@ -208,7 +301,7 @@ class GroupRosterResilienceTests(unittest.TestCase):
             [item["senderDisplayName"] for item in payload["messages"]],
             ["Synthetic Last Known Member", "Synthetic Contact Fallback", unknown_sender],
         )
-        self.assertEqual(client.group_member_calls, [talker])
+        self.assertEqual(client.group_member_calls, [talker, talker, talker])
         self.assertEqual(
             backend.partial_failures,
             [f"export_chat_group_roster:{talker}:fallback=canonical:known_names=1"],
@@ -242,6 +335,7 @@ class GroupRosterResilienceTests(unittest.TestCase):
             cfg = _config(root)
             backend = WeflowApiBackend(cfg)
             backend._client = EmptyRosterClient(sessions, messages)
+            backend.sleep = lambda _seconds: None
             with redirect_stderr(io.StringIO()):
                 backend.export_chats(export_day)
             export = next(cfg.paths.raw.glob("群聊_Synthetic Empty Roster Group_20260825/*.json"))
@@ -268,6 +362,7 @@ class GroupRosterResilienceTests(unittest.TestCase):
             client = _RosterClient(sessions, messages, failed_rosters={talker})
             backend = WeflowApiBackend(_config(root))
             backend._client = client
+            backend.sleep = lambda _seconds: None
             result = backend.export_chats_range(
                 days[0],
                 days[-1],
@@ -284,7 +379,7 @@ class GroupRosterResilienceTests(unittest.TestCase):
         self.assertIsInstance(result, BulkExportResult)
         self.assertEqual(result.messages_written, 3)
         self.assertEqual(sum(item["session"]["messageCount"] for item in payloads), 3)
-        self.assertEqual(client.group_member_calls, [talker])
+        self.assertEqual(client.group_member_calls, [talker, talker, talker])
         self.assertEqual(result.group_roster_attempts, 1)
         self.assertEqual(result.group_roster_failures, 1)
         self.assertEqual(result.degraded_group_rosters, (talker,))
@@ -319,6 +414,7 @@ class GroupRosterResilienceTests(unittest.TestCase):
             )
             first_backend = WeflowApiBackend(_config(root))
             first_backend._client = first_client
+            first_backend.sleep = lambda _seconds: None
             first_result = first_backend.export_chats_range(
                 export_day,
                 export_day,
@@ -377,6 +473,7 @@ class GroupRosterResilienceTests(unittest.TestCase):
             root = Path(tmp)
             backend = WeflowApiBackend(_config(root))
             backend._client = _RosterClient(sessions, messages, failed_rosters=failed)
+            backend.sleep = lambda _seconds: None
             result = backend.export_chats_range(
                 export_day,
                 export_day,

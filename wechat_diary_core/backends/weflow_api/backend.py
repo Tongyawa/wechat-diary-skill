@@ -21,7 +21,7 @@ from ...config import Config
 from ...media_store import MEDIA_STORE_NAME
 from .bulk_state import BulkExportState, DateInterval
 from .bulk_plan import BulkExportPlan
-from .client import WeflowApiClient, WeflowApiError
+from .client import WeflowApiClient, WeflowApiError, fetch_group_members_with_retry
 from .failure_state import SessionFailureState
 from .mapper import (
     ImageMediaStats,
@@ -740,9 +740,11 @@ class WeflowApiBackend:
         if not talker.endswith("@chatroom"):
             return []
         try:
-            members = self.client.fetch_group_members(talker)
-            if not members:
-                raise RuntimeError("群成员接口返回空名册")
+            members = fetch_group_members_with_retry(
+                self.client,
+                talker,
+                sleep=self.sleep,
+            )
         except Exception as exc:
             stats.record(talker, succeeded=False)
             members = _last_known_group_members(
@@ -1109,8 +1111,12 @@ def _last_known_group_members(
                             timestamp = 0
                         record = {
                             "wxid": sender,
-                            "displayName": sender_display,
-                            "groupNickname": str(message.get("senderNickname") or ""),
+                            "_canonicalDisplayName": sender_display,
+                            "groupNickname": str(
+                                message.get("senderGroupNickname")
+                                if "senderGroupNickname" in message
+                                else message.get("senderNickname") or ""
+                            ),
                             "nickname": str(message.get("senderNickname") or ""),
                             "remark": str(message.get("senderRemark") or ""),
                         }

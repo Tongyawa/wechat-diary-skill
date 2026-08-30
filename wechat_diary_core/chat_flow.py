@@ -55,7 +55,16 @@ def render_chat_flow(messages: list[Message]) -> str:
 def display_name_for_message(message: Message) -> str:
     if int(message.get("isSend") or 0) == 1:
         return "我"
-    return simplify_display_name(str(message.get("senderDisplayName") or message.get("senderRemark") or message.get("senderNickname") or message.get("senderUsername") or "未知"))
+    return simplify_display_name(
+        str(
+            message.get("senderDisplayName")
+            or message.get("senderRemark")
+            or message.get("senderGroupNickname")
+            or message.get("senderNickname")
+            or message.get("senderUsername")
+            or "未知"
+        )
+    )
 
 
 def simplify_display_name(name: str) -> str:

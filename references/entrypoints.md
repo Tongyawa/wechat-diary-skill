@@ -50,7 +50,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$SkillRoot\scripts\run_dail
 
 ⚠️ **「with warnings」不等于「只是朋友圈失败」。** 失败清单里可能包含**几十个聊天会话**，也可能 sidecar 产出为 0。判断产物是否够用，**看控制台打印的实际计数**（`Diary processed files: N`、各类 sidecar 计数）和失败项清单，**不要凭「completed」三个字就假定聊天记录完整**。
 
-单会话失败只隔离它自己，不中断其余会话；失败记进工作区根 `.export-state.json`，连续多个导出日失败会在收尾列出待审查清单。群成员名册读取失败不算整会话失败：消息仍会落盘，发送者名称依次退到同一群既有 canonical raw 的最后已知名字、contacts，真的都没有才显示 wxid；控制台和失败 marker 会逐会话列出降级、退路与取回的已知名字数，并在末尾打印降级数。精确的“消息数据库未找到”只有在会话至少一年无活动且归档 raw 从未出现该 wxid 时才进入 `noLocalRecords`；证据不足仍按真失败。
+单会话失败只隔离它自己，不中断其余会话；失败记进工作区根 `.export-state.json`，连续多个导出日失败会在收尾列出待审查清单。群成员名册首次读取失败会先冷却 20 秒重试（总计最多 3 次请求，成功路径不等待）；重试耗尽也不算整会话失败：消息仍会落盘，发送者名称依次退到同一群既有 canonical raw 的最后已知名字、contacts，真的都没有才显示 wxid；控制台和失败 marker 只列最终降级，末尾降级数与健康信号也只统计重试耗尽的群。精确的“消息数据库未找到”只有在会话至少一年无活动且归档 raw 从未出现该 wxid 时才进入 `noLocalRecords`；证据不足仍按真失败。
 
 ## 2. 处理已有 raw `process_existing_raw.py`
 
@@ -95,6 +95,8 @@ python "$SkillRoot\scripts\export_on_demand.py" --session <wxid或显示名子�
 | `--config` | 配置文件路径 |
 
 前提同 §1（需要 API 服务）。
+
+群聊名册与日常链路使用同一冷却重试口径；三次请求仍未取得非空名册时，按需导出继续使用同群既有 canonical 名字、contacts、wxid 退路，不因辅助名字丢掉消息。
 
 ## 4. 环境体检 `doctor.py`
 
@@ -206,7 +208,7 @@ CLI 省略日期时，每次都读取 `[bulk_export]`：键缺省或空 `start` 
 
 日常 `.export-state.json` 已判定的「本机无记录」会话会导入 plan 的 `noLocalRecords` 第三态；批量规划中新命中同一套四道证据判据的会话也进入该段。后续默认零请求、只在汇总显示数量；显式 `--retry-no-local-records` 才重新尝试。真失败仍逐轮重试、按错误指纹分组打印显示名；名字与 canonical 目录同样优先取 contacts 当前名，缺失才退 wxid。每完成一个块立即记账；若 canonical JSON 或它引用的媒体文件被删除，该块会自动失效并重导。每轮还会写 `.<输出目录名>.bulk-export-reconciliation.json`，逐会话列出稀疏的 plan/实际计数、覆盖区间与差异；控制台同时显示差异日与覆盖缺口。两遍之间的新消息会被报告为漂移，不作为导出失败。
 
-退出码：`0` = 真失败为 0 且本次实际区间覆盖完整；已完成状态和「本机无记录」不算失败。`1` = 至少一个真失败、群名册坏状态守卫要求停止，或 reconciliation 的 `incompleteCoverageDays > 0`；`2` = 工作区或会话选择错误。汇总把「失败 N；本机无记录 M」分开打印。群成员名册读取失败时，当前消息块仍按同群既有 canonical 名字/contacts/wxid 退路落盘；若最近 5 个有消息群中至少 4 个名册读取失败，程序会先写紧凑 state、对账和汇总，再以退出码 `1` 停止，提示重启 WeFlow API 服务并用原命令续跑。平台型会话是否跳过仍服从 `[daily_export].skip_official_accounts`。若两个不同 wxid 经名称净化后会写进同一个 canonical 目录，程序会在第一条消息请求前拒绝整批，避免后写会话静默覆盖先写会话。
+退出码：`0` = 真失败为 0 且本次实际区间覆盖完整；已完成状态和「本机无记录」不算失败。`1` = 至少一个真失败、群名册坏状态守卫要求停止，或 reconciliation 的 `incompleteCoverageDays > 0`；`2` = 工作区或会话选择错误。汇总把「失败 N；本机无记录 M」分开打印。群成员名册三次请求仍失败时，当前消息块继续按同群既有 canonical 名字/contacts/wxid 退路落盘；若最近 5 个有消息群中至少 4 个名册重试耗尽，程序会先写紧凑 state、对账和汇总，再以退出码 `1` 停止，提示重启 WeFlow API 服务并用原命令续跑。平台型会话是否跳过仍服从 `[daily_export].skip_official_accounts`。若两个不同 wxid 经名称净化后会写进同一个 canonical 目录，程序会在第一条消息请求前拒绝整批，避免后写会话静默覆盖先写会话。
 
 ## 9. 离线群成员名字回填 `backfill_group_names.py`
 
