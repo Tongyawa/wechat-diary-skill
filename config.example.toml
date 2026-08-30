@@ -20,6 +20,16 @@ processed = "WeFlow-processed-exports"
 archived = "WeFlow-archived-exports"
 insights = "WeFlow-insights"
 
+[bulk_export]
+# Used whenever export_bulk_raw.py omits CLI --start/--end. An existing plan is
+# never shrunk: earlier start / later end values expand it, while inward fixed
+# dates are rejected with both ranges shown.
+start = "2010-01-01"
+# Empty means yesterday on every run, so only newly closed days are added and
+# today stays on the daily-export path.
+# 想让区间冻结不再前移 = 在 `[bulk_export].end` 写一个显式日期（yyyy-mm-dd 或 yyyymmdd）。
+end = ""
+
 [export_backend]
 # "weflow_api" = WeFlow 5.x local HTTP API (default)
 # "weflow" = legacy GUI automation for WeFlow <=4.x

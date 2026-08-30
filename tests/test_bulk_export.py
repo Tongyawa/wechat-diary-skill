@@ -35,6 +35,8 @@ def _config(
     *,
     target_usernames: tuple[str, ...] = (),
     media_localize: bool = False,
+    bulk_start: str = "2010-01-01",
+    bulk_end: str = "",
 ):
     path = root / "config.toml"
     path.write_text(
@@ -60,12 +62,24 @@ media_localize = {str(media_localize).lower()}
 target_usernames = {json.dumps(list(target_usernames), ensure_ascii=False)}
 skip_official_accounts = true
 
+[bulk_export]
+start = "{bulk_start}"
+end = "{bulk_end}"
+
 [asr]
 engine = ""
 """.strip(),
         encoding="utf-8",
     )
     return load_config(path)
+
+
+def _seed_driver_plan(raw_root: Path, start: date, end: date) -> Path:
+    plan_path = export_bulk_raw.bulk_plan_path_for(raw_root)
+    plan = BulkExportPlan.load(plan_path, raw_root)
+    plan.resolve_range(start, end, allow_expand=False)
+    plan.save()
+    return plan_path
 
 
 def _fixture(name: str) -> dict:
@@ -1210,6 +1224,453 @@ class BulkExportTests(unittest.TestCase):
 
         self.assertIsNone(args.start)
         self.assertIsNone(args.end)
+
+    def test_cli_uses_bulk_config_for_first_plan(self) -> None:
+        fake_backend = Mock()
+        fake_backend.client.fetch_sessions.return_value = []
+        fake_backend.export_chats_range.return_value = BulkExportResult(
+            requested_sessions=0,
+            completed_intervals=0,
+            resumed_intervals=0,
+            skipped_platform_accounts=0,
+            messages_written=0,
+            files_written=(),
+            failures={},
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = _config(root, bulk_start="2021-02-03", bulk_end="2021-04-05")
+            raw_root = root / "first-plan-raw"
+            output = io.StringIO()
+            with (
+                patch.object(export_bulk_raw, "load_config", return_value=cfg),
+                patch.object(export_bulk_raw, "resolve_config_path", return_value=root / "config.toml"),
+                patch.object(export_bulk_raw, "WeflowApiBackend", return_value=fake_backend),
+                redirect_stdout(output),
+            ):
+                code = export_bulk_raw.main(["--out", str(raw_root)])
+
+            call = fake_backend.export_chats_range.call_args
+
+        self.assertEqual(code, 0)
+        self.assertEqual(call.args, (date(2021, 2, 3), date(2021, 4, 5)))
+        self.assertIn("无 plan，使用 [bulk_export] 配置 2021-02-03~2021-04-05", output.getvalue())
+
+    def test_cli_empty_config_end_rolls_existing_plan_to_yesterday_with_notice(self) -> None:
+        yesterday = date.today() - timedelta(days=1)
+        frozen_start, frozen_end = yesterday - timedelta(days=3), yesterday - timedelta(days=1)
+        session = {"username": "wxid_range_placeholder", "displayName": "区间会话占位"}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            raw_root = root / "frozen-plan-raw"
+            plan_path = _seed_driver_plan(raw_root, frozen_start, frozen_end)
+            cfg = _config(root, bulk_start=frozen_start.isoformat(), bulk_end="")
+            backend = WeflowApiBackend(cfg)
+            backend._client = _BulkClient([session], {session["username"]: []})
+            output = io.StringIO()
+            with (
+                patch.object(export_bulk_raw, "load_config", return_value=cfg),
+                patch.object(export_bulk_raw, "resolve_config_path", return_value=root / "config.toml"),
+                patch.object(export_bulk_raw, "WeflowApiBackend", return_value=backend),
+                redirect_stdout(output),
+            ):
+                code = export_bulk_raw.main(["--out", str(raw_root)])
+            recorded = BulkExportPlan.load(plan_path, raw_root).recorded_range()
+
+        self.assertEqual(code, 0)
+        self.assertEqual(recorded, DateInterval(frozen_start, yesterday))
+        self.assertIn(
+            f"本次把区间从 {frozen_start}~{frozen_end} 扩到 {frozen_start}~{yesterday}，"
+            "需为 1 个会话补规划",
+            output.getvalue(),
+        )
+
+    def test_cli_empty_config_end_equal_to_yesterday_keeps_plan_without_notice(self) -> None:
+        yesterday = date.today() - timedelta(days=1)
+        frozen_start = yesterday - timedelta(days=2)
+        session = {"username": "wxid_range_placeholder", "displayName": "区间会话占位"}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            raw_root = root / "same-plan-raw"
+            plan_path = _seed_driver_plan(raw_root, frozen_start, yesterday)
+            cfg = _config(root, bulk_start=frozen_start.isoformat(), bulk_end="")
+            backend = WeflowApiBackend(cfg)
+            backend._client = _BulkClient([session], {session["username"]: []})
+            output = io.StringIO()
+            with (
+                patch.object(export_bulk_raw, "load_config", return_value=cfg),
+                patch.object(export_bulk_raw, "resolve_config_path", return_value=root / "config.toml"),
+                patch.object(export_bulk_raw, "WeflowApiBackend", return_value=backend),
+                redirect_stdout(output),
+            ):
+                code = export_bulk_raw.main(["--out", str(raw_root)])
+            recorded = BulkExportPlan.load(plan_path, raw_root).recorded_range()
+
+        self.assertEqual(code, 0)
+        self.assertEqual(recorded, DateInterval(frozen_start, yesterday))
+        self.assertNotIn("本次把区间从", output.getvalue())
+
+    def test_cli_empty_config_end_keeps_future_plan_without_error_or_notice(self) -> None:
+        yesterday = date.today() - timedelta(days=1)
+        frozen_start, frozen_end = yesterday - timedelta(days=2), yesterday + timedelta(days=2)
+        session = {"username": "wxid_range_placeholder", "displayName": "区间会话占位"}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            raw_root = root / "future-plan-raw"
+            plan_path = _seed_driver_plan(raw_root, frozen_start, frozen_end)
+            cfg = _config(root, bulk_start=frozen_start.isoformat(), bulk_end="")
+            backend = WeflowApiBackend(cfg)
+            backend._client = _BulkClient([session], {session["username"]: []})
+            output, errors = io.StringIO(), io.StringIO()
+            with (
+                patch.object(export_bulk_raw, "load_config", return_value=cfg),
+                patch.object(export_bulk_raw, "resolve_config_path", return_value=root / "config.toml"),
+                patch.object(export_bulk_raw, "WeflowApiBackend", return_value=backend),
+                redirect_stdout(output),
+                redirect_stderr(errors),
+            ):
+                code = export_bulk_raw.main(["--out", str(raw_root)])
+            recorded = BulkExportPlan.load(plan_path, raw_root).recorded_range()
+
+        self.assertEqual(code, 0)
+        self.assertEqual(errors.getvalue(), "")
+        self.assertEqual(recorded, DateInterval(frozen_start, frozen_end))
+        self.assertNotIn("本次把区间从", output.getvalue())
+
+    def test_cli_explicit_earlier_config_start_expands_plan_with_notice(self) -> None:
+        frozen_end = date.today() - timedelta(days=1)
+        frozen_start, configured_start = frozen_end - timedelta(days=2), frozen_end - timedelta(days=4)
+        session = {"username": "wxid_range_placeholder", "displayName": "区间会话占位"}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            raw_root = root / "earlier-start-raw"
+            plan_path = _seed_driver_plan(raw_root, frozen_start, frozen_end)
+            cfg = _config(
+                root,
+                bulk_start=configured_start.isoformat(),
+                bulk_end=frozen_end.isoformat(),
+            )
+            backend = WeflowApiBackend(cfg)
+            backend._client = _BulkClient([session], {session["username"]: []})
+            output = io.StringIO()
+            with (
+                patch.object(export_bulk_raw, "load_config", return_value=cfg),
+                patch.object(export_bulk_raw, "resolve_config_path", return_value=root / "config.toml"),
+                patch.object(export_bulk_raw, "WeflowApiBackend", return_value=backend),
+                redirect_stdout(output),
+            ):
+                code = export_bulk_raw.main(["--out", str(raw_root)])
+            recorded = BulkExportPlan.load(plan_path, raw_root).recorded_range()
+
+        self.assertEqual(code, 0)
+        self.assertEqual(recorded, DateInterval(configured_start, frozen_end))
+        self.assertIn(
+            f"本次把区间从 {frozen_start}~{frozen_end} 扩到 "
+            f"{configured_start}~{frozen_end}，需为 1 个会话补规划",
+            output.getvalue(),
+        )
+
+    def test_cli_rejects_explicit_config_end_before_plan_end(self) -> None:
+        frozen_start, frozen_end = date(2026, 7, 2), date(2026, 7, 9)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            raw_root = root / "end-shrink-raw"
+            _seed_driver_plan(raw_root, frozen_start, frozen_end)
+            cfg = _config(
+                root,
+                bulk_start=frozen_start.isoformat(),
+                bulk_end=date(2026, 7, 8).isoformat(),
+            )
+            errors = io.StringIO()
+            with (
+                patch.object(export_bulk_raw, "load_config", return_value=cfg),
+                patch.object(export_bulk_raw, "resolve_config_path", return_value=root / "config.toml"),
+                patch.object(export_bulk_raw, "WeflowApiBackend") as backend_class,
+                redirect_stderr(errors),
+            ):
+                code = export_bulk_raw.main(["--out", str(raw_root)])
+
+        self.assertEqual(code, 1)
+        self.assertIn(f"plan 区间是 {frozen_start}~{frozen_end}", errors.getvalue())
+        self.assertIn("配置只能扩、不能缩", errors.getvalue())
+        backend_class.assert_not_called()
+
+    def test_cli_rejects_explicit_config_start_after_plan_start(self) -> None:
+        frozen_start, frozen_end = date(2026, 7, 2), date(2026, 7, 9)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            raw_root = root / "start-shrink-raw"
+            _seed_driver_plan(raw_root, frozen_start, frozen_end)
+            cfg = _config(
+                root,
+                bulk_start=date(2026, 7, 3).isoformat(),
+                bulk_end=frozen_end.isoformat(),
+            )
+            errors = io.StringIO()
+            with (
+                patch.object(export_bulk_raw, "load_config", return_value=cfg),
+                patch.object(export_bulk_raw, "resolve_config_path", return_value=root / "config.toml"),
+                patch.object(export_bulk_raw, "WeflowApiBackend") as backend_class,
+                redirect_stderr(errors),
+            ):
+                code = export_bulk_raw.main(["--out", str(raw_root)])
+
+        self.assertEqual(code, 1)
+        self.assertIn(f"plan 区间是 {frozen_start}~{frozen_end}", errors.getvalue())
+        self.assertIn("配置只能扩、不能缩", errors.getvalue())
+        backend_class.assert_not_called()
+
+    def test_cli_explicit_range_still_rejects_plan_change_without_expand_flag(self) -> None:
+        frozen_start, frozen_end = date(2026, 7, 2), date(2026, 7, 9)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            raw_root = root / "cli-guard-raw"
+            _seed_driver_plan(raw_root, frozen_start, frozen_end)
+            cfg = _config(root, bulk_start="invalid-but-unused", bulk_end="also-unused")
+            errors = io.StringIO()
+            with (
+                patch.object(export_bulk_raw, "load_config", return_value=cfg),
+                patch.object(export_bulk_raw, "resolve_config_path", return_value=root / "config.toml"),
+                patch.object(export_bulk_raw, "WeflowApiBackend") as backend_class,
+                redirect_stderr(errors),
+            ):
+                code = export_bulk_raw.main(
+                    [
+                        "--start",
+                        frozen_start.isoformat(),
+                        "--end",
+                        date(2026, 7, 10).isoformat(),
+                        "--out",
+                        str(raw_root),
+                    ]
+                )
+
+        self.assertEqual(code, 1)
+        self.assertIn("默认拒绝改动", errors.getvalue())
+        self.assertNotIn("[bulk_export]", errors.getvalue())
+        backend_class.assert_not_called()
+
+    def test_cli_rejects_invalid_bulk_config_in_chinese(self) -> None:
+        fake_backend = Mock()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = _config(root, bulk_start="not-a-date")
+            errors = io.StringIO()
+            with (
+                patch.object(export_bulk_raw, "load_config", return_value=cfg),
+                patch.object(export_bulk_raw, "resolve_config_path", return_value=root / "config.toml"),
+                patch.object(export_bulk_raw, "WeflowApiBackend", return_value=fake_backend),
+                redirect_stderr(errors),
+            ):
+                code = export_bulk_raw.main(["--out", str(root / "raw")])
+
+        self.assertEqual(code, 1)
+        self.assertIn("[bulk_export].start 配置无效", errors.getvalue())
+        fake_backend.prepare_bulk_export.assert_not_called()
+
+    def test_print_range_without_plan_emits_parseable_config_json_and_writes_nothing(self) -> None:
+        yesterday = date.today() - timedelta(days=1)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = _config(root, bulk_start="", bulk_end="")
+            raw_root = root / "print-only-raw"
+            log_path = root / "must-not-be-created.log"
+            output, errors = io.StringIO(), io.StringIO()
+            with (
+                patch.object(export_bulk_raw, "WeflowApiBackend") as backend_class,
+                redirect_stdout(output),
+                redirect_stderr(errors),
+            ):
+                code = export_bulk_raw.main(
+                    [
+                        "--print-range",
+                        "--out",
+                        str(raw_root),
+                        "--config",
+                        str(root / "config.toml"),
+                        "--log",
+                        str(log_path),
+                    ]
+                )
+            payload = json.loads(output.getvalue())
+            wrote_raw_root = raw_root.exists()
+            wrote_plan = export_bulk_raw.bulk_plan_path_for(raw_root).exists()
+            wrote_state = export_bulk_raw.bulk_state_path_for(raw_root).exists()
+            wrote_log = log_path.exists()
+
+        self.assertEqual(code, 0)
+        self.assertEqual(errors.getvalue(), "")
+        self.assertEqual(
+            payload,
+            {
+                "start": "2010-01-01",
+                "end": yesterday.isoformat(),
+                "source": "config",
+                "planRange": None,
+                "expands": False,
+            },
+        )
+        self.assertEqual(
+            output.getvalue(),
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n",
+        )
+        self.assertFalse(wrote_raw_root)
+        self.assertFalse(wrote_plan)
+        self.assertFalse(wrote_state)
+        self.assertFalse(wrote_log)
+        backend_class.assert_not_called()
+
+    def test_print_range_with_unchanged_plan_reports_plan_source(self) -> None:
+        yesterday = date.today() - timedelta(days=1)
+        frozen_start = yesterday - timedelta(days=2)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            raw_root = root / "print-plan-raw"
+            plan_path = _seed_driver_plan(raw_root, frozen_start, yesterday)
+            original_plan = plan_path.read_bytes()
+            _config(root, bulk_start=frozen_start.isoformat(), bulk_end="")
+            output = io.StringIO()
+            with (
+                patch.object(export_bulk_raw, "WeflowApiBackend") as backend_class,
+                redirect_stdout(output),
+            ):
+                code = export_bulk_raw.main(
+                    [
+                        "--print-range",
+                        "--out",
+                        str(raw_root),
+                        "--config",
+                        str(root / "config.toml"),
+                    ]
+                )
+            payload = json.loads(output.getvalue())
+            after_plan = plan_path.read_bytes()
+
+        self.assertEqual(code, 0)
+        self.assertEqual(payload["source"], "plan")
+        self.assertFalse(payload["expands"])
+        self.assertEqual(
+            payload["planRange"],
+            {"start": frozen_start.isoformat(), "end": yesterday.isoformat()},
+        )
+        self.assertEqual(after_plan, original_plan)
+        backend_class.assert_not_called()
+
+    def test_print_range_with_rolling_config_expansion_reports_plan_plus_config(self) -> None:
+        yesterday = date.today() - timedelta(days=1)
+        frozen_start, frozen_end = yesterday - timedelta(days=3), yesterday - timedelta(days=1)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            raw_root = root / "print-expanded-raw"
+            plan_path = _seed_driver_plan(raw_root, frozen_start, frozen_end)
+            original_plan = plan_path.read_bytes()
+            _config(root, bulk_start=frozen_start.isoformat(), bulk_end="")
+            output = io.StringIO()
+            with (
+                patch.object(export_bulk_raw, "WeflowApiBackend") as backend_class,
+                redirect_stdout(output),
+            ):
+                code = export_bulk_raw.main(
+                    [
+                        "--print-range",
+                        "--out",
+                        str(raw_root),
+                        "--config",
+                        str(root / "config.toml"),
+                    ]
+                )
+            payload = json.loads(output.getvalue())
+            after_plan = plan_path.read_bytes()
+
+        self.assertEqual(code, 0)
+        self.assertEqual(payload["end"], yesterday.isoformat())
+        self.assertEqual(payload["source"], "plan+config")
+        self.assertTrue(payload["expands"])
+        self.assertEqual(
+            payload["planRange"],
+            {"start": frozen_start.isoformat(), "end": frozen_end.isoformat()},
+        )
+        self.assertEqual(after_plan, original_plan)
+        backend_class.assert_not_called()
+
+    def test_print_range_config_shrink_is_nonzero_with_empty_stdout(self) -> None:
+        frozen_start, frozen_end = date(2026, 7, 2), date(2026, 7, 9)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            raw_root = root / "print-rejected-raw"
+            _seed_driver_plan(raw_root, frozen_start, frozen_end)
+            _config(root, bulk_start=frozen_start.isoformat(), bulk_end="2026-07-08")
+            output, errors = io.StringIO(), io.StringIO()
+            with redirect_stdout(output), redirect_stderr(errors):
+                code = export_bulk_raw.main(
+                    [
+                        "--print-range",
+                        "--out",
+                        str(raw_root),
+                        "--config",
+                        str(root / "config.toml"),
+                    ]
+                )
+
+        self.assertNotEqual(code, 0)
+        self.assertEqual(output.getvalue(), "")
+        self.assertIn("配置只能扩、不能缩", errors.getvalue())
+
+    def test_print_range_cli_source_ignores_invalid_bulk_config_values(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            raw_root = root / "print-cli-raw"
+            _config(root, bulk_start="invalid-but-unused", bulk_end="also-unused")
+            output = io.StringIO()
+            with (
+                patch.object(export_bulk_raw, "WeflowApiBackend") as backend_class,
+                redirect_stdout(output),
+            ):
+                code = export_bulk_raw.main(
+                    [
+                        "--print-range",
+                        "--start",
+                        "20260702",
+                        "--end",
+                        "2026-07-09",
+                        "--out",
+                        str(raw_root),
+                        "--config",
+                        str(root / "config.toml"),
+                    ]
+                )
+            payload = json.loads(output.getvalue())
+
+        self.assertEqual(code, 0)
+        self.assertEqual(payload["source"], "cli")
+        self.assertEqual(payload["start"], "2026-07-02")
+        self.assertEqual(payload["end"], "2026-07-09")
+        self.assertIsNone(payload["planRange"])
+        self.assertFalse(payload["expands"])
+        backend_class.assert_not_called()
+
+    def test_print_range_corrupt_plan_is_nonzero_with_empty_stdout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            raw_root = root / "print-corrupt-plan-raw"
+            plan_path = export_bulk_raw.bulk_plan_path_for(raw_root)
+            plan_path.write_text("not-json", encoding="utf-8")
+            _config(root, bulk_start="2026-07-02", bulk_end="2026-07-09")
+            output, errors = io.StringIO(), io.StringIO()
+            with redirect_stdout(output), redirect_stderr(errors):
+                code = export_bulk_raw.main(
+                    [
+                        "--print-range",
+                        "--out",
+                        str(raw_root),
+                        "--config",
+                        str(root / "config.toml"),
+                    ]
+                )
+
+        self.assertNotEqual(code, 0)
+        self.assertEqual(output.getvalue(), "")
+        self.assertIn("plan 文件不可读", errors.getvalue())
 
     def test_driver_log_appends_timestamped_lines_without_changing_console(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

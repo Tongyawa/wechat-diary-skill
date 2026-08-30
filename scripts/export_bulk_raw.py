@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from contextlib import contextmanager
-from datetime import date, datetime
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterator, Mapping, TextIO
 
@@ -14,6 +16,7 @@ if str(ROOT) not in sys.path:
 
 from scripts.export_on_demand import SessionSelectionError, resolve_session
 from wechat_diary_core.backends.weflow_api.backend import BulkExportResult, WeflowApiBackend
+from wechat_diary_core.backends.weflow_api.bulk_plan import BulkExportPlan
 from wechat_diary_core.backends.weflow_api.failure_state import normalize_error_text
 from wechat_diary_core.config import load_config
 from wechat_diary_core.workspace_discovery import WorkspaceResolutionError, resolve_config_path
@@ -59,6 +62,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="把 driver 的 stdout/stderr 逐行加时间戳后追加写入 UTF-8 日志。",
     )
+    parser.add_argument(
+        "--print-range",
+        action="store_true",
+        help="完全离线打印本次实际区间的单行 JSON 后退出；不写任何导出状态。",
+    )
     parser.add_argument("--config", default=None, help="配置文件路径。")
     return parser
 
@@ -71,7 +79,8 @@ def main(argv: list[str] | None = None) -> int:
 
     raw_argv = list(argv) if argv is not None else sys.argv[1:]
     try:
-        with _driver_log(_log_value_from_argv(raw_argv)):
+        log_value = None if "--print-range" in raw_argv else _log_value_from_argv(raw_argv)
+        with _driver_log(log_value):
             parser = build_parser()
             args = parser.parse_args(raw_argv)
             return _run(parser, args)
@@ -97,6 +106,22 @@ def _run(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
         plan_path = bulk_plan_path_for(raw_root)
         config_path = resolve_config_path(args.config)
         cfg = load_config(config_path)
+        plan = BulkExportPlan.load(plan_path, raw_root)
+        resolution = _resolve_bulk_range(
+            cfg,
+            plan,
+            start,
+            end,
+            cli_expand_range=args.expand_range,
+        )
+        if args.print_range:
+            _print_range_json(resolution)
+            return 0
+        if resolution.source == "config":
+            print(
+                "批量 raw 区间：无 plan，使用 [bulk_export] 配置 "
+                f"{resolution.start}~{resolution.end}。"
+            )
         if cfg.export_backend.backend != "weflow_api":
             raise RuntimeError(
                 "批量 raw 导出只支持 export_backend.backend = \"weflow_api\"；"
@@ -107,8 +132,8 @@ def _run(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
         sessions = backend.client.fetch_sessions(limit=2000)
         selected = select_sessions(sessions, args.session)
         result = backend.export_chats_range(
-            start,
-            end,
+            resolution.backend_start,
+            resolution.backend_end,
             raw_root=raw_root,
             sessions=selected,
             state_path=state_path,
@@ -116,7 +141,7 @@ def _run(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
             plan_path=plan_path,
             chunk_target=args.chunk_target,
             replan=args.replan,
-            expand_range=args.expand_range,
+            expand_range=resolution.allow_expand,
             retry_no_local_records=args.retry_no_local_records,
         )
         assert isinstance(result, BulkExportResult)
@@ -285,6 +310,151 @@ def _parse_day(value: str) -> date:
         return datetime.strptime(text, "%Y-%m-%d").date()
     except ValueError as exc:
         raise ValueError(f"日期无效：{value!r}；应为 yyyy-mm-dd 或 yyyymmdd。") from exc
+
+
+def _configured_bulk_range(cfg: Any) -> tuple[date, date]:
+    """Resolve the configured range for a run without explicit CLI dates."""
+
+    try:
+        start = _parse_day(cfg.bulk_export.start or "2010-01-01")
+    except ValueError as exc:
+        raise ValueError(f"[bulk_export].start 配置无效：{exc}") from exc
+
+    if cfg.bulk_export.end:
+        try:
+            end = _parse_day(cfg.bulk_export.end)
+        except ValueError as exc:
+            raise ValueError(f"[bulk_export].end 配置无效：{exc}") from exc
+    else:
+        end = date.today() - timedelta(days=1)
+
+    if start > end:
+        raise ValueError("[bulk_export] 的 start 不能晚于 end（空 end 表示昨天）。")
+    return start, end
+
+
+def _range_from_existing_plan_and_config(
+    cfg: Any,
+    recorded_range: Any,
+    configured_start: date,
+    configured_end: date,
+) -> tuple[date, date, bool]:
+    """Merge config into a recorded range while mechanically preventing shrinkage."""
+
+    explicit_start = cfg.bulk_export.start_configured and bool(cfg.bulk_export.start)
+    explicit_end = cfg.bulk_export.end_configured and bool(cfg.bulk_export.end)
+    if (explicit_start and configured_start > recorded_range.start) or (
+        explicit_end and configured_end < recorded_range.end
+    ):
+        raise ValueError(
+            f"plan 区间是 {recorded_range.start}~{recorded_range.end}；"
+            f"[bulk_export] 请求 {configured_start}~{configured_end}；"
+            "配置只能扩、不能缩。"
+        )
+    effective_start = min(recorded_range.start, configured_start)
+    effective_end = max(recorded_range.end, configured_end)
+    expands = (effective_start, effective_end) != (recorded_range.start, recorded_range.end)
+    return effective_start, effective_end, expands
+
+
+@dataclass(frozen=True)
+class BulkRangeResolution:
+    start: date
+    end: date
+    source: str
+    plan_range: tuple[date, date] | None
+    expands: bool
+    backend_start: date | None
+    backend_end: date | None
+    allow_expand: bool
+
+
+def _resolve_bulk_range(
+    cfg: Any,
+    plan: BulkExportPlan,
+    cli_start: date | None,
+    cli_end: date | None,
+    *,
+    cli_expand_range: bool,
+) -> BulkRangeResolution:
+    """Resolve CLI/config/plan once for both execution and ``--print-range``."""
+
+    recorded = plan.recorded_range()
+    plan_range = None if recorded is None else (recorded.start, recorded.end)
+    if cli_start is not None and cli_end is not None:
+        effective_start, effective_end, _ = plan.resolve_range(
+            cli_start,
+            cli_end,
+            allow_expand=cli_expand_range,
+        )
+        expands = plan_range is not None and (
+            effective_start,
+            effective_end,
+        ) != plan_range
+        return BulkRangeResolution(
+            start=effective_start,
+            end=effective_end,
+            source="cli",
+            plan_range=plan_range,
+            expands=expands,
+            backend_start=cli_start,
+            backend_end=cli_end,
+            allow_expand=cli_expand_range,
+        )
+
+    configured_start, configured_end = _configured_bulk_range(cfg)
+    if recorded is None:
+        return BulkRangeResolution(
+            start=configured_start,
+            end=configured_end,
+            source="config",
+            plan_range=None,
+            expands=False,
+            backend_start=configured_start,
+            backend_end=configured_end,
+            allow_expand=False,
+        )
+
+    effective_start, effective_end, expands = _range_from_existing_plan_and_config(
+        cfg,
+        recorded,
+        configured_start,
+        configured_end,
+    )
+    return BulkRangeResolution(
+        start=effective_start,
+        end=effective_end,
+        source="plan+config" if expands else "plan",
+        plan_range=plan_range,
+        expands=expands,
+        backend_start=effective_start if expands else None,
+        backend_end=effective_end if expands else None,
+        allow_expand=expands,
+    )
+
+
+def _print_range_json(resolution: BulkRangeResolution) -> None:
+    plan_range = (
+        None
+        if resolution.plan_range is None
+        else {
+            "start": resolution.plan_range[0].isoformat(),
+            "end": resolution.plan_range[1].isoformat(),
+        }
+    )
+    print(
+        json.dumps(
+            {
+                "start": resolution.start.isoformat(),
+                "end": resolution.end.isoformat(),
+                "source": resolution.source,
+                "planRange": plan_range,
+                "expands": resolution.expands,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+    )
 
 
 def _resolve_output_path(value: str) -> Path:

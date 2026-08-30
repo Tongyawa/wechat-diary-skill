@@ -170,10 +170,16 @@ python "$SkillRoot\scripts\init_worktree_config.py"
 导出全部会话或一组指定会话的任意日期范围；只写显式输出根，不碰 live raw / processed / 归档，且不产 processed。先以 `media=false` 建可续跑的逐日消息数 plan，再按本地日历日组成目标大小的块带媒体导出；一个活跃会话日一个 canonical JSON，空日不造空文件。
 
 ```powershell
-# 全部会话
+# 不写日期时使用 config.toml 的 [bulk_export]；空 end 每次滚动到昨天
+python "$SkillRoot\scripts\export_bulk_raw.py" --out <raw输出根>
+
+# 开跑前完全离线查看本次实际区间；stdout 只有一行 JSON
+python "$SkillRoot\scripts\export_bulk_raw.py" --print-range --out <raw输出根>
+
+# 全部会话；显式 CLI 日期走独立的 plan 冻结守卫
 python "$SkillRoot\scripts\export_bulk_raw.py" --start 2026-07-02 --end 2026-08-05 --out <raw输出根>
 
-# 续跑既有 plan：区间自动取 plan 首跑冻结的范围，不会跨天漂移
+# 续跑既有 plan：空 end 会补到昨天，已覆盖历史不重规划
 python "$SkillRoot\scripts\export_bulk_raw.py" --out <同一个raw输出根>
 
 # 指定一组会话；--session 可重复，接受 wxid 或唯一的显示名子串
@@ -182,22 +188,25 @@ python "$SkillRoot\scripts\export_bulk_raw.py" --start 2026-07-02 --end 2026-08-
 
 | 参数 | 说明 |
 |---|---|
-| `--start` / `--end` | 首次运行必填且必须同时给；已有 plan 时可同时省略并复用冻结区间。格式 `yyyy-mm-dd` 或 `yyyymmdd`，首尾都包含 |
+| `--start` / `--end` | 必须同时给或同时省略。显式给出时配置完全不参与；与 plan 不一致默认拒绝，只有配合 `--expand-range` 才能扩大。格式 `yyyy-mm-dd` 或 `yyyymmdd`，首尾都包含 |
 | `--out` | 必填的 canonical raw 输出根；不会从 `[paths].raw` 猜落点 |
 | `--session` | 可重复；wxid 或唯一显示名子串。省略即全部会话 |
 | `--force` | 忽略已完成区间并重导；mapper 改进后刷新历史产物时使用 |
 | `--chunk-target` | 每个导出块的目标消息数，默认 `10000`；单日超标时该日仍独立成块 |
 | `--replan` | 强制以 `media=false` 重算本次范围的逐日消息数；只刷新 plan，不会重导已完成块 |
-| `--expand-range` | 显式允许扩大既有 plan 的冻结区间；只能扩、不能缩。不给时任何区间变化都会拒绝 |
+| `--expand-range` | 仅用于显式 CLI 日期：允许扩大既有 plan 区间；只能扩、不能缩。配置路径的扩区间不要求此开关 |
 | `--retry-no-local-records` | 重新尝试已判定为「本机无记录」的会话；默认不再向这些会话发消息 API 请求 |
-| `--log` | 把 driver 自身 stdout/stderr 逐行加 `[HH:mm:ss]` 后追加写入 UTF-8、LF 日志；控制台原文不变 |
+| `--log` | 把 driver 自身 stdout/stderr 逐行加 `[HH:mm:ss]` 后追加写入 UTF-8、LF 日志；控制台原文不变。与 `--print-range` 同给时忽略且不创建日志 |
+| `--print-range` | 完全离线解析实际区间后退出；不构造 backend、不读会话名册、不写任何文件。成功时 stdout 恰好一行 JSON，含 `start`、`end`、`source`、`planRange`、`expands`；失败时 stdout 为空、中文错误走 stderr |
 | `--config` | 配置文件路径 |
 
-默认可续跑：逐日 plan 写在输出根同级的 `.<输出目录名>.bulk-export-plan.json`，状态写 `.<输出目录名>.bulk-export-state.json`（运行中有同名 `.journal` 追加账本），均不混进 canonical raw。plan 首跑冻结区间；后续省略日期就是续同一个任务，显式给出不同区间则默认拒绝。plan/state/reconciliation 只存非零日消息数，另以完成区间证明其余天确实规划或导出为 0；覆盖缺一天时不会给出假分母。旧 v1 plan/state 会无损读取并在本轮压成 v2，不要求 `--replan`。
+CLI 省略日期时，每次都读取 `[bulk_export]`：键缺省或空 `start` = `2010-01-01`，键缺省或空 `end` = 昨天；两者也可写具体日期。无 plan 时直接用配置创建首个区间；有 plan 时先拒绝显式固定边界造成的收缩，再以 `min(plan start, config start)` / `max(plan end, config end)` 钳位，所以区间只会不变或扩大。空 `end` 会滚动补到昨天；如果 plan 已到昨天或未来则静默沿用。想让区间冻结不再前移，就给 `[bulk_export].end` 写一个显式日期。任何实际扩大都会打印旧区间、新区间和需补规划的会话数。
+
+逐日 plan 写在输出根同级的 `.<输出目录名>.bulk-export-plan.json`，状态写 `.<输出目录名>.bulk-export-state.json`（运行中有同名 `.journal` 追加账本），均不混进 canonical raw。plan/state/reconciliation 只存非零日消息数，另以完成区间证明其余天确实规划或导出为 0；覆盖缺一天时不会给出假分母。旧 v1 plan/state 会无损读取并在本轮压成 v2，不要求 `--replan`。
 
 日常 `.export-state.json` 已判定的「本机无记录」会话会导入 plan 的 `noLocalRecords` 第三态；批量规划中新命中同一套四道证据判据的会话也进入该段。后续默认零请求、只在汇总显示数量；显式 `--retry-no-local-records` 才重新尝试。真失败仍逐轮重试、按错误指纹分组打印显示名；名字与 canonical 目录同样优先取 contacts 当前名，缺失才退 wxid。每完成一个块立即记账；若 canonical JSON 或它引用的媒体文件被删除，该块会自动失效并重导。每轮还会写 `.<输出目录名>.bulk-export-reconciliation.json`，逐会话列出稀疏的 plan/实际计数、覆盖区间与差异；控制台同时显示差异日与覆盖缺口。两遍之间的新消息会被报告为漂移，不作为导出失败。
 
-退出码：`0` = 真失败为 0 且冻结区间覆盖完整；已完成状态和「本机无记录」不算失败。`1` = 至少一个真失败、群名册坏状态守卫要求停止，或 reconciliation 的 `incompleteCoverageDays > 0`；`2` = 工作区或会话选择错误。汇总把「失败 N；本机无记录 M」分开打印。群成员名册读取失败时，当前消息块仍按同群既有 canonical 名字/contacts/wxid 退路落盘；若最近 5 个有消息群中至少 4 个名册读取失败，程序会先写紧凑 state、对账和汇总，再以退出码 `1` 停止，提示重启 WeFlow API 服务并用原命令续跑。平台型会话是否跳过仍服从 `[daily_export].skip_official_accounts`。若两个不同 wxid 经名称净化后会写进同一个 canonical 目录，程序会在第一条消息请求前拒绝整批，避免后写会话静默覆盖先写会话。
+退出码：`0` = 真失败为 0 且本次实际区间覆盖完整；已完成状态和「本机无记录」不算失败。`1` = 至少一个真失败、群名册坏状态守卫要求停止，或 reconciliation 的 `incompleteCoverageDays > 0`；`2` = 工作区或会话选择错误。汇总把「失败 N；本机无记录 M」分开打印。群成员名册读取失败时，当前消息块仍按同群既有 canonical 名字/contacts/wxid 退路落盘；若最近 5 个有消息群中至少 4 个名册读取失败，程序会先写紧凑 state、对账和汇总，再以退出码 `1` 停止，提示重启 WeFlow API 服务并用原命令续跑。平台型会话是否跳过仍服从 `[daily_export].skip_official_accounts`。若两个不同 wxid 经名称净化后会写进同一个 canonical 目录，程序会在第一条消息请求前拒绝整批，避免后写会话静默覆盖先写会话。
 
 ## 9. 离线群成员名字回填 `backfill_group_names.py`
 
