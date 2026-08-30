@@ -230,3 +230,39 @@ python "$SkillRoot\scripts\backfill_group_names.py" --raw-root <canonical raw根
 受影响集合由产物自描述：`senderDisplayName == senderUsername`，引用发送者对应 `quotedSenderDisplayName == quotedSender`。名字证据严格按 `session.wxid` 隔离，不信目录名前缀；只有命中该集合才会更新显示名，并仅在昵称/备注为空或仍等于 wxid 时补值。已有非 wxid 名字一律不覆盖。写入只替换单条消息里的 `senderDisplayName`、`senderNickname`、`senderRemark`、`quotedSenderDisplayName` 字符串；若文件不是现役 canonical 序列化形状，脚本会拒绝整文件重写。
 
 该入口只修 raw。已经生成的 processed、Diary 和 insights 不会回溯更新；后续蒸馏读取修复后的归档 raw 才会受益。名字曾由旧 canonical 退路解析成功、但实际已经过期的部分降级，因字段不再等于 wxid 而无法从产物识别，本工具不会覆盖。
+
+## 10. 暂存态群名字重算 `repair_group_names.py`
+
+用于尚未摄取的批量 canonical raw：先把唯一的降级判据固化成外部证据，再重取现时群名册，离线统一重算名字事实与派生缓存。**不得跳步或交换顺序**；`backfill_group_names.py` 会抹掉部分待修判据，所以只能排在名册重算之后。
+
+`--evidence-dir` 必须是调用方指定的工作区侧目录，且与 `--raw-root` 分离；工具会拒绝代码仓内目录。清单、名册快照、索引和报告都含群标识或成员信息，不得提交。所有子命令默认 dry-run；`--apply` 的含义按阶段分别是“落外部证据 / 写 raw / 落复扫报告”。
+
+| 参数 | 说明 |
+|---|---|
+| `--raw-root` | 三个子命令都必填；只扫描或修改这个 canonical raw 根 |
+| `--evidence-dir` | 三个子命令都必填；工作区侧证据目录，必须与 raw 根和公开代码仓分离 |
+| `--config` | 仅 `prepare` 使用；`--apply` 时据此连接 WeFlow API |
+| `--apply` | `prepare` 落清单并调 API；`recompute` 写 raw；`rescan` 只落报告 |
+
+```powershell
+# ① 只预览降级清单计数，不写文件、不调 API
+python "$SkillRoot\scripts\repair_group_names.py" prepare --raw-root <暂存raw根> --evidence-dir <新证据目录>
+
+# ①+② 先落降级清单，再逐群重取名册并保存原始成员数组
+python "$SkillRoot\scripts\repair_group_names.py" prepare --raw-root <暂存raw根> --evidence-dir <新证据目录> --config <config.toml> --apply
+
+# ③ 先预览；确认后才按名册覆盖事实字段并重算显示名
+python "$SkillRoot\scripts\repair_group_names.py" recompute --raw-root <暂存raw根> --evidence-dir <同一证据目录>
+python "$SkillRoot\scripts\repair_group_names.py" recompute --raw-root <暂存raw根> --evidence-dir <同一证据目录> --apply
+
+# ④ 仅在③之后，用既有“只填空”工具收残余
+python "$SkillRoot\scripts\backfill_group_names.py" --raw-root <暂存raw根>
+python "$SkillRoot\scripts\backfill_group_names.py" --raw-root <暂存raw根> --apply
+
+# ⑤ 复扫每群残量；--apply 只把报告落进证据目录，不再修改 raw
+python "$SkillRoot\scripts\repair_group_names.py" rescan --raw-root <暂存raw根> --evidence-dir <同一证据目录> --apply
+```
+
+`prepare --apply` 在第一条名册请求前确认 `degraded-name-snapshot.json` 已存在；同一证据目录已有本工具产物时拒绝覆盖，避免重算后反向刷新原始证据。全部 `@chatroom` 会话逐一处理，任意两次 `/group-members` 调用之间主动冷却至少 20 秒，每群最多 3 次；空名册与重试耗尽都记入 `group-roster-index.json` 后跳过，不阻断其他群。
+
+`recompute --apply` 同时要求完整清单与完整名册索引，并校验 raw 文件集合、`session.wxid`、清单前摘要和名册快照摘要。名册命中的发送者会覆盖 `senderRemark`、`senderNickname`、`senderGroupNickname` 三个事实字段（旧产物缺群昵称键时补键），`senderDisplayName` 按 `remark > groupNickname > nickname > 既有兜底 > wxid` 重算；`quotedSenderDisplayName` 仍只填 `quotedSenderDisplayName == quotedSender` 的降级项。名册没有的成员完全不碰。写入沿用 canonical 消息片段替换与“允许字段之外不得变化”守卫，保留消息、媒体引用、顺序、`senderUsername`、换行风格和文件尾形状；完整成功后可原命令重跑，第二遍应为零改动。

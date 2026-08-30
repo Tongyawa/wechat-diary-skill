@@ -30,6 +30,7 @@ description: 用 WeFlow 导出并清洗微信聊天记录，生成日记、DoneL
 | 在 Git worktree 做实机验收前，让数据根指向主工作区 | ⑦ 初始化 worktree 配置 | `references/entrypoints.md` §7 |
 | 全部或一组会话、任意日期范围，批量回填 canonical raw | ⑧ 批量 raw 导出 | `references/entrypoints.md` §8 |
 | 离线补齐 canonical raw 里的群成员裸 wxid 名字 | ⑨ 群名字回填 | `references/entrypoints.md` §9 |
+| 修复暂存态全量 canonical raw 的群成员名字口径 | ⑩ 暂存态群名字重算 | `references/entrypoints.md` §10 |
 
 **读 processed 内容之前，先读 `references/processed-format.md`**——它是占位符（引用 / 媒体 / 表情 / 文件 / 链接…）的唯一事实源，路径 ①②③ 都要用。
 
@@ -63,6 +64,7 @@ python "$SkillRoot\scripts\export_on_demand.py" --session <wxid或显示名子�
 **⑦ 初始化 worktree 配置**（在目标 worktree 根目录运行）`python "$SkillRoot\scripts\init_worktree_config.py"`
 **⑧ 批量 raw 导出**（CLI 省略日期时按 `[bulk_export]` 与既有 plan 合并：空 `end` 每次滚动到昨天，固定日期可钉死边界；区间只许不变或扩大，变化必打印。CLI 显式日期仍须用 `--expand-range` 才能扩大。`--print-range` 可完全离线查看实际区间。先 `media=false` 建稀疏逐日 plan，再按目标消息数切块；本机无记录会话默认零请求，群名册大面积失败时先留对账再停）`python "$SkillRoot\scripts\export_bulk_raw.py" --out <raw输出根> [--start <起> --end <止>] [--print-range] [--chunk-target 10000] [--replan]`
 **⑨ 群名字回填**（纯离线；默认预览，显式 `--apply` 才只改未解析的名字派生字段）`python "$SkillRoot\scripts\backfill_group_names.py" --raw-root <canonical raw根> [--apply]`
+**⑩ 暂存态群名字重算**（严格按“清单快照 → 限速重取名册 → 离线重算 → ⑨收残余 → 复扫”执行；证据目录必须在工作区侧且与 raw 分离）`python "$SkillRoot\scripts\repair_group_names.py" prepare --raw-root <暂存raw根> --evidence-dir <工作区证据目录> [--config <配置>] [--apply]`（完整顺序见 §10）
 
 ## 二次加工
 
