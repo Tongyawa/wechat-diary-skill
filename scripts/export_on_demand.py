@@ -7,6 +7,7 @@ import re
 import secrets
 import shutil
 import sys
+import time
 from dataclasses import dataclass, replace
 from datetime import date, datetime
 from pathlib import Path, PurePosixPath
@@ -19,8 +20,16 @@ if str(ROOT) not in sys.path:
 
 from wechat_diary_core.archiving import archive
 from wechat_diary_core.asr import SenseVoiceTranscriber
-from wechat_diary_core.backends.weflow_api.client import WeflowApiClient
-from wechat_diary_core.backends.weflow_api.mapper import ImageMediaStats, write_session_export
+from wechat_diary_core.backends.weflow_api.backend import _last_known_group_members
+from wechat_diary_core.backends.weflow_api.client import (
+    WeflowApiClient,
+    fetch_group_members_with_retry,
+)
+from wechat_diary_core.backends.weflow_api.mapper import (
+    ImageMediaStats,
+    session_directory_display_name,
+    write_session_export,
+)
 from wechat_diary_core.config import Config, load_config
 from wechat_diary_core.media_store import (
     MEDIA_STORE_NAME,
@@ -169,6 +178,7 @@ def export_on_demand(
     enable_asr: bool = True,
     archive_fn: Callable[..., list[Path]] | None = None,
     transcriber_factory: Callable[..., Any] | None = None,
+    sleep_fn: Callable[[float], None] = time.sleep,
 ) -> ExportOnDemandResult:
     session = resolve_session(sessions, session_query)
     talker = str(session.get("username") or "")
@@ -186,7 +196,29 @@ def export_on_demand(
 
     api = cfg.export_backend.weflow_api
     contacts = client.fetch_contacts(limit=10000)
-    group_members = client.fetch_group_members(talker) if talker.endswith("@chatroom") else []
+    group_members: list[dict[str, Any]] = []
+    if talker.endswith("@chatroom"):
+        try:
+            group_members = fetch_group_members_with_retry(
+                client,
+                talker,
+                sleep=sleep_fn,
+            )
+        except Exception as exc:
+            group_members = _last_known_group_members(
+                talker,
+                session_directory_display_name(session, contacts),
+                roots=(raw_root, cfg.paths.raw, cfg.paths.archived / "raw"),
+            )
+            reason = " ".join(str(exc or "未知错误").split())
+            if len(reason) > 100:
+                reason = reason[:99].rstrip() + "…"
+            fallback = "canonical" if group_members else "contacts"
+            print(
+                "[WARN] 群成员名册重试耗尽，"
+                f"已改用 {fallback}/wxid 退路并继续导出：{reason}",
+                file=sys.stderr,
+            )
     messages = client.fetch_messages(
         talker,
         start=start,

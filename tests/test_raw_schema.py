@@ -71,6 +71,15 @@ class RawSchemaTests(unittest.TestCase):
     def test_complete_session_payload_passes(self) -> None:
         validate_session_json(_session_payload())
 
+    def test_legacy_group_name_shape_without_group_nickname_still_passes(self) -> None:
+        payload = _session_payload()
+        message = payload["messages"][0]
+        message["senderRemark"] = ""
+        message["senderNickname"] = "legacy-name-placeholder"
+        self.assertNotIn("senderGroupNickname", message)
+
+        validate_session_json(payload)
+
     def test_session_missing_required_field_reports_field_name(self) -> None:
         payload = _session_payload()
         payload["messages"][0].pop("createTime")

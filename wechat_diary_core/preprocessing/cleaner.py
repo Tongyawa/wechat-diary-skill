@@ -386,7 +386,12 @@ def _self_display_names(messages: Sequence[Message], extra_names: Sequence[str])
     for message in messages:
         if int(message.get("isSend") or 0) != 1:
             continue
-        for field in ("senderDisplayName", "senderRemark", "senderNickname"):
+        for field in (
+            "senderDisplayName",
+            "senderRemark",
+            "senderGroupNickname",
+            "senderNickname",
+        ):
             value = str(message.get(field) or "").strip()
             if value:
                 names.add(value)

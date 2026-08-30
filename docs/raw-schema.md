@@ -81,10 +81,11 @@
 | `source` | string | 是 | 媒体/表情/语音相关源字段，可为空字符串。 | validator 报错；过去媒体与语音失败识别会少一个来源。 |
 | `isSend` | integer/boolean/string | 是 | 是否本人发送；`1` 表示“我”。 | validator 报错；过去会默认对方消息。 |
 | `senderUsername` | string | 是 | 发送者 wxid；群聊上下文、压缩、目标会话兜底过滤使用。 | validator 报错；过去会影响 self 识别、压缩和目标过滤。 |
-| `senderDisplayName` | string | 是 | 发送者显示名；渲染姓名和本人名字推断使用。 | validator 报错；过去会退回备注、昵称、wxid 或“未知”。 |
+| `senderDisplayName` | string | 是 | 发送者显示名派生缓存；群聊由本项目按 `senderRemark > senderGroupNickname > senderNickname > 既有 canonical 名 > contacts > wxid` 计算，私聊继续使用 contact `displayName`。 | validator 报错；消费方按事实字段与 wxid 兜底。 |
 | `platformMessageId` | string/integer | 否 | 平台消息 id；引用解析和压缩 id 列表使用。 | 引用解析会失效；压缩 id 列表少该消息 id。 |
-| `senderRemark` | string | 否 | 发送者备注；显示名兜底。 | 显示名继续退回下一候选。 |
-| `senderNickname` | string | 否 | 发送者昵称；显示名兜底。 | 显示名继续退回下一候选。 |
+| `senderRemark` | string | 否 | 名册 `remark` 原值；群成员备注事实。 | 显示名继续退回下一候选。 |
+| `senderGroupNickname` | string | 否 | 名册 `groupNickname` 原值；仅新群聊 canonical 保证写出，旧产物可缺。 | 显示名继续退回微信昵称；validator 不拒绝旧形状。 |
+| `senderNickname` | string | 否 | 名册 `nickname` 原值；新群聊 canonical 不再混入群昵称。⚠️ 旧产物可能在此字段存了群昵称。 | 显示名继续退回下一候选。 |
 | `replyToMessageId` | string/integer | 否 | 当前消息引用的 `platformMessageId`。 | 不解析 `replyContext`，只用原始引用字段或不显示引用。 |
 | `quotedContent` | string | 否 | WeFlow 原始引用内容。 | 引用兜底内容为空时显示 `[消息]` 或不显示引用。 |
 | `quotedSender` | string | 否 | WeFlow 原始引用发送者。 | 引用发送者退回其他字段或“未知”。 |
@@ -184,10 +185,10 @@
 
 | 文件 | 消费字段 |
 |---|---|
-| `preprocessing/cleaner.py` | root: `session`, `messages`; session: `type`; message: `platformMessageId`, `replyToMessageId`, `senderUsername`, `senderDisplayName`, `isSend`, `content`, `type`, `source`, `localId`, `createTime`, `formattedTime`, `senderRemark`, `senderNickname`, `quotedSenderDisplayName`, `quotedSender`, `quotedContent`, `quotedIsSelf`, `replyContext`; derived writes: `replyContext`, `is_self_related_pat`, `is_chatroom_top_message`, `transcribe_failed`, `session.messageCount` |
+| `preprocessing/cleaner.py` | root: `session`, `messages`; session: `type`; message: `platformMessageId`, `replyToMessageId`, `senderUsername`, `senderDisplayName`, `isSend`, `content`, `type`, `source`, `localId`, `createTime`, `formattedTime`, `senderRemark`, `senderGroupNickname`, `senderNickname`, `quotedSenderDisplayName`, `quotedSender`, `quotedContent`, `quotedIsSelf`, `replyContext`; derived writes: `replyContext`, `is_self_related_pat`, `is_chatroom_top_message`, `transcribe_failed`, `session.messageCount` |
 | `preprocessing/context_window.py` | message: `platformMessageId`, `is_self_related_pat`, `isSend`, `senderUsername`, `replyToMessageId`, `content`, `quotedContent`, `source`, `createTime` |
 | `preprocessing/moments.py` | root: `posts`, `filters`; filters: `usernames`; post: `createTime`, `nickname`, `username`, `contentDesc`, `media`, `comments`, `location`, `createTimeStr`; media: `localPath`; comment: `nickname`, `refNickname`, `content`, `emojis`, `emoji`; location: `poiName`, `address`, `cityName` |
 | `preprocessing/image_ocr.py` | message: `content`, `source`; OCR engine result fields are external engine outputs, not raw schema fields |
 | `preprocessing/time_compress.py` | message: `type`, `senderUsername`, `isSend`, `createTime`, `endCreateTime`, `content`, `compressed_count`, `compressed_local_ids`, `localId`, `compressed_platform_message_ids`, `platformMessageId`, `compressed_segments`; `endCreateTime` and `compressed_*` are preprocessing 派生字段 |
 | `archiving.py` | processed root: `messages`, `session`; session: `username`, `wxid`, `displayName`, `nickname`, `remark`; message: `senderUsername`, `isSend`, `formattedTime`, `createTime` |
-| `chat_flow.py` | message: `createTime`, `formattedTime`, `is_chatroom_top_message`, `is_self_related_pat`, `isSend`, `senderDisplayName`, `senderRemark`, `senderNickname`, `senderUsername`, `compressed_segments`, `type`, `content`, `image_ocr`, `image_ocr_inline`, `transcribe_failed`, `compressed_local_ids`, `replyContext`, `replyToMessageId`, `quotedContent`, `quotedSenderDisplayName`, `quotedSender`, `quotedIsSelf`; replyContext: `isSend`, `senderDisplayName`, `senderUsername`, `type`, `content`, `quotedContent`, `image_ocr`, `image_ocr_inline`, `transcribe_failed` |
+| `chat_flow.py` | message: `createTime`, `formattedTime`, `is_chatroom_top_message`, `is_self_related_pat`, `isSend`, `senderDisplayName`, `senderRemark`, `senderGroupNickname`, `senderNickname`, `senderUsername`, `compressed_segments`, `type`, `content`, `image_ocr`, `image_ocr_inline`, `transcribe_failed`, `compressed_local_ids`, `replyContext`, `replyToMessageId`, `quotedContent`, `quotedSenderDisplayName`, `quotedSender`, `quotedIsSelf`; replyContext: `isSend`, `senderDisplayName`, `senderUsername`, `type`, `content`, `quotedContent`, `image_ocr`, `image_ocr_inline`, `transcribe_failed` |

@@ -30,6 +30,101 @@ def _fixture(name: str):
 
 
 class WeflowApiMapperTests(unittest.TestCase):
+    def test_group_member_name_policy_preserves_facts_and_ignores_roster_display_name(self) -> None:
+        snapshot_bytes = (
+            b'[{"wxid":"wxid_member_placeholder","displayName":"ignored-roster-display",'
+            b'"nickname":"wechat-nickname","remark":"","alias":"alias-placeholder",'
+            b'"groupNickname":"group-nickname","avatarUrl":"",'
+            b'"isOwner":false,"isFriend":true,"messageCount":0}]'
+        )
+        self.assertFalse(snapshot_bytes.endswith(b"\n"))
+        snapshot = json.loads(snapshot_bytes)
+        self.assertEqual(
+            set(snapshot[0]),
+            {
+                "wxid",
+                "displayName",
+                "nickname",
+                "remark",
+                "alias",
+                "groupNickname",
+                "avatarUrl",
+                "isOwner",
+                "isFriend",
+                "messageCount",
+            },
+        )
+
+        session = {"username": "room-placeholder@chatroom", "displayName": "Group Placeholder"}
+        contacts = [
+            {"username": session["username"], "displayName": "Group Placeholder"},
+            {
+                "username": "wxid_member_placeholder",
+                "displayName": "contact-fallback",
+                "nickname": "contact-nickname",
+                "remark": "",
+            },
+        ]
+        template = copy.deepcopy(_fixture("messages.json")["messages"][0])
+        template.update(
+            {
+                "isSend": 0,
+                "senderUsername": "wxid_member_placeholder",
+                "quote": {
+                    "sender": "wxid_member_placeholder",
+                    "accountName": "",
+                    "content": "quoted-placeholder",
+                },
+            }
+        )
+        cases = (
+            ("remark", "remark-name", "group-name", "wechat-name", "remark-name"),
+            ("group nickname", "", "group-name", "wechat-name", "group-name"),
+            ("wechat nickname", "", "", "wechat-name", "wechat-name"),
+        )
+        for label, remark, group_nickname, nickname, expected in cases:
+            with self.subTest(label=label):
+                member = {
+                    **snapshot[0],
+                    "displayName": "must-not-drive-derived-name",
+                    "remark": remark,
+                    "groupNickname": group_nickname,
+                    "nickname": nickname,
+                }
+                data = map_session_json(
+                    session,
+                    [template],
+                    contacts=contacts,
+                    group_members=[member],
+                )
+                mapped = data["messages"][0]
+                self.assertEqual(mapped["senderDisplayName"], expected)
+                self.assertEqual(mapped["quotedSenderDisplayName"], expected)
+                self.assertEqual(mapped["senderRemark"], remark)
+                self.assertEqual(mapped["senderGroupNickname"], group_nickname)
+                self.assertEqual(mapped["senderNickname"], nickname)
+                self.assertNotIn("alias", mapped)
+
+    def test_private_sender_display_name_behavior_is_unchanged(self) -> None:
+        session = {"username": "wxid_peer_placeholder", "displayName": "session-snapshot"}
+        contacts = [
+            {
+                "username": session["username"],
+                "displayName": "private-display-name",
+                "remark": "private-remark",
+                "nickname": "private-nickname",
+            }
+        ]
+        message = copy.deepcopy(_fixture("messages.json")["messages"][0])
+        message.update({"isSend": 0, "senderUsername": session["username"]})
+
+        mapped = map_session_json(session, [message], contacts=contacts)["messages"][0]
+
+        self.assertEqual(mapped["senderDisplayName"], "private-display-name")
+        self.assertEqual(mapped["senderRemark"], "private-remark")
+        self.assertEqual(mapped["senderNickname"], "private-nickname")
+        self.assertNotIn("senderGroupNickname", mapped)
+
     def test_directory_name_uses_contact_roster_fallback_chain(self) -> None:
         export_day = date(2026, 8, 25)
         session = {"username": "wxid_directory_placeholder", "displayName": "会话快照"}
@@ -171,6 +266,7 @@ class WeflowApiMapperTests(unittest.TestCase):
         self.assertEqual(mapped_by_local_id[2332]["type"], "动画表情")
         self.assertEqual(mapped_by_local_id[2332]["replyToMessageId"], "6277496717170092270")
         self.assertEqual(mapped_by_local_id[2332]["quotedContent"], "被引用原文")
+        self.assertEqual(mapped_by_local_id[2332]["quotedSenderDisplayName"], "本人占位")
         self.assertNotEqual(mapped_by_local_id[2331]["content"], "[语音]")
         self.assertIn("转文字失败", mapped_by_local_id[2331]["content"])
 

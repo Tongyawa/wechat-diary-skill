@@ -761,6 +761,117 @@ class ExportOnDemandTests(unittest.TestCase):
             self.assertNotIn("far-unrelated-marker", window_text)
             self.assertNotEqual(default_text, window_text)
 
+    def test_group_roster_retry_recovers_with_fake_clock_before_on_demand_export(self) -> None:
+        session = {"username": "sample@chatroom", "displayName": "示例群聊"}
+
+        class FlakyRosterClient(FixtureClient):
+            def __init__(self):
+                super().__init__(
+                    [session],
+                    {session["username"]: _group_messages()},
+                    contacts=[
+                        {"username": session["username"], "displayName": "示例群聊"},
+                        {
+                            "username": "wxid_group_member_placeholder",
+                            "displayName": "联系人退路占位",
+                            "nickname": "联系人昵称占位",
+                        },
+                    ],
+                )
+                self.roster_attempts = 0
+
+            def fetch_group_members(self, chatroom_id):
+                self.calls.append(("group-members", chatroom_id))
+                self.roster_attempts += 1
+                if self.roster_attempts < 3:
+                    raise RuntimeError("synthetic transient roster failure")
+                return [
+                    {
+                        "wxid": "wxid_group_member_placeholder",
+                        "displayName": "must-not-drive-name",
+                        "nickname": "微信昵称占位",
+                        "remark": "",
+                        "alias": "",
+                        "groupNickname": "群昵称占位",
+                        "avatarUrl": "",
+                        "isOwner": False,
+                        "isFriend": True,
+                        "messageCount": 0,
+                    }
+                ]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            client = FlakyRosterClient()
+            sleeps: list[float] = []
+            result = module.export_on_demand(
+                _config(root),
+                sessions=[session],
+                client=client,
+                session_query=session["username"],
+                start=date(2026, 5, 12),
+                end=date(2026, 5, 14),
+                out_root=root / "out",
+                sleep_fn=sleeps.append,
+            )
+            canonical = json.loads(next(result.raw_session_dir.glob("*.json")).read_text(encoding="utf-8"))
+
+        self.assertEqual(client.roster_attempts, 3)
+        self.assertEqual(sleeps, [20.0, 20.0])
+        other_messages = [item for item in canonical["messages"] if not item["isSend"]]
+        self.assertTrue(other_messages)
+        self.assertTrue(all(item["senderDisplayName"] == "群昵称占位" for item in other_messages))
+
+    def test_on_demand_roster_exhaustion_uses_contacts_fallback(self) -> None:
+        session = {"username": "sample@chatroom", "displayName": "示例群聊"}
+
+        class FailedRosterClient(FixtureClient):
+            def __init__(self):
+                super().__init__(
+                    [session],
+                    {session["username"]: _group_messages()},
+                    contacts=[
+                        {"username": session["username"], "displayName": "示例群聊"},
+                        {
+                            "username": "wxid_group_member_placeholder",
+                            "displayName": "联系人退路占位",
+                            "nickname": "联系人昵称占位",
+                        },
+                    ],
+                )
+                self.roster_attempts = 0
+
+            def fetch_group_members(self, chatroom_id):
+                self.calls.append(("group-members", chatroom_id))
+                self.roster_attempts += 1
+                raise RuntimeError("synthetic persistent roster failure")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            client = FailedRosterClient()
+            sleeps: list[float] = []
+            errors = io.StringIO()
+            with redirect_stderr(errors):
+                result = module.export_on_demand(
+                    _config(root),
+                    sessions=[session],
+                    client=client,
+                    session_query=session["username"],
+                    start=date(2026, 5, 12),
+                    end=date(2026, 5, 14),
+                    out_root=root / "out",
+                    sleep_fn=sleeps.append,
+                )
+            canonical = json.loads(next(result.raw_session_dir.glob("*.json")).read_text(encoding="utf-8"))
+
+        self.assertEqual(client.roster_attempts, 3)
+        self.assertEqual(sleeps, [20.0, 20.0])
+        self.assertIn("名册重试耗尽", errors.getvalue())
+        self.assertIn("contacts/wxid", errors.getvalue())
+        other_messages = [item for item in canonical["messages"] if not item["isSend"]]
+        self.assertTrue(other_messages)
+        self.assertTrue(all(item["senderDisplayName"] == "联系人退路占位" for item in other_messages))
+
     def test_media_copy_toggle_keeps_references_and_changes_layout(self) -> None:
         session = {"username": "wxid_contact_placeholder", "displayName": "示例联系人"}
         message = _private_fixture_messages()[0]

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import socket
+import time
 from datetime import date
 from pathlib import Path
 from typing import Any, Callable, Iterator
@@ -16,12 +17,35 @@ MAX_HTTP_ERROR_BODY_BYTES = 64 * 1024
 MAX_HTTP_ERROR_DETAIL_CHARS = 500
 MAX_COLLECTION_LIMIT = 10000
 MAX_TIMELINE_LIMIT = 200
+GROUP_ROSTER_MAX_ATTEMPTS = 3
+GROUP_ROSTER_RETRY_COOLDOWN_SECONDS = 20.0
 
 
 class WeflowApiError(RuntimeError):
     def __init__(self, message: str, *, status: int | None = None) -> None:
         self.status = status
         super().__init__(message)
+
+
+def fetch_group_members_with_retry(
+    client: Any,
+    chatroom_id: str,
+    *,
+    sleep: Callable[[float], None] = time.sleep,
+) -> list[dict[str, Any]]:
+    """Fetch a non-empty group roster with bounded post-failure cooldowns."""
+
+    for attempt in range(1, GROUP_ROSTER_MAX_ATTEMPTS + 1):
+        try:
+            members = client.fetch_group_members(chatroom_id)
+            if not members:
+                raise RuntimeError("群成员接口返回空名册")
+            return members
+        except Exception:
+            if attempt >= GROUP_ROSTER_MAX_ATTEMPTS:
+                raise
+            sleep(GROUP_ROSTER_RETRY_COOLDOWN_SECONDS)
+    raise AssertionError("群成员名册重试循环未返回或抛错")
 
 
 class WeflowApiClient:
