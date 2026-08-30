@@ -5,14 +5,22 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
-import shutil
 import sys
-import tempfile
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
+
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from wechat_diary_core.name_patch import (
+    assert_only_message_fields_changed,
+    atomic_replace_bytes,
+    canonical_message_fragment,
+)
 
 
 _DERIVED_MESSAGE_FIELDS = (
@@ -170,7 +178,7 @@ def backfill_group_names(raw_root: Path, *, apply: bool = False) -> BackfillRepo
 
     if apply:
         for patch in patches:
-            _atomic_replace_bytes(patch.path, patch.updated)
+            atomic_replace_bytes(patch.path, patch.updated)
 
     return BackfillReport(
         scanned_json_files=len(paths),
@@ -323,13 +331,13 @@ def _plan_file_patch(
 
         if not changed:
             continue
-        old_fragment = _canonical_message_fragment(message, newline=newline)
+        old_fragment = canonical_message_fragment(message, newline=newline)
         if working.count(old_fragment) != 1:
             raise BackfillError(
                 "无法唯一定位 canonical 消息片段，拒绝整文件重序列化："
                 f"{path}（messages[{index}]）"
             )
-        new_fragment = _canonical_message_fragment(updated, newline=newline)
+        new_fragment = canonical_message_fragment(updated, newline=newline)
         working = working.replace(old_fragment, new_fragment, 1)
         messages[index] = updated
         repaired_messages += 1
@@ -354,52 +362,18 @@ def _plan_file_patch(
     )
 
 
-def _canonical_message_fragment(message: Mapping[str, Any], *, newline: str) -> str:
-    dumped = json.dumps(dict(message), ensure_ascii=False, indent=2).replace("\n", newline)
-    return newline.join(f"    {line}" for line in dumped.split(newline))
-
-
 def _assert_only_derived_fields_changed(
     before: Mapping[str, Any],
     after: Mapping[str, Any],
     path: Path,
 ) -> None:
-    normalized_after = deepcopy(after)
-    before_messages = before.get("messages")
-    after_messages = normalized_after.get("messages")
-    if not isinstance(before_messages, list) or not isinstance(after_messages, list):
-        raise BackfillError(f"canonical messages 结构不可比：{path}")
-    if len(before_messages) != len(after_messages):
-        raise BackfillError(f"回填改变了消息条数：{path}")
-    for old_message, new_message in zip(before_messages, after_messages):
-        if not isinstance(old_message, Mapping) or not isinstance(new_message, dict):
-            raise BackfillError(f"canonical message 结构不可比：{path}")
-        for field_name in _DERIVED_MESSAGE_FIELDS:
-            if field_name in old_message:
-                new_message[field_name] = old_message[field_name]
-            else:
-                new_message.pop(field_name, None)
-    if normalized_after != before:
-        raise BackfillError(f"回填试图修改名字派生字段之外的内容：{path}")
-
-
-def _atomic_replace_bytes(path: Path, content: bytes) -> None:
-    handle, temporary_name = tempfile.mkstemp(
-        prefix=f".{path.name}.",
-        suffix=".tmp",
-        dir=path.parent,
+    assert_only_message_fields_changed(
+        before,
+        after,
+        path,
+        allowed_fields=_DERIVED_MESSAGE_FIELDS,
+        error_type=BackfillError,
     )
-    temporary = Path(temporary_name)
-    try:
-        with os.fdopen(handle, "wb") as stream:
-            stream.write(content)
-            stream.flush()
-            os.fsync(stream.fileno())
-        shutil.copymode(path, temporary)
-        os.replace(temporary, path)
-    finally:
-        if temporary.exists():
-            temporary.unlink()
 
 
 def _known_value(value: Any, sender: str) -> str:

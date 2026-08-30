@@ -18,9 +18,13 @@ PYTHON_ENTRYPOINTS = {
     "export_on_demand.py",
     "export_bulk_raw.py",
     "backfill_group_names.py",
+    "repair_group_names.py",
     "doctor.py",
     "archive_exports.py",
     "init_worktree_config.py",
+}
+PYTHON_SUBCOMMANDS = {
+    "repair_group_names.py": ("prepare", "recompute", "rescan"),
 }
 POWERSHELL_ENTRYPOINTS = {
     "run_daily_export.ps1",
@@ -72,21 +76,32 @@ def documented_options() -> dict[str, set[str]]:
 
 
 def python_cli_options(script: str) -> set[str]:
-    completed = subprocess.run(
-        [sys.executable, str(ROOT / "scripts" / script), "--help"],
-        cwd=ROOT,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        check=False,
-        timeout=30,
-    )
-    output = completed.stdout + completed.stderr
-    if completed.returncode != 0:
-        raise AssertionError(f"{script} --help failed (exit {completed.returncode}):\n{output}")
-    return set(re.findall(r"(?m)^\s*(--[A-Za-z][\w-]*)", output))
+    commands = PYTHON_SUBCOMMANDS.get(script, (None,))
+    options: set[str] = set()
+    for command in commands:
+        argv = [sys.executable, str(ROOT / "scripts" / script)]
+        if command is not None:
+            argv.append(command)
+        argv.append("--help")
+        completed = subprocess.run(
+            argv,
+            cwd=ROOT,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+            timeout=30,
+        )
+        output = completed.stdout + completed.stderr
+        if completed.returncode != 0:
+            label = f" {command}" if command else ""
+            raise AssertionError(
+                f"{script}{label} --help failed (exit {completed.returncode}):\n{output}"
+            )
+        options.update(re.findall(r"(?m)^\s*(--[A-Za-z][\w-]*)", output))
+    return options
 
 
 def powershell_declared_options(script: str) -> set[str]:
