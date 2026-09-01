@@ -46,6 +46,7 @@ class BulkExportResult:
     files_written: tuple[Path, ...]
     failures: dict[str, str]
     no_local_records: int = 0
+    skipped_excluded_sessions: int = 0
     planned_sessions: int = 0
     resumed_plans: int = 0
     reconciliation_path: Path | None = None
@@ -237,6 +238,10 @@ class WeflowApiBackend:
             selected_sessions,
             contacts=contacts,
             skip_platform_accounts=self.config.daily_export.skip_official_accounts,
+            excluded_session_usernames=self.config.daily_export.excluded_session_usernames,
+        )
+        excluded_session_usernames = frozenset(
+            self.config.daily_export.excluded_session_usernames
         )
 
         # Reuse the daily chain's already-classified third state. This imports
@@ -249,6 +254,7 @@ class WeflowApiBackend:
                 known = daily_failure_state.no_local_records.get(talker)
                 if (
                     not talker
+                    or talker in excluded_session_usernames
                     or not isinstance(known, dict)
                     or plan.is_no_local_records(talker)
                     or plan.has_completed(talker)
@@ -272,6 +278,7 @@ class WeflowApiBackend:
                     self.config.daily_export.skip_official_accounts
                     and _is_platform_account(talker)
                 )
+                and talker not in excluded_session_usernames
                 and not plan.is_no_local_records(talker)
                 and bool(plan.uncovered(talker, start, end))
             )
@@ -289,7 +296,7 @@ class WeflowApiBackend:
             display_name = session_directory_display_name(session, contacts)
             if not talker or (
                 self.config.daily_export.skip_official_accounts and _is_platform_account(talker)
-            ):
+            ) or talker in excluded_session_usernames:
                 continue
             if plan.is_no_local_records(talker):
                 if retry_no_local_records:
@@ -367,6 +374,7 @@ class WeflowApiBackend:
         completed_intervals = 0
         resumed_intervals = 0
         skipped_platform_accounts = 0
+        skipped_excluded_sessions = 0
         messages_written = 0
         files_written: list[Path] = []
         failures: dict[str, str] = dict(plan_failures)
@@ -383,6 +391,9 @@ class WeflowApiBackend:
                 continue
             if self.config.daily_export.skip_official_accounts and _is_platform_account(talker):
                 skipped_platform_accounts += 1
+                continue
+            if talker in excluded_session_usernames:
+                skipped_excluded_sessions += 1
                 continue
             if plan.is_no_local_records(talker):
                 continue
@@ -541,6 +552,7 @@ class WeflowApiBackend:
             start=start,
             end=end,
             skip_platform_accounts=self.config.daily_export.skip_official_accounts,
+            excluded_session_usernames=excluded_session_usernames,
         )
         return BulkExportResult(
             requested_sessions=len(selected_sessions),
@@ -559,8 +571,10 @@ class WeflowApiBackend:
                         self.config.daily_export.skip_official_accounts
                         and _is_platform_account(talker)
                     )
+                    and talker not in excluded_session_usernames
                 }
             ),
+            skipped_excluded_sessions=skipped_excluded_sessions,
             planned_sessions=planned_sessions,
             resumed_plans=resumed_plans,
             reconciliation_path=reconciliation_path,
@@ -588,6 +602,10 @@ class WeflowApiBackend:
         messages_found = 0
         published_sessions = 0
         skipped_platform_accounts = 0
+        skipped_excluded_sessions = 0
+        excluded_session_usernames = frozenset(
+            self.config.daily_export.excluded_session_usernames
+        )
         ignored_failures = 0
         group_roster_stats = _GroupRosterStats()
         for session in sessions:
@@ -597,6 +615,10 @@ class WeflowApiBackend:
                 continue
             if self.config.daily_export.skip_official_accounts and _is_platform_account(talker):
                 skipped_platform_accounts += 1
+                state.record_success(talker)
+                continue
+            if talker in excluded_session_usernames:
+                skipped_excluded_sessions += 1
                 state.record_success(talker)
                 continue
             display_name = session_directory_display_name(session, contacts)
@@ -714,6 +736,8 @@ class WeflowApiBackend:
                 f"[INFO] 已跳过 {skipped_platform_accounts} 个公众号/企业微信/客服会话"
                 "（skip_official_accounts=true）"
             )
+        if skipped_excluded_sessions:
+            print(f"[INFO] 已按配置跳过 {skipped_excluded_sessions} 个排除会话")
         if ignored_failures:
             print(f"[INFO] {ignored_failures} 个已忽略会话仍导出失败（明细见 runlog）")
         if group_roster_stats.failed_sessions:
@@ -872,6 +896,7 @@ class WeflowApiBackend:
             sessions,
             contacts=contacts,
             skip_official_accounts=self.config.daily_export.skip_official_accounts,
+            excluded_session_usernames=self.config.daily_export.excluded_session_usernames,
         )
         live_raw_collisions = _stored_session_directory_collisions(
             self.config.paths.raw,
@@ -1137,14 +1162,20 @@ def _current_session_directory_collisions(
     *,
     contacts: Sequence[Mapping[str, Any]],
     skip_official_accounts: bool,
+    excluded_session_usernames: Sequence[str] = (),
 ) -> dict[str, dict[str, str]]:
     """Return only canonical daily directories claimed by multiple wxids."""
 
     candidates: dict[str, dict[str, str]] = {}
+    excluded = frozenset(excluded_session_usernames)
     today = date.today()
     for session in sessions:
         wxid = str(session.get("username") or "").strip()
-        if not wxid or (skip_official_accounts and _is_platform_account(wxid)):
+        if (
+            not wxid
+            or wxid in excluded
+            or (skip_official_accounts and _is_platform_account(wxid))
+        ):
             continue
         directory = session_directory_name(session, today, today, contacts=contacts)
         candidates.setdefault(directory, {}).setdefault(
@@ -1459,12 +1490,14 @@ def _write_bulk_reconciliation(
     start: date,
     end: date,
     skip_platform_accounts: bool,
+    excluded_session_usernames: Sequence[str] = (),
 ) -> tuple[Path, int, int]:
     """Write an inspectable plan-vs-actual report; drift is evidence, not failure."""
 
     entries: list[dict[str, Any]] = []
     difference_count = 0
     incomplete_coverage_days = 0
+    excluded = frozenset(excluded_session_usernames)
     for index, session in enumerate(sessions, start=1):
         talker = str(session.get("username") or "")
         display_name = session_directory_display_name(session, contacts)
@@ -1480,6 +1513,10 @@ def _write_bulk_reconciliation(
             continue
         if skip_platform_accounts and _is_platform_account(talker):
             entry["status"] = "skipped_platform_account"
+            entries.append(entry)
+            continue
+        if talker in excluded:
+            entry["status"] = "excluded_session"
             entries.append(entry)
             continue
         if plan.is_no_local_records(talker):
@@ -1619,6 +1656,7 @@ def _validate_bulk_destination_names(
     *,
     contacts: Sequence[Mapping[str, Any]],
     skip_platform_accounts: bool,
+    excluded_session_usernames: Sequence[str] = (),
 ) -> None:
     """Reject a bulk run whose selected sessions would share one directory.
 
@@ -1633,6 +1671,7 @@ def _validate_bulk_destination_names(
         [dict(session) for session in sessions],
         contacts=contacts,
         skip_official_accounts=skip_platform_accounts,
+        excluded_session_usernames=excluded_session_usernames,
     )
     if not collisions:
         return

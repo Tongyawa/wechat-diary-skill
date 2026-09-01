@@ -180,6 +180,7 @@ def _run(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
         f"复用 plan {result.resumed_plans}；"
         f"完成区间 {result.completed_intervals}；"
         f"续跑跳过 {result.resumed_intervals}；"
+        f"名单跳过 {result.skipped_excluded_sessions}；"
         f"消息 {result.messages_written}；"
         f"文件 {len(result.files_written)}；"
         f"失败 {len(result.failures)}；"

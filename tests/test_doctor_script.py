@@ -20,6 +20,7 @@ def _write_config(
     image_ocr_enabled: bool = True,
     voice_users: bool = True,
     fallback: str = "",
+    excluded_session_usernames: tuple[str, ...] = (),
 ) -> Path:
     executable = root / "WeFlow.exe"
     if executable_exists:
@@ -51,6 +52,7 @@ image_ocr_enabled = {str(image_ocr_enabled).lower()}
 
 [daily_export]
 voice_fallback_script = "{fallback}"
+excluded_session_usernames = {json.dumps(list(excluded_session_usernames), ensure_ascii=False)}
 """.strip(),
         encoding="utf-8",
     )
@@ -75,6 +77,25 @@ def _by_id(report: DoctorReport, check_id: str) -> CheckResult:
 
 
 class DoctorTests(unittest.TestCase):
+    def test_export_exclusion_reports_only_effective_count(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            report = run_doctor(
+                _write_config(
+                    Path(tmp),
+                    excluded_session_usernames=(
+                        "wxid_excluded_placeholder",
+                        "wxid_second_excluded_placeholder",
+                    ),
+                ),
+                deps=_deps(),
+            )
+
+        check = _by_id(report, "export_exclusion")
+        self.assertEqual(check.status, "ready")
+        self.assertEqual(check.details, {"count": 2})
+        self.assertIn("2 个会话", check.message)
+        self.assertNotIn("wxid_", check.message)
+
     def test_weflow_api_backend_has_health_token_semantic_and_optional_asr_checks(self) -> None:
         class ApiClient:
             def health(self):

@@ -81,6 +81,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--merged", action="store_true", help="额外产出整段合并 markdown。")
     parser.add_argument("--no-media-copy", action="store_true", help="不把媒体复制到 markdown 旁。")
     parser.add_argument("--no-asr", action="store_true", help="关闭语音转写。")
+    parser.add_argument(
+        "--allow-excluded-session",
+        action="store_true",
+        help="显式旁路导出排除名单，仅用于本次按需导出。",
+    )
     parser.add_argument("--list-sessions", metavar="关键词", help="列出匹配候选并退出。")
     return parser
 
@@ -127,6 +132,7 @@ def main(argv: list[str] | None = None) -> int:
             merged=args.merged,
             copy_media=not args.no_media_copy,
             enable_asr=not args.no_asr,
+            allow_excluded_session=args.allow_excluded_session,
         )
     except WorkspaceResolutionError as exc:
         print(str(exc), file=sys.stderr)
@@ -176,6 +182,7 @@ def export_on_demand(
     merged: bool = False,
     copy_media: bool = True,
     enable_asr: bool = True,
+    allow_excluded_session: bool = False,
     archive_fn: Callable[..., list[Path]] | None = None,
     transcriber_factory: Callable[..., Any] | None = None,
     sleep_fn: Callable[[float], None] = time.sleep,
@@ -184,6 +191,15 @@ def export_on_demand(
     talker = str(session.get("username") or "")
     if not talker:
         raise SessionSelectionError("候选会话缺少 username，无法导出。")
+    if (
+        talker in frozenset(cfg.daily_export.excluded_session_usernames)
+        and not allow_excluded_session
+    ):
+        raise SessionSelectionError(
+            "该会话已在导出排除名单中，默认拒绝导出。"
+            "如确需本次导出，请显式添加 --allow-excluded-session。",
+            exit_code=2,
+        )
 
     merge_target = Path(merge_into).expanduser().resolve() if merge_into is not None else None
     if merge_target is not None and not merge_target.is_dir():

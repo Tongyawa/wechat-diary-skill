@@ -28,9 +28,11 @@ def _config(
     media_localize: bool = True,
     target_usernames: tuple[str, ...] = (),
     self_moments_usernames: tuple[str, ...] = (),
+    excluded_session_usernames: tuple[str, ...] = (),
 ):
     target_values = json.dumps(list(target_usernames), ensure_ascii=False)
     self_moments_values = json.dumps(list(self_moments_usernames), ensure_ascii=False)
+    excluded_values = json.dumps(list(excluded_session_usernames), ensure_ascii=False)
     path = root / "config.toml"
     path.write_text(
         f"""
@@ -55,6 +57,7 @@ media_localize = {str(media_localize).lower()}
 target_usernames = {target_values}
 self_moments_usernames = {self_moments_values}
 skip_official_accounts = {str(skip_official_accounts).lower()}
+excluded_session_usernames = {excluded_values}
 
 [asr]
 engine = "{asr_engine}"
@@ -338,6 +341,31 @@ class WeflowApiBackendTests(unittest.TestCase):
                     "wxid_contact_placeholder",
                 ],
             )
+
+    def test_excluded_daily_session_is_skipped_before_message_request_and_clears_failure(self) -> None:
+        excluded = "wxid_excluded_placeholder"
+        visible = "wxid_visible_placeholder"
+        sessions = [
+            {"username": excluded, "displayName": "排除会话占位"},
+            {"username": visible, "displayName": "保留会话占位"},
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state_path = _seed_failure_state(root, excluded)
+            cfg = _config(root, excluded_session_usernames=(excluded,))
+            client = _TrackingSessionClient(sessions)
+            backend = WeflowApiBackend(cfg)
+            backend._client = client
+            output = io.StringIO()
+
+            with redirect_stdout(output):
+                backend.export_chats(date(2026, 8, 6))
+
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(client.message_calls, [visible])
+        self.assertNotIn(excluded, state["failures"])
+        self.assertIn("已按配置跳过 1 个排除会话", output.getvalue())
 
     def test_missing_database_for_stale_never_exported_session_becomes_no_local_records(self) -> None:
         sessions = [

@@ -22,7 +22,12 @@ def _fixture(name: str):
     return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
 
 
-def _config(root: Path, *, appmsg_text_max_chars: int = 300) -> object:
+def _config(
+    root: Path,
+    *,
+    appmsg_text_max_chars: int = 300,
+    excluded_session_usernames: tuple[str, ...] = (),
+) -> object:
     config_path = root / "config.toml"
     config_path.write_text(
         f"""
@@ -49,6 +54,9 @@ messages_before = 3
 messages_after = 5
 time_window_minutes = 15
 anchor_keywords = []
+
+[daily_export]
+excluded_session_usernames = {json.dumps(list(excluded_session_usernames), ensure_ascii=False)}
 """.strip(),
         encoding="utf-8",
     )
@@ -147,6 +155,58 @@ class ExportOnDemandTests(unittest.TestCase):
         self.assertEqual(raised.exception.exit_code, 2)
         self.assertIn("wxid_beta_placeholder", str(raised.exception))
         self.assertIn("wxid_beta_2_placeholder", str(raised.exception))
+
+    def test_excluded_session_refuses_without_output_and_explicit_bypass_exports(self) -> None:
+        session = {
+            "username": "wxid_excluded_placeholder",
+            "displayName": "排除会话占位",
+        }
+        export_day = date(2026, 8, 5)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = _config(root, excluded_session_usernames=(session["username"],))
+            client = FixtureClient(
+                [session],
+                {session["username"]: _private_fixture_messages()},
+            )
+            blocked_root = root / "blocked"
+
+            with self.assertRaises(module.SessionSelectionError) as raised:
+                module.export_on_demand(
+                    cfg,
+                    sessions=[session],
+                    client=client,
+                    session_query=session["username"],
+                    start=export_day,
+                    end=export_day,
+                    out_root=blocked_root,
+                )
+
+            self.assertEqual(raised.exception.exit_code, 2)
+            self.assertIn("已在导出排除名单", str(raised.exception))
+            self.assertIn("--allow-excluded-session", str(raised.exception))
+            self.assertFalse(blocked_root.exists())
+            self.assertFalse(any(call[0] == "messages" for call in client.calls))
+
+            result = module.export_on_demand(
+                cfg,
+                sessions=[session],
+                client=client,
+                session_query=session["username"],
+                start=export_day,
+                end=export_day,
+                out_root=root / "allowed",
+                allow_excluded_session=True,
+                copy_media=False,
+                enable_asr=False,
+                archive_fn=lambda *args, **kwargs: [],
+            )
+
+        self.assertTrue(result.raw_session_dir.name.endswith("20260805"))
+        self.assertEqual(
+            [call[1] for call in client.calls if call[0] == "messages"],
+            [session["username"]],
+        )
 
     def test_range_and_single_day_directory_names_and_merged_output(self) -> None:
         session = {"username": "wxid_contact_placeholder", "displayName": "示例联系人"}

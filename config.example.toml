@@ -145,6 +145,11 @@ target_usernames = []
 # 公众号、企业微信和客服会话对 diary 无价值；设为 false 可导出这些平台型会话。
 skip_official_accounts = true
 
+# 按会话 username/wxid 精确匹配。daily 与 bulk 会在消息请求前跳过；
+# 按需导出默认拒绝，只有显式 --allow-excluded-session 才旁路。
+# 真实名单属于本机私有配置，不要写进公开仓。
+excluded_session_usernames = []
+
 # Contacts used only for exporting your own Moments into the public diary
 # material stream. Do not put filehelper here; use your own wxid or a WeFlow
 # searchable display name.
