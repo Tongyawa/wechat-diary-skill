@@ -37,6 +37,7 @@ def _config(
     media_localize: bool = False,
     bulk_start: str = "2010-01-01",
     bulk_end: str = "",
+    excluded_session_usernames: tuple[str, ...] = (),
 ):
     path = root / "config.toml"
     path.write_text(
@@ -61,6 +62,7 @@ media_localize = {str(media_localize).lower()}
 [daily_export]
 target_usernames = {json.dumps(list(target_usernames), ensure_ascii=False)}
 skip_official_accounts = true
+excluded_session_usernames = {json.dumps(list(excluded_session_usernames), ensure_ascii=False)}
 
 [bulk_export]
 start = "{bulk_start}"
@@ -303,6 +305,51 @@ class BulkExportTests(unittest.TestCase):
         self.assertIn("wxid_collision_a", message)
         self.assertIn("wxid_collision_b", message)
         self.assertEqual(client.message_calls, [])
+
+    def test_excluded_real_shape_session_with_historical_completed_plan_is_neutral(self) -> None:
+        export_day = date(2026, 8, 5)
+        session = _fixture("sessions.json")["sessions"][0]
+        talker = session["username"]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            raw_root = root / "bulk-raw"
+            plan_path = root / ".bulk-plan.json"
+            plan = BulkExportPlan.load(plan_path, raw_root)
+            plan.resolve_range(export_day, export_day, allow_expand=False)
+            plan.record_completed(
+                talker,
+                session["displayName"],
+                DateInterval(export_day, export_day),
+                {export_day: 3},
+            )
+            plan.save()
+            client = _BulkClient([session], {talker: [_message_for(export_day, 1)]})
+            backend = WeflowApiBackend(
+                _config(root, excluded_session_usernames=(talker,))
+            )
+            backend._client = client
+
+            result = backend.export_chats_range(
+                export_day,
+                export_day,
+                raw_root=raw_root,
+                sessions=[session],
+                state_path=root / ".bulk-state.json",
+                plan_path=plan_path,
+            )
+            reconciliation = json.loads(
+                result.reconciliation_path.read_text(encoding="utf-8")
+            )
+            preserved_plan = BulkExportPlan.load(plan_path, raw_root)
+
+        self.assertEqual(client.message_calls, [])
+        self.assertEqual(result.failures, {})
+        self.assertEqual(result.skipped_excluded_sessions, 1)
+        self.assertEqual(result.reconciliation_differences, 0)
+        self.assertEqual(result.reconciliation_incomplete_coverage_days, 0)
+        self.assertEqual(reconciliation["sessions"][0]["status"], "excluded_session")
+        self.assertNotEqual(reconciliation["sessions"][0]["status"], "plan_unavailable")
+        self.assertTrue(preserved_plan.has_completed(talker))
 
     def test_interruption_then_resume_skips_completed_session_and_matches_clean_run(self) -> None:
         export_day = date(2026, 8, 5)

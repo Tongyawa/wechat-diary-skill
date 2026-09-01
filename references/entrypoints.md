@@ -19,6 +19,10 @@
 
 `[daily_export].skip_official_accounts` 默认 `true`，`gh_` 公众号、`@openim` 企业微信与 `@opencustomerservicemsg` 客服会话连请求都不发。**产物里没有这些会话是预期行为，不是漏导。**
 
+**配置排除的会话默认不导出**
+
+`[daily_export].excluded_session_usernames` 按会话 username/wxid 精确匹配。daily 与 bulk 会在消息请求前跳过；按需导出显式点名时默认中文拒绝，只有本次命令明确给 `--allow-excluded-session` 才旁路。名单只放本机 `config.toml`，不要写进公开仓。
+
 **手工调 API 排障时：日期参数只认 `YYYYMMDD`**
 
 传 `2026-06-01` 这种带连字符的格式会被**静默忽略并返回全量历史**，不报错也不告警。CLI 内部已归一化，只有你自己直接调接口时要注意——否则会把「全量」误读成「过滤失效」，或反过来误判 CLI 漏数据。
@@ -92,6 +96,7 @@ python "$SkillRoot\scripts\export_on_demand.py" --session <wxid或显示名子�
 | `--group-window` | 群聊启用上下文窗口筛选。**默认关 = 保留全量** |
 | `--no-asr` | 关闭语音转写 |
 | `--no-media-copy` | 不把媒体复制到 markdown 旁 |
+| `--allow-excluded-session` | 仅本次旁路 `[daily_export].excluded_session_usernames`；没有此参数时显式点名排除会话会中文拒绝 |
 | `--config` | 配置文件路径 |
 
 前提同 §1（需要 API 服务）。

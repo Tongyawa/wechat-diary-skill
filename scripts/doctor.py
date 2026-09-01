@@ -111,7 +111,7 @@ def run_doctor(config_path: str | Path = "config.toml", *, deps: ProbeDependenci
             ]
         )
 
-    checks = [_check_config(cfg, path)]
+    checks = [_check_config(cfg, path), _check_export_exclusion(cfg)]
     if cfg.export_backend.backend == "manual":
         checks.extend(_manual_backend_checks())
     elif cfg.export_backend.backend == "weflow":
@@ -195,6 +195,18 @@ def _check_config(cfg: Config, config_path: Path) -> CheckResult:
         status="ready",
         message="配置文件可解析，关键键齐全。",
         details={"path": str(config_path.resolve())},
+    )
+
+
+def _check_export_exclusion(cfg: Config) -> CheckResult:
+    count = len(cfg.daily_export.excluded_session_usernames)
+    return CheckResult(
+        id="export_exclusion",
+        group="配置",
+        name="导出排除名单",
+        status="ready",
+        message=f"排除名单已生效：{count} 个会话。",
+        details={"count": count},
     )
 
 
