@@ -197,6 +197,7 @@ python "$SkillRoot\scripts\export_bulk_raw.py" --start 2026-07-02 --end 2026-08-
 |---|---|
 | `--start` / `--end` | 必须同时给或同时省略。显式给出时配置完全不参与；与 plan 不一致默认拒绝，只有配合 `--expand-range` 才能扩大。格式 `yyyy-mm-dd` 或 `yyyymmdd`，首尾都包含 |
 | `--out` | 必填的 canonical raw 输出根；不会从 `[paths].raw` 猜落点 |
+| `--self-moments` | 独立的本人朋友圈区间模式，只读取 `[daily_export].self_moments_usernames`；不进入聊天导出，不读写聊天 plan/state/对账 |
 | `--session` | 可重复；wxid 或唯一显示名子串。省略即全部会话 |
 | `--force` | 忽略已完成区间并重导；mapper 改进后刷新历史产物时使用 |
 | `--chunk-target` | 每个导出块的目标消息数，默认 `10000`；单日超标时该日仍独立成块 |
@@ -214,6 +215,19 @@ CLI 省略日期时，每次都读取 `[bulk_export]`：键缺省或空 `start` 
 日常 `.export-state.json` 已判定的「本机无记录」会话会导入 plan 的 `noLocalRecords` 第三态；批量规划中新命中同一套四道证据判据的会话也进入该段。后续默认零请求、只在汇总显示数量；显式 `--retry-no-local-records` 才重新尝试。真失败仍逐轮重试、按错误指纹分组打印显示名；名字与 canonical 目录同样优先取 contacts 当前名，缺失才退 wxid。每完成一个块立即记账；若 canonical JSON 或它引用的媒体文件被删除，该块会自动失效并重导。每轮还会写 `.<输出目录名>.bulk-export-reconciliation.json`，逐会话列出稀疏的 plan/实际计数、覆盖区间与差异；控制台同时显示差异日与覆盖缺口。两遍之间的新消息会被报告为漂移，不作为导出失败。
 
 退出码：`0` = 真失败为 0 且本次实际区间覆盖完整；已完成状态和「本机无记录」不算失败。`1` = 至少一个真失败、群名册坏状态守卫要求停止，或 reconciliation 的 `incompleteCoverageDays > 0`；`2` = 工作区或会话选择错误。汇总把「失败 N；本机无记录 M」分开打印。群成员名册三次请求仍失败时，当前消息块继续按同群既有 canonical 名字/contacts/wxid 退路落盘；若最近 5 个有消息群中至少 4 个名册重试耗尽，程序会先写紧凑 state、对账和汇总，再以退出码 `1` 停止，提示重启 WeFlow API 服务并用原命令续跑。平台型会话是否跳过仍服从 `[daily_export].skip_official_accounts`。若两个不同 wxid 经名称净化后会写进同一个 canonical 目录，程序会在第一条消息请求前拒绝整批，避免后写会话静默覆盖先写会话。
+
+**本人朋友圈区间模式**：加 `--self-moments` 后，上述聊天 plan 冻结、续跑与对账规则不参与。不能搭配 `--session`、`--force`、`--chunk-target`、`--replan`、`--expand-range`、`--retry-no-local-records`。显式成对日期优先；省略时直接用 `[bulk_export]`（缺省 `2010-01-01` 到昨天），不读取既有聊天 plan。控制台总会打印实际生效区间；组合 `--print-range` 仍完全离线，`planRange=null`、`expands=false`，不创建日志。
+
+```powershell
+# 只导配置中的本人朋友圈，不触发默认滚动区间的聊天导出
+python "$SkillRoot\scripts\export_bulk_raw.py" --self-moments --out <raw输出根> --config <config.toml>
+# 冻结一个区间，补刷缓存后原样重跑
+python "$SkillRoot\scripts\export_bulk_raw.py" --self-moments --start 2010-01-01 --end 2026-10-05 --out <raw输出根> --config <config.toml>
+```
+
+一轮产出一份根级 `朋友圈导出_区间_<YYYYMMDD>-<YYYYMMDD>_<digest>.json`，即使起止同一天也不会撞日常 `朋友圈导出_<YYYYMMDD>_<digest>.json`；同目标同区间重跑覆盖同一个文件。正文、点赞、评论保留现役 canonical 结构；媒体先发布到 `_media` CAS，JSON 最后发布。无动态也发布一份空 canonical JSON，刷新旧结果。结尾显示动态总数、按年份计数、本地时区最早/最晚时间、媒体发布引用数（含 Live Photo，复用 CAS 也计数）、未解密/缺失媒体的动态数（一条动态多份媒体缺失只计一次）。
+
+`/sns/export` 走独立数据面 `[export_backend.weflow_api].moments_request_timeout_sec`（新键缺省即生效，默认 `3600` 秒）；探活/列表仍用 `request_timeout_sec`，消息仍用 `message_request_timeout_sec`。超时提示调整朋友圈键并原命令重跑。此模式退出码：`0` = canonical 已发布（含空结果或缺媒体降级，缺失计数与 WARN 可见）；`1` = 配置、请求、映射或发布失败；`2` = 工作区解析或 CLI 用法错误。`0` 不证明服务端历史全齐：动态来自本地 SNS 缓存，已有动态的媒体下载可能访问 CDN；更早动态需先在 PC 微信本人朋友圈向下浏览，再原命令重跑。没有自动拉取未缓存动态的 HTTP API。
 
 ## 9. 离线群成员名字回填 `backfill_group_names.py`
 

@@ -70,7 +70,7 @@ WeFlow-insights/             # 日记、DoneList、灵感、画像、主线等�
 
    - `[export_backend].backend`：默认 `weflow_api`（WeFlow 5.x 本地 HTTP API）；已有 canonical raw、只想离线处理时可设为 `manual`。`weflow` 仅保留给 WeFlow ≤4.x 的 legacy GUI 自动化。
    - `[export_backend.weflow_api]`：确认 `base_url`，并在 WeFlow「设置 → API 服务」生成一个固定非空 Access Token 写入 `access_token`。token 不热更新，修改后要重启 API 服务；首次启用 API 服务仍需手动打开一次。
-     超时分两个键、量纲不同，不要只调一个：`request_timeout_sec`（控制面，探活与会话/联系人/朋友圈列表，默认 120）保持短，好让「服务半死不活」几秒内报错；`message_request_timeout_sec`（数据面，仅消息拉取，默认 600）要长，带媒体的大群单次请求可达百秒量级，跨月全量建议 900。
+     超时按路径区分：`request_timeout_sec`（控制面，探活与会话/联系人/朋友圈列表，默认 120）；`message_request_timeout_sec`（消息数据面，默认 600，跨月全量可调到 900）；`moments_request_timeout_sec`（朋友圈媒体导出数据面，默认 3600）。朋友圈新键缺省即生效，不受现役控制面低值影响。
    - `[export_backend.weflow].weflow_exe`：API 不可达时可用于普通启动 WeFlow，也是 legacy GUI 后端的可执行文件路径；API 后端不会停止用户自己打开的 WeFlow。旧 `[automation]` 配置仍兼容，运行时会提示迁移。
    - `[asr].engine`：空字符串表示关闭并写明确的语音转写失败占位；设为 `sensevoice` 时，还要让 `worker_python` 指向独立 uv 项目的 Python。模型在首次语音时才由常驻 worker 加载；路径缺失或 worker 崩溃只降级语音，不阻断聊天导出，也不会向全局 Python 安装重依赖。
    - `[daily_export].skip_official_accounts`：默认 `true`，跳过 `gh_` 公众号、`@openim` 企业微信与 `@opencustomerservicemsg` 客服会话，连请求都不发。这些平台型会话对日记没有价值；想要就设 `false`。**导出结果里找不到它们是预期行为，不是漏导。**
@@ -147,6 +147,18 @@ Pop-Location
 - 单日消息数超过 `--chunk-target` 时，那一天自己独占一块——按天落文件是下限，无法再切细。
 - 规划阶段会把「真失败」「本机无记录」「确实一条都没有」分开记录；退出码由真失败、主动守卫停止或对账覆盖缺口驱动，只有完整覆盖才可能 exit 0。
 - 若两个不同会话经名称净化后会写进同一个目录，程序在发出第一条消息请求前就拒绝整批，避免后写的静默覆盖先写的。
+
+### 批量导出本人朋友圈历史
+
+使用同一个批量入口，显式加 `--self-moments`：
+
+```powershell
+python "$SkillRoot\scripts\export_bulk_raw.py" --self-moments --out <raw输出根> --config <config.toml>
+```
+
+只导 `[daily_export].self_moments_usernames` 中的本人账号；名单为空时报错，不做聊天导出，也不读取或改写聊天 plan/state/对账。区间优先使用成对 `--start` / `--end`，省略时直接用 `[bulk_export]`（缺省 2010-01-01 到昨天）；控制台会打印实际区间。输出是一份根级区间朋友圈 canonical JSON 与 `_media` CAS，区间名称不撞日常单日文件；同区间重跑覆盖同一文件。摘要列出按年数量、最早/最晚动态及媒体发布/缺失计数。退出码 0 表示 JSON 发布成功，缺媒体会明确警告并计数。
+
+动态来自本地 SNS 库缓存；已有动态的媒体可能通过 CDN 下载。未缓存的更早动态无法经 WeFlow HTTP API 主动补拉。可先在 PC 微信中打开本人朋友圈并向下浏览，再用原命令重跑；是否补齐应核对按年数量和最早时间。
 
 ### 把历史导出并入长期归档
 

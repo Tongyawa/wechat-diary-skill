@@ -30,6 +30,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--end", help="结束日期，接受 yyyy-mm-dd 或 yyyymmdd；与 --start 同给同省。")
     parser.add_argument("--out", required=True, help="canonical raw 的显式输出根。")
     parser.add_argument(
+        "--self-moments", action="store_true",
+        help="只导配置中本人的朋友圈区间为一份 raw；不进入聊天导出或续跑。",
+    )
+    parser.add_argument(
         "--session",
         action="append",
         default=[],
@@ -83,6 +87,15 @@ def main(argv: list[str] | None = None) -> int:
         with _driver_log(log_value):
             parser = build_parser()
             args = parser.parse_args(raw_argv)
+            chat_options = {
+                "--session", "--force", "--chunk-target", "--replan",
+                "--expand-range", "--retry-no-local-records",
+            }
+            if args.self_moments and any(
+                any(option.startswith(token.partition("=")[0]) for option in chat_options)
+                for token in raw_argv if token.startswith("--")
+            ):
+                parser.error("--self-moments 不能搭配聊天选择、规划或续跑参数。")
             return _run(parser, args)
     except OSError as exc:
         print(f"批量 raw 导出失败：无法写入 --log：{exc}", file=sys.stderr)
@@ -102,10 +115,50 @@ def _run(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
         if args.chunk_target <= 0:
             parser.error("--chunk-target 必须大于 0。")
         raw_root = _resolve_output_path(args.out)
-        state_path = bulk_state_path_for(raw_root)
-        plan_path = bulk_plan_path_for(raw_root)
         config_path = resolve_config_path(args.config)
         cfg = load_config(config_path)
+        if args.self_moments:
+            if start is None or end is None:
+                start, end = _configured_bulk_range(cfg)
+                source = "config"
+            else:
+                source = "cli"
+            resolution = BulkRangeResolution(
+                start, end, source, None, False, start, end, False,
+            )
+            if args.print_range:
+                _print_range_json(resolution)
+                return 0
+            print(f"本人朋友圈实际区间（{source}）：{start}~{end}（首尾包含）。")
+            usernames = sorted({
+                value.strip() for value in cfg.daily_export.self_moments_usernames
+                if value.strip()
+            })
+            if not usernames:
+                raise ValueError(
+                    "请在 [daily_export].self_moments_usernames 配置本人账号；"
+                    "名单为空，已拒绝导出。"
+                )
+            if cfg.export_backend.backend != "weflow_api":
+                raise RuntimeError("本人朋友圈批量导出只支持 weflow_api 后端")
+            backend = WeflowApiBackend(cfg)
+            backend.prepare_bulk_export()
+            moments = backend.export_moments_range(usernames, start, end, raw_root=raw_root)
+            assert moments is not None
+            print(f"本人朋友圈 raw：{moments.path}")
+            print(
+                f"汇总：动态 {moments.total_posts}；媒体发布 {moments.published_media}；"
+                f"未解密/缺失媒体的动态 {moments.missing_media_posts}。"
+            )
+            years = "；".join(f"{year} 年 {count}" for year, count in moments.year_counts)
+            print(f"按年份计数：{years or '无动态'}。")
+            earliest = _moment_time(moments.earliest_timestamp)
+            latest = _moment_time(moments.latest_timestamp)
+            print(f"最早动态：{earliest}；最晚动态：{latest}。")
+            print("统计仅覆盖本地 SNS 库已缓存动态；补刷 PC 微信本人朋友圈后可原命令重跑。")
+            return 0
+        state_path = bulk_state_path_for(raw_root)
+        plan_path = bulk_plan_path_for(raw_root)
         plan = BulkExportPlan.load(plan_path, raw_root)
         resolution = _resolve_bulk_range(
             cfg,
@@ -203,6 +256,10 @@ def _run(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
         )
         return 1
     return 0
+
+
+def _moment_time(timestamp: int | None) -> str:
+    return "无" if timestamp is None else datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _print_failure_groups(

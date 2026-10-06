@@ -250,6 +250,10 @@ class MomentsExportResult:
     missing_media_posts: int
     published_media: int
     extension_conflicts: int = 0
+    total_posts: int = 0
+    year_counts: tuple[tuple[int, int], ...] = ()
+    earliest_timestamp: int | None = None
+    latest_timestamp: int | None = None
 
 
 def map_moments_json(
@@ -346,9 +350,15 @@ def _map_moments_with_stats(
     return data, missing_media_posts
 
 
-def moments_filename(usernames: Sequence[str], export_date: date) -> str:
+def moments_filename(
+    usernames: Sequence[str], export_date: date, *, end: date | None = None
+) -> str:
     joined = "".join(sorted(str(value) for value in usernames if str(value)))
     digest = hashlib.sha1(joined.encode("utf-8")).hexdigest()[:8]
+    if end is not None:
+        if export_date > end:
+            raise ValueError("朋友圈起始日期不能晚于结束日期")
+        return f"朋友圈导出_区间_{export_date:%Y%m%d}-{end:%Y%m%d}_{digest}.json"
     return f"朋友圈导出_{export_date:%Y%m%d}_{digest}.json"
 
 
@@ -357,11 +367,22 @@ def write_moments_export(
     exported_json: Mapping[str, Any] | Path,
     *,
     usernames: Sequence[str],
-    export_date: date,
+    export_date: date | None = None,
     staging_dir: Path,
+    start: date | None = None,
+    end: date | None = None,
 ) -> MomentsExportResult:
     """Publish staged WeFlow moments media first and canonical JSON last."""
 
+    if export_date is not None:
+        if start is not None or end is not None:
+            raise ValueError("朋友圈单日与区间参数不能同时提供")
+        start = end = export_date
+        filename = moments_filename(usernames, export_date)
+    else:
+        if start is None or end is None:
+            raise ValueError("朋友圈区间必须同时提供 start/end")
+        filename = moments_filename(usernames, start, end=end)
     raw_root.mkdir(parents=True, exist_ok=True)
     staging_dir = staging_dir.resolve()
     if isinstance(exported_json, Path):
@@ -379,13 +400,13 @@ def write_moments_export(
     data, missing_media_posts = _map_moments_with_stats(
         source_data,
         usernames=usernames,
-        start=export_date,
-        end=export_date,
+        start=start,
+        end=end,
         media_dir=media_source,
         media_store=raw_root / MEDIA_STORE_NAME,
         media_stats=media_stats,
     )
-    destination = raw_root / moments_filename(usernames, export_date)
+    destination = raw_root / filename
     canonical_stage = staging_dir / destination.name
     temp_path = staging_dir / f".{destination.name}.{uuid.uuid4().hex}.tmp"
     temp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -414,11 +435,20 @@ def write_moments_export(
     # JSON is the live discovery marker, so it is published only after every
     # available media file is in place. Missing decrypted media stays URL-only.
     os.replace(canonical_stage, destination)
+    timestamps = [post["createTime"] for post in data["posts"]]
+    year_counts: dict[int, int] = {}
+    for timestamp in timestamps:
+        year = datetime.fromtimestamp(timestamp).year
+        year_counts[year] = year_counts.get(year, 0) + 1
     return MomentsExportResult(
         path=destination,
         missing_media_posts=missing_media_posts,
         published_media=published_media,
         extension_conflicts=media_stats.extension_conflicts,
+        total_posts=len(timestamps),
+        year_counts=tuple(sorted(year_counts.items())),
+        earliest_timestamp=min(timestamps) if timestamps else None,
+        latest_timestamp=max(timestamps) if timestamps else None,
     )
 
 

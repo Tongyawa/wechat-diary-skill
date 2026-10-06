@@ -139,6 +139,14 @@ $ast.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath }
 
 
 class EntrypointParameterContractTests(unittest.TestCase):
+    def test_self_moments_mode_and_timeout_contract_are_documented(self) -> None:
+        text = (ROOT / "references" / "entrypoints.md").read_text(encoding="utf-8")
+        self.assertIn("--self-moments", documented_options()["export_bulk_raw.py"])
+        self.assertIn("self_moments_usernames", text)
+        self.assertIn("moments_request_timeout_sec", text)
+        self.assertIn("未解密/缺失媒体的动态数", text)
+        self.assertEqual(DEFAULT_CONFIG["export_backend"]["weflow_api"]["moments_request_timeout_sec"], 3600)
+
     def test_bulk_export_rolling_config_and_print_range_are_documented(self) -> None:
         text = (ROOT / "references" / "entrypoints.md").read_text(encoding="utf-8")
         configured = DEFAULT_CONFIG["bulk_export"]

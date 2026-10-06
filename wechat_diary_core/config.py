@@ -28,6 +28,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "message_format": "json",
             "request_timeout_sec": 120,
             "message_request_timeout_sec": 600,
+            "moments_request_timeout_sec": 3600,
             "appmsg_text_max_chars": 300,
         },
         "weflow": {
@@ -184,6 +185,7 @@ class WeflowApiConfig:
     request_timeout_sec: float
     appmsg_text_max_chars: int = 300
     message_request_timeout_sec: float = 600
+    moments_request_timeout_sec: float = 3600
 
 
 @dataclass(frozen=True)
@@ -482,6 +484,9 @@ def _build_config(raw: dict[str, Any], base_dir: Path, *, source: dict[str, Any]
                 appmsg_text_max_chars=appmsg_text_max_chars,
                 message_request_timeout_sec=float(
                     weflow_api.get("message_request_timeout_sec", 600)
+                ),
+                moments_request_timeout_sec=float(
+                    weflow_api.get("moments_request_timeout_sec", 3600)
                 ),
             ),
         ),
