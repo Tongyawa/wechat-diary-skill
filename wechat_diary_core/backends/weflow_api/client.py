@@ -58,12 +58,14 @@ class WeflowApiClient:
         *,
         timeout: float = 60.0,
         message_timeout: float = 600.0,
+        moments_timeout: float = 3600.0,
         opener: Callable[..., Any] = urlopen,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.access_token = access_token.strip()
         self.timeout = timeout
         self.message_timeout = message_timeout
+        self.moments_timeout = moments_timeout
         self._opener = opener
 
     def health(self) -> dict[str, Any]:
@@ -247,6 +249,7 @@ class WeflowApiClient:
             raise ValueError("朋友圈导出 usernames 不能为空，拒绝退化为全量导出")
         payload = self._request(
             "/api/v1/sns/export",
+            timeout=self.moments_timeout,
             method="POST",
             body={
                 "outputDir": str(destination),
@@ -331,6 +334,13 @@ class WeflowApiClient:
             reason = exc.reason if isinstance(exc, URLError) else None
             if isinstance(exc, TimeoutError) or isinstance(reason, (socket.timeout, TimeoutError)):
                 timeout_text = f"{effective_timeout:g}"
+                if path == "/api/v1/sns/export":
+                    raise WeflowApiError(
+                        f"请求 WeFlow API 朋友圈数据超时：本次请求超过 {timeout_text} 秒。"
+                        "可调大 [export_backend.weflow_api].moments_request_timeout_sec"
+                        f"（当前 {timeout_text} 秒），然后用原命令重跑；"
+                        "也可显式缩小日期范围。"
+                    ) from exc
                 if path == "/api/v1/messages":
                     raise WeflowApiError(
                         f"请求 WeFlow API 消息数据超时：本次请求超过 {timeout_text} 秒。"

@@ -25,6 +25,7 @@ from .client import WeflowApiClient, WeflowApiError, fetch_group_members_with_re
 from .failure_state import SessionFailureState
 from .mapper import (
     ImageMediaStats,
+    MomentsExportResult,
     session_directory_display_name,
     session_directory_name,
     write_moments_export,
@@ -110,6 +111,7 @@ class WeflowApiBackend:
                 api.access_token,
                 timeout=api.request_timeout_sec,
                 message_timeout=api.message_request_timeout_sec,
+                moments_timeout=api.moments_request_timeout_sec,
             )
         return self._client
 
@@ -829,29 +831,46 @@ class WeflowApiBackend:
         print(f"[INFO] 已忽略 {changed} 个会话的后续失败提示；仍会每日尝试以便自动恢复。")
 
     def export_moments(self, usernames: list[str], export_date: date) -> None:
-        raw_root = self.config.paths.raw
+        self.export_moments_range(
+            usernames, export_date, export_date,
+            raw_root=self.config.paths.raw, _daily_compat=True,
+        )
+
+    def export_moments_range(
+        self, usernames: list[str], start: date, end: date, *,
+        raw_root: Path, _daily_compat: bool = False,
+    ) -> MomentsExportResult | None:
+        """Publish one inclusive moments range without any chat plan or state."""
+        if start > end or (_daily_compat and start != end):
+            raise ValueError("朋友圈日期区间无效")
+        if not any(str(value).strip() for value in usernames):
+            raise ValueError("朋友圈导出 usernames 不能为空")
         staging_parent = raw_root.parent / f".{raw_root.name}.weflow-api-moments-staging"
         staging_parent.mkdir(parents=True, exist_ok=True)
-        staging_dir = Path(tempfile.mkdtemp(prefix=f"moments-{export_date:%Y%m%d}-", dir=staging_parent))
+        staging_dir = Path(tempfile.mkdtemp(prefix=f"moments-{start:%Y%m%d}-", dir=staging_parent))
         try:
             response = self.client.export_moments(
                 staging_dir,
                 usernames,
-                start=export_date,
-                end=export_date,
+                start=start,
+                end=end,
             )
             file_path = str(response.get("filePath") or "")
             if response.get("postCount") == 0 and not file_path:
-                return
-            if not file_path:
+                if _daily_compat:
+                    return None
+                source = {"posts": []}
+            elif not file_path:
                 raise WeflowApiError("WeFlow 朋友圈导出未返回 filePath")
-            source_path = Path(file_path)
+            else:
+                source = Path(file_path)
+            dates = {"export_date": start} if _daily_compat else {"start": start, "end": end}
             result = write_moments_export(
                 raw_root,
-                source_path,
+                source,
                 usernames=usernames,
-                export_date=export_date,
                 staging_dir=staging_dir,
+                **dates,
             )
             if result.missing_media_posts:
                 marker = f"export_moments_media:{result.path.stem}"
@@ -868,6 +887,7 @@ class WeflowApiBackend:
                     "已复用 store 中既有文件。",
                     file=sys.stderr,
                 )
+            return result
         finally:
             if staging_dir.exists():
                 shutil.rmtree(staging_dir)
