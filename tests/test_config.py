@@ -10,6 +10,19 @@ from wechat_diary_core.config import WeflowApiConfig, load_config
 
 
 class ConfigTests(unittest.TestCase):
+    def test_image_backfill_optional_script_anchors_at_config_and_preserves_explicit_filename(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = root / "custom-config.toml"
+            config.write_text('[image_backfill]\nscript = "local-tools/backfill.py"', encoding="utf-8")
+            cfg = load_config(config)
+            self.assertEqual(root / "local-tools/backfill.py", cfg.image_backfill.script)
+            self.assertEqual(config.resolve(), cfg.config_path)
+            config.write_text('[image_backfill]\nscript = ""', encoding="utf-8")
+            self.assertIsNone(load_config(config).image_backfill.script)
+            config.write_text('', encoding="utf-8")
+            self.assertIsNone(load_config(config).image_backfill.script)
+
     def test_fresh_defaults_select_weflow_api_and_disabled_asr(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             cfg = load_config(Path(tmp) / "missing.toml")

@@ -77,6 +77,19 @@ def _by_id(report: DoctorReport, check_id: str) -> CheckResult:
 
 
 class DoctorTests(unittest.TestCase):
+    def test_image_backfill_is_optional_and_file_existence_is_not_operational_success(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = _write_config(root)
+            self.assertNotIn("dependency_image_backfill", {item.id for item in run_doctor(config, deps=_deps()).checks})
+            with config.open("a", encoding="utf-8") as handle:
+                handle.write('\n[image_backfill]\nscript = "repair.py"\n')
+            self.assertEqual("error", _by_id(run_doctor(config, deps=_deps()), "dependency_image_backfill").status)
+            (root / "repair.py").write_text('raise RuntimeError("must never execute")', encoding="utf-8")
+            item = _by_id(run_doctor(config, deps=_deps()), "dependency_image_backfill")
+            self.assertEqual("warning", item.status)
+            self.assertFalse(item.details["verified"])
+
     def test_export_exclusion_reports_only_effective_count(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             report = run_doctor(

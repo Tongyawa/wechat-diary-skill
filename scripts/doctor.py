@@ -643,6 +643,26 @@ def _check_optional_dependencies(cfg: Config, find_spec: Callable[[str], Any]) -
                     details={"enabled": True, "path": str(fallback)},
                 )
             )
+    image_script = cfg.image_backfill.script
+    if image_script is not None:
+        exists = image_script.is_file()
+        checks.append(
+            CheckResult(
+                id="dependency_image_backfill",
+                group="可选能力",
+                name="按需图片补数",
+                status="warning" if exists else "error",
+                message=(
+                    "脚本已配置；doctor 不运行会修改 raw 的补数工具，存在不代表已验证可用。"
+                    if exists else f"已配置，但脚本不存在：{image_script}"
+                ),
+                action=(
+                    "按需导出后检查补回数量与媒体引用。"
+                    if exists else "修改 config.toml 的 image_backfill.script，或设为空字符串以关闭。"
+                ),
+                details={"enabled": True, "path": str(image_script), "verified": False},
+            )
+        )
     return checks
 
 

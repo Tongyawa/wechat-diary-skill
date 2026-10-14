@@ -6,13 +6,15 @@ import json
 import re
 import tempfile
 import unittest
+from dataclasses import replace
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from unittest import mock
 
 from scripts import export_on_demand as module
-from wechat_diary_core.config import load_config
+from wechat_diary_core.config import ImageBackfillConfig, load_config
+from wechat_diary_core import on_demand_image_backfill as backfill_bridge
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "weflow_api"
@@ -131,6 +133,93 @@ def _group_messages() -> list[dict]:
 
 
 class ExportOnDemandTests(unittest.TestCase):
+    def test_disabled_media_still_warns_about_declared_missing_files_without_repair(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = _config(root)
+            session = {"username": "wxid_image_placeholder", "displayName": "Image"}
+            result = module.ExportOnDemandResult(session, root / "raw", root / "out", [], None, missing_image_files=2, image_backfill=backfill_bridge.ImageBackfillResult(status="media_disabled"))
+            with mock.patch.object(module, "_make_client", return_value=FixtureClient([session], {})), mock.patch.object(module, "export_on_demand", return_value=result), redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as errors:
+                self.assertEqual(0, module.main(["--config", str(cfg.config_path), "--session", session["username"], "--start", "2026-05-14", "--end", "2026-05-14", "--out", str(root / "out")]))
+            self.assertIn("[WARN]", errors.getvalue())
+            self.assertIn("2 条文件暂不可读", errors.getvalue())
+            self.assertNotIn("--apply", errors.getvalue())
+            # No reported missing file means no warning under the disabled mode.
+            result = replace(result, missing_image_files=0)
+            with mock.patch.object(module, "_make_client", return_value=FixtureClient([session], {})), mock.patch.object(module, "export_on_demand", return_value=result), redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as errors:
+                self.assertEqual(0, module.main(["--config", str(cfg.config_path), "--session", session["username"], "--start", "2026-05-14", "--end", "2026-05-14", "--out", str(root / "out")]))
+            self.assertNotIn("[WARN]", errors.getvalue())
+
+    def test_synthetic_script_fills_raw_processed_and_merged_in_both_output_modes(self) -> None:
+        tool_source = '''
+import argparse, hashlib, json
+from pathlib import Path
+p = argparse.ArgumentParser()
+p.add_argument('--canonical-dir'); p.add_argument('--config'); p.add_argument('--apply', action='store_true'); p.add_argument('--report-json')
+a = p.parse_args()
+root = Path(a.canonical_dir)
+media = bytes.fromhex('ffd8ffe000104a46494600010100000100010000ffd9')
+digest = hashlib.md5(media).hexdigest()
+reference = '../_media/images/' + digest[:2] + '/' + digest + '.jpg'
+target = root.parent / reference[3:]
+target.parent.mkdir(parents=True, exist_ok=True); target.write_bytes(media)
+count = 0
+for path in root.glob('*.json'):
+    payload = json.loads(path.read_text(encoding='utf-8'))
+    for item in payload['messages']:
+        if item.get('type') == '图片消息' and item.get('source') == '':
+            item.update(source=reference, content=reference); count += 1
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
+report = dict(schema_version=1, mode='single', status='completed', applied=True, degraded_images=count, patched_messages=count, file_missing=0, unsupported_format=0, stem_unresolved=0, image_incomplete=0, ffmpeg_unavailable=0)
+Path(a.report_json).write_text(json.dumps(report), encoding='utf-8')
+'''
+        for merge, copy_media in ((False, True), (False, False), (True, True), (True, False)):
+            with self.subTest(merge=merge, copy_media=copy_media), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                cfg = _config(root)
+                script = root / "synthetic repair.py"
+                script.write_text(tool_source, encoding="utf-8")
+                cfg = replace(cfg, image_backfill=ImageBackfillConfig(script))
+                session = {"username": "wxid_image_placeholder", "displayName": "ImagePlaceholder"}
+                image = _private_fixture_messages()[0]
+                image.update(localType=3, content="[图片]", mediaLocalPath="", mediaFileName="")
+                target = root / "output" / "existing" if merge else None
+                if target is not None:
+                    target.mkdir(parents=True)
+                result = module.export_on_demand(cfg, sessions=[session], client=FixtureClient([session], {session["username"]: [image]}), session_query=session["username"], start=date(2026, 5, 14), end=date(2026, 5, 14), out_root=root / "output", merge_into=target, copy_media=copy_media, merged=True, enable_asr=False)
+                self.assertEqual((1, 0), (result.image_backfill.patched_messages, result.image_backfill.remaining))
+                document = json.loads(next(result.raw_session_dir.glob("*.json")).read_text(encoding="utf-8"))
+                reference = document["messages"][0]["source"]
+                self.assertTrue((result.raw_session_dir / reference).is_file())
+                for path in [*result.diary_files, result.merged_file]:
+                    text = path.read_text(encoding="utf-8")
+                    self.assertIn(reference, text)
+                    self.assertNotIn("[图片]", text)
+                self.assertEqual(copy_media, (result.output_session_dir.parent / "_media").is_dir())
+                # Missing tool is a different shape and must keep raw/processed placeholders.
+                cfg = replace(cfg, image_backfill=ImageBackfillConfig(root / "missing.py"))
+                red = module.export_on_demand(cfg, sessions=[session], client=FixtureClient([session], {session["username"]: [image]}), session_query=session["username"], start=date(2026, 5, 14), end=date(2026, 5, 14), out_root=root / "negative", merged=True, enable_asr=False)
+                self.assertEqual((0, 1, "unavailable"), (red.image_backfill.patched_messages, red.image_backfill.unchecked, red.image_backfill.status))
+                self.assertIn("[图片]", red.diary_files[0].read_text(encoding="utf-8"))
+
+    def test_new_format_output_is_identical_and_does_not_launch_backfill(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = _config(root)
+            source = root / "new.jpg"
+            source.write_bytes(bytes.fromhex("ffd8ffe000104a46494600010100000100010000ffd9"))
+            script = root / "must-not-run.py"
+            script.write_text("raise RuntimeError('must not run')", encoding="utf-8")
+            session = {"username": "wxid_new_image_placeholder", "displayName": "NewImage"}
+            image = _private_fixture_messages()[0]
+            image.update(localType=3, mediaLocalPath=str(source), mediaFileName=source.name)
+            with mock.patch.object(backfill_bridge, "_run_script", side_effect=AssertionError("existing source must not launch")):
+                outputs = []
+                for settings in (cfg, replace(cfg, image_backfill=ImageBackfillConfig(script))):
+                    result = module.export_on_demand(settings, sessions=[session], client=FixtureClient([session], {session["username"]: [image]}), session_query=session["username"], start=date(2026, 5, 14), end=date(2026, 5, 14), out_root=root / "same-output", enable_asr=False)
+                    outputs.append(tuple((path.relative_to(root / "same-output").as_posix(), path.read_bytes()) for path in sorted((root / "same-output").rglob("*")) if path.is_file()))
+                self.assertEqual(outputs[0], outputs[1])
+
     def test_make_client_carries_both_timeout_planes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             client = module._make_client(_config(Path(tmp)))

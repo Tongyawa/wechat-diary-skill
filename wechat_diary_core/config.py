@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 import copy
@@ -128,6 +128,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # recorded plan range is only ever preserved or expanded.
         "end": "",
     },
+    "image_backfill": {"script": ""},
 }
 
 
@@ -331,6 +332,11 @@ class BulkExportConfig:
 
 
 @dataclass(frozen=True)
+class ImageBackfillConfig:
+    script: Path | None = None
+
+
+@dataclass(frozen=True)
 class Config:
     user: UserConfig
     paths: PathsConfig
@@ -349,6 +355,8 @@ class Config:
     raw: dict[str, Any]
     # Values explicitly present in config.toml, before defaults are merged.
     source: dict[str, Any]
+    image_backfill: ImageBackfillConfig = field(default_factory=ImageBackfillConfig)
+    config_path: Path | None = None
 
 
 def load_config(config_path: str | Path | None = None) -> Config:
@@ -368,7 +376,7 @@ def load_config(config_path: str | Path | None = None) -> Config:
     if legacy_weflow_exe and not explicit_weflow.get("weflow_exe"):
         merged["export_backend"]["weflow"]["weflow_exe"] = legacy_weflow_exe
 
-    return _build_config(merged, base_dir, source=loaded)
+    return replace(_build_config(merged, base_dir, source=loaded), config_path=path.resolve())
 
 
 def _build_config(raw: dict[str, Any], base_dir: Path, *, source: dict[str, Any]) -> Config:
@@ -462,6 +470,9 @@ def _build_config(raw: dict[str, Any], base_dir: Path, *, source: dict[str, Any]
     )
 
     return Config(
+        image_backfill=ImageBackfillConfig(
+            script=_optional_path(base_dir, (raw.get("image_backfill") or {}).get("script")),
+        ),
         user=UserConfig(
             self_wxids=list(raw["user"]["self_wxids"]),
             voice_transcribe_usernames=list(raw["user"].get("voice_transcribe_usernames") or []),

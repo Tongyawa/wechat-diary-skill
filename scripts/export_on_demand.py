@@ -8,7 +8,7 @@ import secrets
 import shutil
 import sys
 import time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable
@@ -38,6 +38,9 @@ from wechat_diary_core.media_store import (
 )
 from wechat_diary_core.workspace import merge_tree
 from wechat_diary_core.workspace_discovery import WorkspaceResolutionError, resolve_config_path
+from wechat_diary_core.on_demand_image_backfill import (
+    ImageBackfillResult, backfill_on_demand, print_backfill_result,
+)
 
 
 DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -67,6 +70,7 @@ class ExportOnDemandResult:
     missing_image_files: int = 0
     missing_video_md5: int = 0
     missing_video_files: int = 0
+    image_backfill: ImageBackfillResult = field(default_factory=ImageBackfillResult)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -155,8 +159,19 @@ def main(argv: list[str] | None = None) -> int:
         print(f"合并文件：{result.merged_file}")
     if result.missing_image_paths or result.missing_image_files:
         print(
-            f"[WARN] 图片已降级为 [图片]：缺少本地路径 {result.missing_image_paths} 条；"
-            f"路径指向的文件不存在 {result.missing_image_files} 条。导出已继续。",
+            f"API 图片（补前诊断）：缺少本地路径 {result.missing_image_paths} 条；"
+            f"路径指向的文件不存在 {result.missing_image_files} 条。",
+            file=sys.stderr,
+        )
+    print_backfill_result(
+        result.image_backfill, script=cfg.image_backfill.script,
+        config_path=config_path, raw_session_dir=result.raw_session_dir,
+        process_script=ROOT / "scripts" / "process_existing_raw.py",
+    )
+    if result.image_backfill.status == "media_disabled" and result.missing_image_files:
+        print(
+            f"[WARN] API 给出的图片路径有 {result.missing_image_files} 条文件暂不可读；"
+            "media_localize=false，本轮未执行图片补数，导出已继续。",
             file=sys.stderr,
         )
     if result.missing_video_md5 or result.missing_video_files:
@@ -264,6 +279,11 @@ def export_on_demand(
             appmsg_text_max_chars=api.appmsg_text_max_chars,
             image_media_stats=image_media_stats,
         )
+        image_backfill = backfill_on_demand(
+            staging_session_dir, script=cfg.image_backfill.script,
+            config_path=cfg.config_path or cfg.base_dir / "config.toml",
+            require_media=api.media_localize,
+        )
         canonical_replacements = _publish_raw_store(
             staging_root / MEDIA_STORE_NAME,
             raw_root / MEDIA_STORE_NAME,
@@ -319,6 +339,7 @@ def export_on_demand(
         missing_image_files=image_media_stats.missing_image_files,
         missing_video_md5=image_media_stats.missing_video_md5,
         missing_video_files=image_media_stats.missing_video_files,
+        image_backfill=image_backfill,
     )
 
 

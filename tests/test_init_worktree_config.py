@@ -31,6 +31,22 @@ voice_fallback_script = "local-ext/voice_fallback.py"
 
 
 class InitWorktreeConfigTests(unittest.TestCase):
+    def test_image_backfill_relative_path_anchors_to_main_and_empty_stays_disabled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            main_root, worktree = root / "main", root / "wt"
+            main_root.mkdir()
+            worktree.mkdir()
+            config = _write_main_config(main_root)
+            with config.open("a", encoding="utf-8") as handle:
+                handle.write('\n[image_backfill]\nscript = "local-tools/backfill.py"\n')
+            result = init_worktree_config(worktree, main_root)
+            data = tomllib.loads(result.read_text(encoding="utf-8"))
+            self.assertEqual((main_root / "local-tools/backfill.py").as_posix(), data["image_backfill"]["script"])
+            config.write_text('[image_backfill]\nscript = ""', encoding="utf-8")
+            result = init_worktree_config(worktree, main_root, force=True)
+            self.assertEqual("", tomllib.loads(result.read_text(encoding="utf-8"))["image_backfill"]["script"])
+
     def test_main_uses_current_worktree_instead_of_skill_code_root(self) -> None:
         """裸跑入口必须把 CWD 所在 worktree 交给底层函数。"""
         with tempfile.TemporaryDirectory() as tmp:
