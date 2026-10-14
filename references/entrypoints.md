@@ -103,6 +103,12 @@ python "$SkillRoot\scripts\export_on_demand.py" --session <wxid或显示名子�
 
 群聊名册与日常链路使用同一冷却重试口径；三次请求仍未取得非空名册时，按需导出继续使用同群既有 canonical 名字、contacts、wxid 退路，不因辅助名字丢掉消息。
 
+**可选老图片补数**：配置 `[image_backfill].script`（空字符串关闭，相对路径锚 config 目录），用当前 Python 解释器调用本机脚本；脚本须接受 `--canonical-dir`、`--config`、`--apply` 和版本化 `--report-json`。公开入口不内置私人路径或补数算法。
+
+补数在本次 staging 写完、CAS 发布和 processed 生成之前执行；只填空图片 source，`--merge-into` 同样接入，`--no-media-copy` 不影响 raw 补数，`media_localize=false` 时不调用。日常 / 批量 / 摄取不消费此配置。工具失败、不可读或报告不完整时恢复本次原 JSON，继续以 `[图片]` 导出；不能把“未检查”或“按现役规则未找到候选”说成字节永久缺失。
+
+结果按图片消息计数，CAS 去重不减消息数。警告在脚本已配置且状态不是 unavailable 时给出使用最终 raw 会话路径和实际 config 的手工命令；未配置时只给配置指引，unavailable 时指出脚本缺失路径并引导修正 `[image_backfill].script`，不打印手工命令。手工补 raw 不会自动更新 processed / merged，离线重建可用 `process_existing_raw.py`，**先准备隔离 config 的 processed / archived 落点**，避免触及日常数据；合并文件仍需另行重建。doctor 只检查脚本是否存在，不运行补数或证明其可用。
+
 ## 4. 环境体检 `doctor.py`
 
 只读诊断，不启动 WeFlow、不改文件。**排障先跑它，比读代码快。**

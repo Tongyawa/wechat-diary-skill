@@ -134,6 +134,12 @@ def init_worktree_config(worktree_root: Path, main_root: Path, *, force: bool = 
             text, "daily_export", "voice_fallback_script", _toml_string(_anchor(fallback, main_root))
         )
 
+    image_script = str((data.get("image_backfill") or {}).get("script") or "").strip()
+    if image_script:
+        text = _set_toml_value(
+            text, "image_backfill", "script", _toml_string(_anchor(image_script, main_root))
+        )
+
     target.write_text(text, encoding="utf-8")
     return target
 

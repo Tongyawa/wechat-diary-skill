@@ -82,7 +82,7 @@ device = "cpu"
 emit_emotion = true
 # SenseVoice runs in an isolated uv environment, never in this process.
 # Example only (keep the real machine path in git-ignored config.toml):
-# worker_python = "E:/.100_Code/Coding_Tools/sensevoice-asr/.venv/Scripts/python.exe"
+# worker_python = "C:/Tools/sensevoice-asr/.venv/Scripts/python.exe"
 worker_python = ""                       # empty = optional ASR capability not ready
 worker_script = ""                       # empty = bundled scripts/sensevoice_worker.py
 worker_startup_timeout_sec = 180          # cold import + one model load
@@ -176,6 +176,12 @@ cleanup_mode = "archive"
 # Legacy GUI backend only. The API backend never stops a user-owned WeFlow.
 restart_weflow = true
 
+
+[image_backfill]
+# Optional local image-backfill Python script. Empty disables automatic repair.
+# Only on-demand exports use it; paths anchor at this config's directory.
+# The script must support --canonical-dir, --config, --apply and --report-json.
+script = ""
 
 # --- Rolling git-bundle cold backup (optional) --------------------------------
 # Snapshots whole git repositories into single-file bundles you can restore with

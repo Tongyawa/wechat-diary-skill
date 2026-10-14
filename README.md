@@ -118,6 +118,17 @@ Pop-Location
 
 `--session` 接受 wxid 或显示名子串；拿不准就先 `--list-sessions 关键词` 列候选。日期两种写法都行（`2026-05-01` / `20260501`）。常用开关：`--merged` 额外产出整段合并 markdown，`--group-window` 对群聊启用上下文窗口筛选（默认全量），`--no-asr` 跳过语音转写，`--no-media-copy` 不把媒体复制到 markdown 旁。
 
+老格式图片可能因 API 不支持而缺少路径，字节仍可能在本地。可在本机 `config.toml` 配置一个支持 `--canonical-dir`、`--config`、`--apply`、`--report-json` 的 Python 补数脚本：
+
+```toml
+[image_backfill]
+script = ""  # 默认关闭；填写本机脚本路径，相对路径以 config 所在目录为准
+```
+
+脚本是可选本地扩展，本公开仓不分发补数算法。配置后，按需导出在生成 Markdown 前补本次 raw 中的空图片 `source`，不覆盖已有图片。结果区分补回、按现役规则未找到候选、格式不支持、无法关联、结构或解码失败、ffmpeg 不可用和未检查；“未找到候选”不代表已证实字节消失。未配置或工具失败时导出照常继续，保留 `[图片]` 并给出配置指引；配置的脚本不存在时指出缺失路径并引导修正 `[image_backfill].script`，不打印手工命令；其他补数失败或仍有剩余时给出使用最终 raw 路径的手工补数命令。
+
+`--no-media-copy` 不影响 raw 补数；`media_localize=false` 时不自动补。此配置目前只由按需入口消费，日常、批量与归档摄取行为不变。手工补 raw 后，processed / merged 仍需重建；离线入口 `scripts/process_existing_raw.py` 会使用 config 的 processed / archived 落点，应先准备指向本次独立输出的隔离配置。
+
 ### 批量导出全部会话的一段历史
 
 想一次性把**所有会话**的某段历史（乃至全部历史）落成 canonical raw 时，用批量通道。它同样只写你指定的输出目录，**不碰日常的 raw / processed / 归档，也不轮转**：
