@@ -19,6 +19,7 @@ from wechat_diary_core.backends.weflow_api.backend import BulkExportResult, Wefl
 from wechat_diary_core.backends.weflow_api.bulk_plan import BulkExportPlan
 from wechat_diary_core.backends.weflow_api.failure_state import normalize_error_text
 from wechat_diary_core.config import load_config
+from wechat_diary_core.moments_ranges import REVIEW_EXIT_CODE
 from wechat_diary_core.workspace_discovery import WorkspaceResolutionError, resolve_config_path
 
 
@@ -156,7 +157,7 @@ def _run(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
             latest = _moment_time(moments.latest_timestamp)
             print(f"最早动态：{earliest}；最晚动态：{latest}。")
             print("统计仅覆盖本地 SNS 库已缓存动态；补刷 PC 微信本人朋友圈后可原命令重跑。")
-            return 0
+            return REVIEW_EXIT_CODE if moments.replacement_needs_review else 0
         state_path = bulk_state_path_for(raw_root)
         plan_path = bulk_plan_path_for(raw_root)
         plan = BulkExportPlan.load(plan_path, raw_root)
