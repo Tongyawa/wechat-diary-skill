@@ -17,6 +17,7 @@ if str(ROOT) not in sys.path:
 from wechat_diary_core.archiving import strip_date_suffix
 from wechat_diary_core.config import load_config
 from wechat_diary_core.media_store import MEDIA_SCHEME_KEY, MEDIA_SCHEME_VALUE, MEDIA_STORE_NAME
+from wechat_diary_core.moments_ranges import REVIEW_EXIT_CODE, publish_range, range_digest
 from wechat_diary_core.raw_schema import RawSchemaError, validate_moments_json, validate_session_json
 from wechat_diary_core.workspace import merge_raw_exports_into_archive, merge_tree
 from wechat_diary_core.workspace_discovery import WorkspaceResolutionError, resolve_config_path
@@ -96,6 +97,7 @@ def main(argv: list[str] | None = None) -> int:
         sources.append((label, source))
 
     invalid_paths: set[Path] = set()
+    range_paths: list[Path] = []
     raw_source = next((source for label, source in sources if label == "raw"), None)
     if raw_source is not None:
         raw_validation_failures = _validate_raw_export_tree(raw_source)
@@ -103,6 +105,14 @@ def main(argv: list[str] | None = None) -> int:
         for failed_path, reason in raw_validation_failures:
             print(f"RAW SCHEMA VALIDATION FAILED: {failed_path}", file=sys.stderr)
             print(f"  {reason}", file=sys.stderr)
+        range_paths = [
+            path for path in sorted(raw_source.iterdir())
+            if path.is_file() and range_digest(path) is not None and path.resolve() not in invalid_paths
+        ]
+        archive_root = (cfg.paths.archived / "raw").resolve()
+        if range_paths and (raw_source.resolve().is_relative_to(archive_root) or archive_root.is_relative_to(raw_source.resolve())):
+            print("FAILED: range source and archive roots must not overlap", file=sys.stderr)
+            return 1
 
     guard_failures: list[GuardFailure] = []
     for label, source in sources:
@@ -112,6 +122,20 @@ def main(argv: list[str] | None = None) -> int:
             if label == "raw"
             else _tree_ingest_pairs(source, destination)
         )
+        # Range JSON collisions are handled by the shared publish/retire path.
+        # Other raw and all processed files retain the existing batch guards.
+        if label == "raw" and range_paths:
+            pairs = [(src, dst) for src, dst in pairs if src not in range_paths]
+            media_pairs = [
+                (src, dst) for src, dst in pairs
+                if src.is_relative_to(source / MEDIA_STORE_NAME)
+                and dst.exists() and not _files_equal(src, dst)
+            ]
+            for src, dst in media_pairs:
+                guard_failures.append(GuardFailure(
+                    src, dst, "区间媒体同路径字节不同，不得覆盖既有 CAS", False,
+                ))
+            pairs = [(src, dst) for src, dst in pairs if (src, dst) not in media_pairs]
         guard_failures.extend(_find_guard_failures(pairs))
 
     blocking_guard_failures = [
@@ -128,9 +152,23 @@ def main(argv: list[str] | None = None) -> int:
         if blocking_guard_failures:
             return 1
 
+    range_needs_review = False
     for label, source in sources:
         if label == "raw":
-            if raw_validation_failures:
+            if range_paths:
+                # Copy all media before publishing any range discovery marker.
+                # Keep sources until every publication/retirement has succeeded.
+                excluded = invalid_paths | {path.resolve() for path in range_paths}
+                count = _copy_raw_exports_except(source, cfg.paths.archived / "raw", excluded)
+                for path in range_paths:
+                    try:
+                        publication = publish_range(path, cfg.paths.archived / "raw" / path.name)
+                    except (OSError, ValueError) as exc:
+                        print(f"FAILED: range publication {path.name}: {exc}", file=sys.stderr)
+                        return 1
+                    count += 1
+                    range_needs_review |= publication.needs_review
+            elif raw_validation_failures:
                 count = _copy_raw_exports_except(source, cfg.paths.archived / "raw", invalid_paths)
             else:
                 count = merge_raw_exports_into_archive(
@@ -141,12 +179,12 @@ def main(argv: list[str] | None = None) -> int:
         else:
             count = merge_tree(source, cfg.paths.archived / "processed", move=move)
         print(f"Merged {count} {label} files into {cfg.paths.archived / label}")
-        if move and not (label == "raw" and raw_validation_failures):
+        if move and not (label == "raw" and (raw_validation_failures or range_needs_review)):
             # Moving leaves empty directory shells behind; drop the whole source.
             shutil.rmtree(source, ignore_errors=True)
             print(f"Removed emptied source: {source}")
-        elif move and label == "raw" and raw_validation_failures:
-            print(f"Kept raw source for schema-failure review: {source}")
+        elif move and label == "raw" and (raw_validation_failures or range_needs_review):
+            print(f"Kept raw source for validation/replacement review: {source}")
 
     if raw_validation_failures:
         print("\nRaw schema validation failures:", file=sys.stderr)
@@ -154,7 +192,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"- {failed_path}: {reason}", file=sys.stderr)
         return 1
 
-    return 0
+    return REVIEW_EXIT_CODE if range_needs_review else 0
 
 
 def _raw_ingest_pairs(

@@ -25,6 +25,7 @@ from ...media_store import (
     store_media_file,
 )
 from ...raw_schema import validate_moments_json, validate_session_json
+from ...moments_ranges import publish_range
 from ..weflow.naming import sanitize_session_name
 from .appmsg import AppmsgMeta, parse_appmsg
 from .type_map import resolve_message_type, unpack_local_type
@@ -254,6 +255,7 @@ class MomentsExportResult:
     year_counts: tuple[tuple[int, int], ...] = ()
     earliest_timestamp: int | None = None
     latest_timestamp: int | None = None
+    replacement_needs_review: bool = False
 
 
 def map_moments_json(
@@ -406,6 +408,16 @@ def write_moments_export(
         media_store=raw_root / MEDIA_STORE_NAME,
         media_stats=media_stats,
     )
+    timestamps = [post["createTime"] for post in data["posts"]]
+    if export_date is None:
+        if timestamps:
+            filename = moments_filename(
+                usernames, datetime.fromtimestamp(min(timestamps)).date(),
+                end=datetime.fromtimestamp(max(timestamps)).date(),
+            )
+        else:
+            digest = filename.rsplit("_", 1)[1]
+            filename = f"朋友圈导出_区间_空_{digest}"
     destination = raw_root / filename
     canonical_stage = staging_dir / destination.name
     temp_path = staging_dir / f".{destination.name}.{uuid.uuid4().hex}.tmp"
@@ -434,8 +446,13 @@ def write_moments_export(
 
     # JSON is the live discovery marker, so it is published only after every
     # available media file is in place. Missing decrypted media stays URL-only.
-    os.replace(canonical_stage, destination)
-    timestamps = [post["createTime"] for post in data["posts"]]
+    replacement_needs_review = False
+    if export_date is None:
+        publication = publish_range(canonical_stage, destination)
+        destination = publication.path
+        replacement_needs_review = publication.needs_review
+    else:
+        os.replace(canonical_stage, destination)
     year_counts: dict[int, int] = {}
     for timestamp in timestamps:
         year = datetime.fromtimestamp(timestamp).year
@@ -449,6 +466,7 @@ def write_moments_export(
         year_counts=tuple(sorted(year_counts.items())),
         earliest_timestamp=min(timestamps) if timestamps else None,
         latest_timestamp=max(timestamps) if timestamps else None,
+        replacement_needs_review=replacement_needs_review,
     )
 
 

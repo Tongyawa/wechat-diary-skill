@@ -157,6 +157,20 @@ class EntrypointParameterContractTests(unittest.TestCase):
         self.assertIn("想让区间冻结不再前移", text)
         self.assertIn("`--print-range`", text)
 
+    def test_moments_range_replacement_contract_matches_shared_implementation(self) -> None:
+        from wechat_diary_core.moments_ranges import REVIEW_EXIT_CODE, range_digest
+        from wechat_diary_core.backends.weflow_api.mapper import moments_filename
+        from datetime import date
+        text = (ROOT / "references" / "entrypoints.md").read_text(encoding="utf-8")
+        name = moments_filename(["self_account"], date(2022, 12, 31), end=date(2026, 1, 1))
+        self.assertIsNotNone(range_digest(Path(name)))
+        self.assertIsNotNone(range_digest(Path(name.replace("20221231-20260101", "空"))))
+        for term in ("实际最早、最晚本地日期", "区间_空_<digest>", "_保留_<32位唯一标识>",
+                     "wechat_diary_core/moments_ranges.py", "逐字节一致", "Live Photo", "发布失败不删除旧文件"):
+            self.assertIn(term, text)
+        self.assertEqual(REVIEW_EXIT_CODE, 3)
+        self.assertIn(f"`{REVIEW_EXIT_CODE}` = 新文件已发布", text)
+
     def test_documented_parameters_match_live_entrypoints(self) -> None:
         documented = documented_options()
         expected_scripts = PYTHON_ENTRYPOINTS | POWERSHELL_ENTRYPOINTS

@@ -143,6 +143,8 @@ python "$SkillRoot\scriptsrchive_exports.py" --raw-root <旧raw目录> --proces
 
 写入前整批预检：判定 incoming 更旧就**拒绝整批、退出 `1`、一个文件都不写**（报告最多列 12 条），坏 JSON 逐个跳过并在结尾汇总。判据实现在 `scripts/archive_exports.py`，元数据形态与设计理由在工程 `CLAUDE.md`。
 
+根级本人朋友圈区间 JSON 走 §8 的共享覆盖判据：先复制媒体、发布新 JSON，再删除被完全覆盖的旧区间文件。同名但无法覆盖时保留新旧两份，`--force-overwrite` 也不能跳过覆盖判据；涉及区间摄取时，同路径 CAS 字节冲突拒绝整批。退出 `3` 表示新文件已发布，但有旧区间未覆盖或删除失败，需要查看报告；此时 `--move-source` 保留 raw 源树。聊天和日常单日朋友圈仍按原护栏处理。
+
 ## 6. 打开产物 `Open-LatestInsights.ps1` / `Open-InsightsByDate.ps1`
 
 ```powershell
@@ -231,9 +233,13 @@ python "$SkillRoot\scripts\export_bulk_raw.py" --self-moments --out <raw输出�
 python "$SkillRoot\scripts\export_bulk_raw.py" --self-moments --start 2010-01-01 --end 2026-10-05 --out <raw输出根> --config <config.toml>
 ```
 
-一轮产出一份根级 `朋友圈导出_区间_<YYYYMMDD>-<YYYYMMDD>_<digest>.json`，即使起止同一天也不会撞日常 `朋友圈导出_<YYYYMMDD>_<digest>.json`；同目标同区间重跑覆盖同一个文件。正文、点赞、评论保留现役 canonical 结构；媒体先发布到 `_media` CAS，JSON 最后发布。无动态也发布一份空 canonical JSON，刷新旧结果。结尾显示动态总数、按年份计数、本地时区最早/最晚时间、媒体发布引用数（含 Live Photo，复用 CAS 也计数）、未解密/缺失媒体的动态数（一条动态多份媒体缺失只计一次）。
+一轮产出一份根级 `朋友圈导出_区间_<YYYYMMDD>-<YYYYMMDD>_<digest>.json`，两个日期取最终 canonical 动态的**实际最早、最晚本地日期**，不取请求边界；即使起止同一天也不会撞日常 `朋友圈导出_<YYYYMMDD>_<digest>.json`。零动态发布 `朋友圈导出_区间_空_<digest>.json`；空结果不能覆盖含动态的旧文件。正文、点赞、评论保留现役 canonical 结构；媒体先发布到 `_media` CAS，JSON 最后发布。结尾显示动态总数、按年份计数、本地时区最早/最晚时间、媒体发布引用数（含 Live Photo，复用 CAS 也计数）、未解密/缺失媒体的动态数（一条动态多份媒体缺失只计一次）。
 
-`/sns/export` 走独立数据面 `[export_backend.weflow_api].moments_request_timeout_sec`（新键缺省即生效，默认 `3600` 秒）；探活/列表仍用 `request_timeout_sec`，消息仍用 `message_request_timeout_sec`。超时提示调整朋友圈键并原命令重跑。此模式退出码：`0` = canonical 已发布（含空结果或缺媒体降级，缺失计数与 WARN 可见）；`1` = 配置、请求、映射或发布失败；`2` = 工作区解析或 CLI 用法错误。`0` 不证明服务端历史全齐：动态来自本地 SNS 缓存，已有动态的媒体下载可能访问 CDN；更早动态需先在 PC 微信本人朋友圈向下浏览，再原命令重跑。没有自动拉取未缓存动态的 HTTP API。
+新 JSON 发布成功后，自动检查同 digest 的旧区间（包括首版请求日期命名的区间及保留文件）；还要求实际账号集合一致。**完全覆盖** = 每个旧 post 的账号与 id 在新文件中存在，且旧 post 的每个已落地媒体引用（含 Live Photo）在新文件同一 post 中有同类、可读且逐字节一致的媒体；CAS 文件名 md5 还须与内容一致。只检查 URL、不含本地路径的媒体不构成删除约束；旧本地媒体不可读、空或重复 post 身份、坏 JSON 等无法核验的情况保留旧文件并打印原因。评论、点赞、昵称和 `exportTime` 允许改变，报告对应变化计数（前三者按旧 post 计数，`exportTime` 按文件计数）。日常单日文件、其他 digest 和 CAS 对象不删除。
+
+若新旧常规文件名相同但覆盖不满足，旧文件原名原字节保留，新文件加 `_保留_<32位唯一标识>` 后缀；后续覆盖满足时同样会自动清理这些保留文件。覆盖判据及发布后清理唯一实现在 `wechat_diary_core/moments_ranges.py`，导出根和归档摄取共用。发布失败不删除旧文件，旧文件删除失败不撤回新文件。控制台逐份打印保留原因或「已替换旧区间文件 X（N 条全部被新文件覆盖）」。
+
+`/sns/export` 走独立数据面 `[export_backend.weflow_api].moments_request_timeout_sec`（新键缺省即生效，默认 `3600` 秒）；探活/列表仍用 `request_timeout_sec`，消息仍用 `message_request_timeout_sec`。超时提示调整朋友圈键并原命令重跑。此模式退出码：`0` = canonical 已发布且无旧区间待审查（含空结果或缺媒体降级，缺失计数与 WARN 可见）；`1` = 配置、请求、映射或发布失败；`2` = 工作区解析或 CLI 用法错误；`3` = 新文件已发布，但有旧区间未覆盖或删除失败，需要查看报告。`0` 不证明服务端历史全齐：动态来自本地 SNS 缓存，已有动态的媒体下载可能访问 CDN；更早动态需先在 PC 微信本人朋友圈向下浏览，再原命令重跑。没有自动拉取未缓存动态的 HTTP API。
 
 ## 9. 离线群成员名字回填 `backfill_group_names.py`
 

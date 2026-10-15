@@ -154,7 +154,9 @@ class SelfMomentsBulkTests(unittest.TestCase):
             media = stage / "media"; media.mkdir(); (media / "post-placeholder_1.jpg").write_bytes(b"image-placeholder")
             raw = root / "raw"; raw.mkdir()
             destination = raw / mapper.moments_filename([SELF], date(2026, 8, 5), end=date(2026, 8, 5))
-            destination.write_bytes(b"previous-json-placeholder")
+            previous = mapper.map_moments_json(source, usernames=[SELF], start=date(2026, 8, 5), end=date(2026, 8, 5))
+            previous_bytes = json.dumps(previous).encode("utf-8")
+            destination.write_bytes(previous_bytes)
             replace = mapper.os.replace
             def fail_final(source_path, destination_path):
                 if Path(destination_path) == destination:
@@ -165,7 +167,7 @@ class SelfMomentsBulkTests(unittest.TestCase):
             with patch.object(mapper.os, "replace", side_effect=fail_final):
                 with self.assertRaisesRegex(OSError, "injected"):
                     mapper.write_moments_export(raw, source, usernames=[SELF], start=date(2026, 8, 5), end=date(2026, 8, 5), staging_dir=stage)
-            self.assertEqual(destination.read_bytes(), b"previous-json-placeholder")
+            self.assertEqual(destination.read_bytes(), previous_bytes)
 
     def test_cli_runs_real_backend_with_no_chat_requests_or_state_access_and_reruns(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -248,7 +250,7 @@ class SelfMomentsBulkTests(unittest.TestCase):
                     driver.main(["--self-moments", "--out", "unused-placeholder", *flags])
                 self.assertEqual(captured.exception.code, 2)
 
-    def test_empty_interval_replaces_stale_result_but_daily_still_publishes_nothing(self):
+    def test_empty_interval_preserves_unverifiable_result_but_daily_still_publishes_nothing(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp); backend = WeflowApiBackend(load_config(_config(root)))
             class EmptyClient:
@@ -261,6 +263,8 @@ class SelfMomentsBulkTests(unittest.TestCase):
             self.assertEqual(rerun.total_posts, 0); self.assertEqual(rerun.year_counts, ())
             self.assertIsNone(rerun.earliest_timestamp); self.assertIsNone(rerun.latest_timestamp)
             validate_moments_json(json.loads(rerun.path.read_bytes()))
+            self.assertEqual(result.path.read_bytes(), b"stale-placeholder")
+            self.assertTrue(rerun.replacement_needs_review)
             self.assertEqual(backend.export_moments([SELF], date(2026, 8, 5)), None)
             self.assertEqual(list((root / "raw").glob("朋友圈导出_20260805_*.json")), [])
 
