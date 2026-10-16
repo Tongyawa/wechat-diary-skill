@@ -10,6 +10,7 @@ import shutil
 import tempfile
 import time
 import uuid
+import xml.etree.ElementTree as ET
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -597,16 +598,45 @@ def _message_content(
         return relative_media or placeholder
     if base in {1, 50, 10000}:
         return str(message.get("content") or message.get("rawContent") or placeholder)
+    if base == 48:
+        return _location_content(message, placeholder)
     if base != 49:
         return placeholder or str(message.get("content") or "")
     content = str(message.get("content") or "")
     if app_type == 57:
-        # 57 的 content 是回复正文纯文本、不是 XML；真机实测 title 命中率 0/4341。
+        # 两种模式的 content 都是回复正文；raw XML 虽有 title，也不替换正文格式。
         return content or placeholder
-    meta = parse_appmsg(content, max_chars=appmsg_text_max_chars)
+    # Media mode replaces content/parsedContent with WeFlow's display text.
+    # Only rawContent retains the metadata XML, sometimes sender-prefixed.
+    meta = parse_appmsg(_xml_payload(message.get("rawContent")), max_chars=appmsg_text_max_chars)
+    if meta is None:
+        meta = parse_appmsg(_xml_payload(content), max_chars=appmsg_text_max_chars)
     if meta is None:
         return placeholder or content
     return _render_appmsg(meta, app_type, placeholder)
+
+
+def _xml_payload(value: Any) -> str:
+    content = str(value or "").strip()
+    # Strip only the observed sender-id line, never arbitrary text before XML.
+    return re.sub(r"^[^\s<>:]+:\r?\n", "", content, count=1).lstrip()
+
+
+def _location_content(message: Mapping[str, Any], placeholder: str) -> str:
+    for field in ("rawContent", "content"):
+        try:
+            root = ET.fromstring(_xml_payload(message.get(field)))
+        except (ET.ParseError, TypeError, UnicodeEncodeError, ValueError):
+            continue
+        location = root if root.tag == "location" else root.find(".//location")
+        if location is not None:
+            address = str(location.get("label") or "").strip() or str(location.get("poiname") or "").strip()
+            if address:
+                return _with_body("位置", re.sub(r"\s+", " ", address))
+    content = str(message.get("content") or "").strip()
+    if content.startswith("[位置]"):
+        return _with_body("位置", re.sub(r"\s+", " ", content[len("[位置]"):].strip()))
+    return placeholder
 
 
 def _with_body(label: str, body: str) -> str:

@@ -13,6 +13,7 @@ from urllib.parse import parse_qs, urlparse
 from unittest.mock import Mock, patch
 
 from scripts import export_bulk_raw
+from scripts.process_existing_raw import process_existing_raw
 from wechat_diary_core.backends.weflow_api.backend import (
     BulkExportResult,
     WeflowApiBackend,
@@ -160,6 +161,30 @@ class _BulkClient:
 
 
 class BulkExportTests(unittest.TestCase):
+    def test_media_appmsg_survives_both_backend_writers_and_offline_processing(self) -> None:
+        cases = json.loads((FIXTURES.parent / "weflow_media_appmsg.json").read_text(encoding="utf-8"))["cases"]
+        export_day = date(2026, 8, 5)
+        session = {"username": "wxid_contact_placeholder", "displayName": "Contact placeholder"}
+        messages = [dict(_message_for(export_day, i), localType=(case["app"] << 32) | 49,
+                         content=case["content"], rawContent=case["rawContent"])
+                    for i, case in enumerate(cases, 1)]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = _config(root, media_localize=True)
+            backend = WeflowApiBackend(cfg)
+            backend._client = _BulkClient([session], {session["username"]: messages})
+            backend.export_chats(export_day)
+            backend.export_chats_range(export_day, export_day, raw_root=root / "bulk", sessions=[session],
+                                       state_path=root / "bulk-state.json", plan_path=root / "bulk-plan.json")
+            for raw_root in (cfg.paths.raw, root / "bulk"):
+                canonical = json.loads(next(raw_root.glob("*/*.json")).read_text(encoding="utf-8"))
+                self.assertEqual([m["content"] for m in canonical["messages"]], [c["expected"] for c in cases])
+            # Existing-raw processing consumes canonical content; it never calls the API mapper again.
+            result = process_existing_raw(cfg, raw_root=root / "bulk", day=export_day.isoformat(), require_day=True, skip_voice_fallback=True)
+            processed = "\n".join(p.read_text(encoding="utf-8") for p in result.diary_files)
+            for case in cases:
+                self.assertIn(case.get("expected_processed", case["expected"]), processed)
+
     def test_export_chats_delegates_to_single_day_range(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             backend = WeflowApiBackend(_config(Path(tmp)))

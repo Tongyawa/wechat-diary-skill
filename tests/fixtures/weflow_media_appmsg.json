@@ -1,0 +1,16 @@
+{
+  "provenance": "Paired media payload shapes; all identities and text replaced with readable English placeholders. Only fields needed by the mapper are retained.",
+  "cases": [
+    {"app": 19, "content": "[聊天记录]", "rawContent": "<msg><appmsg><title>Forward title</title><des>Sender A: First item\nSender B: Second item</des><type>19</type><recorditem><![CDATA[<recordinfo><datalist count=\"2\"><dataitem><datadesc>First item</datadesc></dataitem><dataitem><datadesc>Second item</datadesc></dataitem></datalist></recordinfo>]]></recorditem></appmsg></msg>", "expected": "[合并转发] Forward title：Sender A: First item / Sender B: Second item"},
+    {"app": 5, "content": "[链接] Link title", "rawContent": "wxid_sender_placeholder:\n<?xml version=\"1.0\"?><msg><appmsg><title>Link title</title><des>Link summary</des><type>5</type><url>https://example.invalid/</url></appmsg></msg>", "group": true, "expected": "[链接] Link title：Link summary", "expected_processed": "[链接：Link title：Link summary]"},
+    {"app": 6, "content": "[视频号] Report.txt", "rawContent": "wxid_sender_placeholder:\n<msg><appmsg><title>Report.txt</title><des/><type>6</type><appattach><totallen>2048</totallen><fileext>txt</fileext></appattach></appmsg></msg>", "group": true, "expected": "[文件：Report.txt（2.0 KB）]"},
+    {"app": 62, "content": "Sender A patted Sender B", "rawContent": "<msg><appmsg><title>Sender A patted Sender B</title><des/><type>62</type><appattach><totallen>0</totallen><fileext>Sender B</fileext></appattach><patinfo/></appmsg></msg>", "group": true, "expected": "Sender A patted Sender B"},
+    {"app": 33, "content": "[小程序] Mini app title", "rawContent": "wxid_sender_placeholder:\n<msg><appmsg><title>Mini app title</title><des/><type>33</type><weappinfo><username>app_placeholder</username></weappinfo></appmsg></msg>", "group": true, "expected": "[小程序] Mini app title"},
+    {"app": 53, "content": "[接龙]", "rawContent": "wxid_sender_placeholder:\n<msg><appmsg><title>List title\n1. First item\n2. Second item</title><type>53</type></appmsg></msg>", "group": true, "expected": "[接龙] List title / 1. First item / 2. Second item"},
+    {"app": 3, "content": "[音乐] Song title", "rawContent": "<msg><appmsg><title>Song title</title><des>Artist name</des><type>3</type></appmsg></msg>", "expected": "[音乐] Song title - Artist name"},
+    {"app": 36, "content": "[视频号] Share title", "rawContent": "<msg><appmsg><title>Share title</title><des>Share summary</des><type>36</type></appmsg></msg>", "expected": "[分享] Share title"},
+    {"app": 51, "content": "[视频号] Activity title", "rawContent": "<msg><appmsg><title>Activity title</title><type>51</type><finderFeed/></appmsg></msg>", "expected": "[动态] Activity title"},
+    {"app": 2000, "content": "[转账]", "rawContent": "<msg><appmsg><title>Transfer</title><des>Transfer amount placeholder</des><type>2000</type><wcpayinfo/></appmsg></msg>", "expected": "[转账] Transfer amount placeholder"},
+    {"app": 2001, "content": "[红包]", "rawContent": "<msg><appmsg><title>Gift packet</title><des>Packet summary</des><type>2001</type><wcpayinfo/></appmsg></msg>", "expected": "[红包] Packet summary"}
+  ]
+}

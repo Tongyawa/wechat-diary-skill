@@ -346,7 +346,7 @@ Path(a.report_json).write_text(json.dumps(report), encoding='utf-8')
             "createTime": 1785921697,
             "isSend": 0,
             "senderUsername": session["username"],
-            "content": xml,
+            "content": "[接龙]",
             "rawContent": xml,
             "parsedContent": "",
             "replyToMessageId": "",

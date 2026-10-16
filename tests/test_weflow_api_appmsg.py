@@ -1,4 +1,6 @@
+import json
 import unittest
+from pathlib import Path
 
 from wechat_diary_core.backends.weflow_api.appmsg import parse_appmsg
 from wechat_diary_core.backends.weflow_api.mapper import map_session_json
@@ -127,6 +129,52 @@ class AppmsgParserTests(unittest.TestCase):
 
 
 class AppmsgMappingTests(unittest.TestCase):
+    def test_paired_media_payloads_restore_metadata_and_keep_reply_fields(self):
+        fixture = json.loads((Path(__file__).parent / "fixtures" / "weflow_media_appmsg.json").read_text(encoding="utf-8"))
+        for case in fixture["cases"]:
+            with self.subTest(app=case["app"]):
+                raw = case["rawContent"]
+                xml = raw.split(":\n", 1)[1] if raw.startswith("wxid_sender_placeholder:\n") else raw
+                local_type = (case["app"] << 32) | 49
+                outputs = []
+                for content in (xml, case["content"]):
+                    message = _message(local_type, content, raw_content=raw, parsedContent=case["content"])
+                    session = "group_placeholder@chatroom" if case.get("group") else "wxid_contact_placeholder"
+                    mapped = map_session_json({"username": session, "displayName": "Contact placeholder"}, [message], contacts=[])["messages"][0]
+                    self.assertEqual(mapped["content"], case["expected"])
+                    self.assertNotIn("rawContent", mapped)
+                    outputs.append(mapped["content"])
+                self.assertEqual(*outputs)
+        # These guards are already green before the fix: raw XML must not replace reply text.
+        for group in (False, True):
+            for mode in (0, 1):
+                raw = ("wxid_sender_placeholder:\n" if group else "") + '<msg><appmsg><title>Raw title differs</title><type>57</type><refermsg/></appmsg></msg>'
+                message = _message((57 << 32) | 49, "Reply body", raw_content=raw, parsedContent="Reply body" if mode else "", quote={"content": "Quoted body", "sender": "wxid_sender_placeholder"})
+                mapped = _mapped(message)
+                self.assertEqual(mapped["content"], "Reply body")
+                self.assertEqual(mapped["quotedContent"], "Quoted body")
+        xml = '<msg><appmsg><title>Raw title</title><type>5</type></appmsg></msg>'
+        other_xml = xml.replace("Raw title", "Content title")
+        self.assertEqual(_mapped(_message((5 << 32) | 49, other_xml, raw_content=xml))["content"], "[链接] Raw title")
+        for invalid_raw in (None, "", "<broken>", "[链接]", "arbitrary text:\n" + xml, "\ud800"):
+            with self.subTest(invalid_raw=repr(invalid_raw)):
+                self.assertEqual(_mapped(_message((5 << 32) | 49, other_xml, raw_content=invalid_raw))["content"], "[链接] Content title")
+
+    def test_media_location_and_recall_preserve_their_readable_content(self):
+        xml = '<msg><location x="0" y="0" label="Street placeholder" poiname="Place placeholder"/></msg>'
+        for prefix in ("", "wxid_sender_placeholder:\n"):
+            for content in ("[位置]", "[位置] Street placeholder"):
+                with self.subTest(prefix=bool(prefix), content=content):
+                    self.assertEqual(_mapped(_message(48, content, raw_content=prefix + xml))["content"], "[位置] Street placeholder")
+        for content in ('<msg><location label="Address only"/></msg>', '<msg><location label="" poiname="Address only"/></msg>', '<msg><location label="  " poiname="Address only"/></msg>'):
+            self.assertEqual(_mapped(_message(48, content))["content"], "[位置] Address only")
+        self.assertEqual(_mapped(_message(48, "[位置] Rendered address", raw_content="<broken>"))["content"], "[位置] Rendered address")
+        self.assertEqual(_mapped(_message(48, "unrecognized text", raw_content="<broken>"))["content"], "[位置]")
+        # Already green on baseline; system/text content takes precedence over raw XML.
+        for base, content in ((10000, '"Sender placeholder" 撤回了一条消息'), (1, "Plain text")):
+            mapped = _mapped(_message(base, content, raw_content='<sysmsg type="revokemsg"><revokemsg/></sysmsg>'))
+            self.assertEqual(mapped["content"], content)
+
     def test_real_skeleton_rendering_fixtures(self):
         cases = [
             (6, FILE_XML, "[文件：示例报告.docx（86.7 KB）]"),
@@ -176,7 +224,7 @@ class AppmsgMappingTests(unittest.TestCase):
                 xml = _templated_xml(app_type, title)
                 self.assertEqual(_mapped(_message((app_type << 32) | 49, xml))["content"], expected)
 
-    def test_parser_uses_content_not_group_raw_content(self):
+    def test_group_prefixed_raw_and_xml_content_render_the_same_join(self):
         mapped = _mapped(_message((53 << 32) | 49, JOIN_XML, raw_content=RAW_WITH_PREFIX))
         self.assertEqual(
             mapped["content"],

@@ -34,6 +34,12 @@
 
 **同一时间只在一个工作区跑完整导出**（路径 ① 会归档轮转 live roots）。
 
+**媒体模式的卡片标题与历史修复**
+
+WeFlow 在 `media=1` 时可能把 `content` / `parsedContent` 替换成预渲染标签。mapper 对 appmsg（引用除外）优先解析 `rawContent` XML，再回退 `content` XML；兼容群聊的发送者前缀。不要关闭 media 来取标题，媒体本地化仍需要它。位置优先读取 XML 地址；文本、引用正文与撤回提示继续使用 `content`。
+
+已有 canonical raw 没有原始 XML；只跑 §2 不会找回丢失标题。需要恢复时先向新的独立输出根重导 raw，再按 §5 的整批护栏审查摄取；API 同代共同消息内容变化会要求人工确认 incoming 更新，严格子集与时间水位倒退仍不可强制放行。复用批量输出根时，`--replan` 只重做规划，重导已完成块需要 `--force`。
+
 ## 1. 日常完整导出 `run_daily_export.ps1`
 
 ```powershell
