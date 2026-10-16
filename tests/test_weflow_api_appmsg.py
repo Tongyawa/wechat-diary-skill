@@ -1,8 +1,9 @@
 import json
 import unittest
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from wechat_diary_core.backends.weflow_api.appmsg import parse_appmsg
+from wechat_diary_core.backends.weflow_api.appmsg import AppmsgMeta, _sanitize_xml, parse_appmsg
 from wechat_diary_core.backends.weflow_api.mapper import map_session_json
 
 
@@ -93,6 +94,99 @@ def _mapped(message, *, max_chars=300):
 
 
 class AppmsgParserTests(unittest.TestCase):
+    def test_parser_recovers_metadata_from_trailing_nuls(self):
+        xml = ('<?xml version="1.0"?><msg><appmsg><title>Report A.txt</title>'
+               '<des>Summary A</des><type>6</type><appattach><fileext>txt</fileext>'
+               '<totallen>2048</totallen></appattach></appmsg></msg>\x00\x00')
+        self.assertEqual(parse_appmsg(xml), AppmsgMeta("Report A.txt", "Summary A", "txt", 2048))
+        self.assertEqual(_mapped(_message((6 << 32) | 49, "[文件]", raw_content=xml))["content"],
+                         "[文件：Report A.txt（2.0 KB）]")
+
+    def test_parser_recovers_nested_declaration_after_group_prefix(self):
+        xml = ('<msg><?xml version="1.0"?><appmsg><title>Report B.txt</title>'
+               '<des>Summary B</des><type>6</type><appattach><fileext>txt</fileext>'
+               '<totallen>3072</totallen></appattach></appmsg></msg>')
+        self.assertEqual(parse_appmsg(xml), AppmsgMeta("Report B.txt", "Summary B", "txt", 3072))
+        message = _message((6 << 32) | 49, "[文件]", raw_content="wxid_sender_placeholder:\n" + xml)
+        mapped = map_session_json({"username": "group_placeholder@chatroom"}, [message], contacts=[])["messages"][0]
+        self.assertEqual(mapped["content"], "[文件：Report B.txt（3.0 KB）]")
+
+    def test_parser_recovers_illegal_numeric_character_references(self):
+        xml = ('<msg><appmsg><title>Report&#20; C.txt</title><des>Summary&#x0B; C</des>'
+               '<type>6</type><appattach><fileext>t&#x1F;xt</fileext>'
+               '<totallen>40&#0;96</totallen></appattach></appmsg></msg>')
+        self.assertEqual(parse_appmsg(xml), AppmsgMeta("Report C.txt", "Summary C", "txt", 4096))
+        self.assertEqual(_mapped(_message((6 << 32) | 49, "[文件]", raw_content=xml))["content"],
+                         "[文件：Report C.txt（4.0 KB）]")
+
+    def test_sanitization_preserves_legal_xml_and_original_parse_results(self):
+        legal = [FILE_XML, JOIN_XML, PAT_XML, TRANSFER_XML,
+                 '\ufeff' + FILE_XML,
+                 ('<?xml version="1.0"?><?xml-stylesheet href="literal&#20;.xsl"?>'
+                  '<msg><!-- literal &#20; <?xml version="1.0"?> -->'
+                  '<appmsg><title><![CDATA[Literal &#20; <?xml version="1.0"?>]]></title>'
+                  '<des>&amp;#20; &lt;?xml version="1.0"?&gt; &amp; &quot; &apos;</des>'
+                  '<appattach><fileext>txt</fileext><totallen>17</totallen></appattach></appmsg></msg>'),
+                 ('<?note literal &#20;?><appmsg attr="&#9;&#10;&#13;">'
+                  '<title>Edges &#32;&#xD7FF;&#xE000;&#xFFFD;&#x10000;&#x10FFFF;</title>'
+                  '<des>Keep \t LF\n CR\r and emoji 🌿</des></appmsg>')]
+        for case in json.loads((Path(__file__).parent / "fixtures" / "weflow_media_appmsg.json").read_text(encoding="utf-8"))["cases"]:
+            xml = case["rawContent"].removeprefix("wxid_sender_placeholder:\n")
+            legal.append(xml)
+        for xml in legal:
+            with self.subTest(case=legal.index(xml)):
+                old_tree = ET.fromstring(xml)  # independent proof the input is legal
+                clean = _sanitize_xml(xml)
+                self.assertEqual(xml, clean)
+                self.assertEqual(ET.tostring(old_tree), ET.tostring(ET.fromstring(clean)))
+                self.assertIsNotNone(parse_appmsg(xml))
+                self.assertEqual(parse_appmsg(xml), parse_appmsg(clean))
+
+    def test_recovery_preserves_cdata_comments_and_ordinary_instructions(self):
+        xml = ('<?xml version="1.0"?><?xml-stylesheet href="literal&#20;.xsl"?>'
+               '<msg><!-- literal &#20; <?xml version="1.0"?> -->'
+               '<appmsg><title><![CDATA[Literal &#20; <?xml version="1.0"?>]]></title>'
+               '<des>Keep &amp;#20; exactly</des><appattach><fileext>txt</fileext>'
+               '<totallen>17</totallen></appattach></appmsg></msg>')
+        expected = parse_appmsg(xml)
+        self.assertEqual(expected.title, 'Literal &#20; <?xml version="1.0"?>')
+        self.assertEqual(expected.des, "Keep &#20; exactly")
+        # Force the recovery path; broad reference/declaration regexes would
+        # silently damage the legal CDATA and PI text while making parsing pass.
+        self.assertEqual(_sanitize_xml(xml + '\x00'), xml)
+        self.assertEqual(parse_appmsg(xml + '\x00'), expected)
+
+    def test_recovery_removes_only_forbidden_literal_and_reference_codepoints(self):
+        legal = [9, 10, 13, 0x20, 0xD7FF, 0xE000, 0xFFFD, 0x10000, 0x10FFFF]
+        illegal = [0, 1, 8, 11, 12, 14, 20, 31, 0xD800, 0xDFFF, 0xFFFE, 0xFFFF, 0x110000]
+        for value in legal + illegal:
+            for reference in (f"&#{value};", f"&#x{value:X};"):
+                xml = f'<appmsg><title>Before{reference}After</title></appmsg>'
+                with self.subTest(value=value, hex=reference.startswith('&#x')):
+                    if value in legal:
+                        self.assertEqual(_sanitize_xml(xml), xml)
+                    else:
+                        self.assertEqual(_sanitize_xml(xml), '<appmsg><title>BeforeAfter</title></appmsg>')
+                        self.assertEqual(parse_appmsg(xml).title, "BeforeAfter")
+            if value <= 0x10FFFF:
+                xml = f'<appmsg><title>Before{chr(value)}After</title></appmsg>'
+                self.assertEqual(_sanitize_xml(xml), xml if value in legal else '<appmsg><title>BeforeAfter</title></appmsg>')
+        # Huge numbers are invalid, but arbitrarily many leading zeroes do not
+        # turn a legal reference into an illegal one.
+        huge = '&#' + '9' * 5000 + ';'
+        zero_padded = '&#' + '0' * 5000 + '65;'
+        self.assertEqual(parse_appmsg(f'<appmsg><title>A{huge}B</title></appmsg>').title, 'AB')
+        self.assertEqual(_sanitize_xml(f'<appmsg><title>{zero_padded}</title></appmsg>'),
+                         f'<appmsg><title>{zero_padded}</title></appmsg>')
+
+    def test_recovery_does_not_guess_other_broken_markup_or_declared_text_in_attributes(self):
+        for xml in ('<appmsg><title>Unclosed', '<appmsg><title>A & B</title></appmsg>',
+                    '<appmsg><title>&unknown;</title></appmsg>',
+                    '<appmsg attr=\'<?xml version="1.0"?>\'><title>Keep</title></appmsg>'):
+            with self.subTest(case=xml):
+                self.assertIsNone(parse_appmsg(xml))
+                self.assertEqual(_sanitize_xml(xml), xml)
+
     def test_parser_reads_file_metadata_and_normalizes_text(self):
         meta = parse_appmsg(FILE_XML)
         self.assertIsNotNone(meta)
