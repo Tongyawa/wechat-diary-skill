@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 
 from wechat_diary_core.backends.weflow_api.type_map import APP_TYPES, BASE_TYPES
+from wechat_diary_core.backends.weflow_api.mapper import map_session_json
 from wechat_diary_core.chat_flow import render_message_content
 
 
@@ -39,6 +40,18 @@ def _current_renderer_tags() -> set[str]:
 
 
 class ProcessedFormatContractTests(unittest.TestCase):
+    def test_media_appmsg_shapes_survive_mapper_and_processed_renderer(self) -> None:
+        fixture = json.loads((ROOT / "tests" / "fixtures" / "weflow_media_appmsg.json").read_text(encoding="utf-8"))
+        for case in fixture["cases"]:
+            with self.subTest(app=case["app"]):
+                message = {"localId": 1, "createTime": 1, "localType": (case["app"] << 32) | 49,
+                           "content": case["content"], "rawContent": case["rawContent"], "isSend": 0}
+                mapped = map_session_json({"username": "group_placeholder@chatroom" if case.get("group") else "wxid_contact_placeholder"}, [message], contacts=[])["messages"][0]
+                self.assertEqual(render_message_content(mapped), case.get("expected_processed", case["expected"]))
+        location = map_session_json({"username": "wxid_contact_placeholder"}, [{"localId": 1, "createTime": 1, "localType": 48,
+            "content": "[位置] Address placeholder", "rawContent": '<msg><location label="Address placeholder"/></msg>'}], contacts=[])["messages"][0]
+        self.assertEqual(render_message_content(location), "[位置] Address placeholder")
+
     def test_real_archive_catalog_and_current_renderer_tags_are_documented(self) -> None:
         """真机反推的形态和当前 renderer 标签都必须在唯一格式契约中有说明。"""
         catalog = _catalog()
