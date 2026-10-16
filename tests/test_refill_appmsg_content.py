@@ -133,6 +133,74 @@ class RefillAppmsgTests(unittest.TestCase):
                 good, _ = self.run_tool([self.api[0], second])
                 self.assertEqual(2, self.stats(good)["refillable"])
 
+    def test_out_of_scope_base_does_not_block_same_file_appmsg(self):
+        for base in (66, 11000):
+            for apply in (False, True):
+                with self.subTest(base=base, apply=apply):
+                    outside = dict(api_message(), localType=base, content="Opaque payload")
+                    good = api_message(2)
+                    self.payload = canonical([outside, good])
+                    self.payload["messages"][0]["source"] = "media/keep.bin"
+                    self.payload["messages"][0]["extra"] = {"content": "[其他消息]", "keep": [7, 3]}
+                    self.payload["messages"][1]["content"] = "[合并转发]"
+                    before = self.write()
+                    backup = self.base / f"backup-{base}-{apply}"
+                    with patch.object(tool, "_message_content", wraps=tool._message_content) as render:
+                        report, client = self.run_tool([outside, good], apply=apply, backup_dir=backup)
+                    self.assertEqual(int(apply), report["written_files"])
+                    self.assertEqual(1, report["by_type"]["[其他消息]"]["still_bare"])
+                    self.assertEqual(0, report["by_type"]["[其他消息]"]["rejected"])
+                    self.assertEqual(1, self.stats(report)["refilled" if apply else "refillable"])
+                    self.assertEqual(0, self.stats(report)["rejected"])
+                    self.assertEqual(3, tool.exit_code(report))
+                    self.assertEqual(1, len(client.calls))
+                    self.assertEqual(1, render.call_count)
+                    expected = before.replace('"content": "[合并转发]"'.encode(),
+                                              '"content": "[合并转发] Forward title：Summary"'.encode(), 1) if apply else before
+                    self.assertEqual(expected, self.path.read_bytes())
+                    self.assertEqual(json.loads(before)["messages"][0], json.loads(self.path.read_bytes())["messages"][0])
+                    if apply:
+                        self.assertEqual(before, (backup / self.path.relative_to(self.root)).read_bytes())
+                        again, _ = self.run_tool([outside, good], apply=True, backup_dir=backup)
+                        self.assertEqual(0, again["written_files"])
+                        self.assertEqual(1, again["by_type"]["[其他消息]"]["still_bare"])
+                    else:
+                        self.assertFalse(backup.exists())
+
+    def test_out_of_scope_message_still_requires_matching_identity(self):
+        for base in (66, 11000):
+            for field, wrong in (("serverId", "wrong-server"), ("senderUsername", "wxid_wrong_placeholder"),
+                                 ("isSend", 1), ("localType", 1), ("localType", 42)):
+                with self.subTest(base=base, field=field, wrong=wrong):
+                    outside = dict(api_message(), localType=base, content="Opaque payload")
+                    good = api_message(2)
+                    self.payload = canonical([outside, good])
+                    self.payload["messages"][1]["content"] = "[合并转发]"
+                    before = self.write()
+                    bad = dict(outside, **{field: wrong})
+                    report, _ = self.run_tool([bad, good], apply=True, backup_dir=self.backup)
+                    self.assertEqual(0, report["written_files"])
+                    self.assertEqual(before, self.path.read_bytes())
+                    self.assertFalse(self.backup.exists())
+                    self.assertEqual(1, report["by_type"]["[其他消息]"]["rejected"])
+                    self.assertEqual(1, self.stats(report)["rejected"])
+                    self.assertEqual(1, tool.exit_code(report))
+
+    def test_only_out_of_scope_messages_are_still_bare_without_writing(self):
+        for base in (66, 11000):
+            with self.subTest(base=base):
+                outside = dict(api_message(), localType=base, content="Opaque payload")
+                self.payload = canonical([outside])
+                before = self.write()
+                with patch.object(tool, "_message_content", side_effect=AssertionError("must not render unsupported base")):
+                    report, _ = self.run_tool([outside], apply=True, backup_dir=self.backup)
+                self.assertEqual(1, report["by_type"]["[其他消息]"]["still_bare"])
+                self.assertEqual(0, report["by_type"]["[其他消息]"]["rejected"])
+                self.assertEqual(3, tool.exit_code(report))
+                self.assertEqual(0, report["written_files"])
+                self.assertEqual(before, self.path.read_bytes())
+                self.assertFalse(self.backup.exists())
+
     def test_missing_message_does_not_abort_other_files(self):
         before = self.write()
         other = self.root / "Other" / "other.json"

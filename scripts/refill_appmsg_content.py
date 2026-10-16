@@ -152,6 +152,7 @@ def _key(message: dict[str, Any]) -> tuple[str, int]:
 
 
 def _same_identity(old: dict[str, Any], fetched: dict[str, Any], talker: str) -> bool:
+    """Verify message identity independently of whether its base is repairable."""
     platform_id = old.get("platformMessageId")
     if platform_id not in (None, "") and str(platform_id) != str(fetched.get("serverId", "")):
         return False
@@ -166,8 +167,7 @@ def _same_identity(old: dict[str, Any], fetched: dict[str, Any], talker: str) ->
     if not sender or sender != old.get("senderUsername") or int(is_send) != int(old["isSend"]):
         return False
     resolved = resolve_message_type(int(fetched.get("localType") or 0))
-    base, _ = unpack_local_type(int(fetched.get("localType") or 0))
-    return base in {48, 49} and resolved.canonical == old["type"] and resolved.placeholder == old["content"]
+    return resolved.canonical == old["type"] and resolved.placeholder == old["content"]
 
 
 def _inside(path: Path, root: Path) -> bool:
@@ -264,6 +264,11 @@ def refill(raw_root: Path, *, client: Any = None, apply: bool = False,
                             continue
                         fresh = matches[0]
                         base, app = unpack_local_type(int(fresh["localType"]))
+                        if base not in {48, 49}:
+                            # Matching non-appmsg placeholders are not identity
+                            # failures and must not block repairs in this file.
+                            outcomes[index] = "still_bare"
+                            continue
                         resolved = resolve_message_type(int(fresh["localType"]))
                         content = _message_content(fresh, resolved.placeholder, base, app, "", appmsg_text_max_chars)
                         if not content or content in BARE_LABELS:
