@@ -38,7 +38,11 @@
 
 WeFlow 在 `media=1` 时可能把 `content` / `parsedContent` 替换成预渲染标签。mapper 对 appmsg（引用除外）优先解析 `rawContent` XML，再回退 `content` XML；兼容群聊的发送者前缀。不要关闭 media 来取标题，媒体本地化仍需要它。位置优先读取 XML 地址；文本、引用正文与撤回提示继续使用 `content`。
 
+appmsg XML 末尾 NUL、包进 `<msg>` 的错位 XML 声明、XML 1.0 非法字符引用会造成解析失败，切换 media 模式不能修复这些载荷。parser 先按原样解析，失败才去掉 XML 1.0 禁止的字符/引用及错位声明后重试；合法 XML 的结果保持不变，CDATA、注释与普通处理指令中的字面引用/声明不被误删。缺标签、未知实体等其他坏结构仍降级占位，不猜正文。对应回归见 `tests/test_weflow_api_appmsg.py`。
+
 已有 canonical raw 没有原始 XML；只跑 §2 不会找回丢失标题。需要恢复时先向新的独立输出根重导 raw，再按 §5 的整批护栏审查摄取；API 同代共同消息内容变化会要求人工确认 incoming 更新，严格子集与时间水位倒退仍不可强制放行。复用批量输出根时，`--replan` 只重做规划，重导已完成块需要 `--force`。
+
+仅恢复裸标签的 content 时，优先使用 §11 的定点回填，保留已有图片补数和语音转写；上面的重导路线仍可用于需要刷新整个快照的情况。
 
 ## 1. 日常完整导出 `run_daily_export.ps1`
 
@@ -303,3 +307,51 @@ python "$SkillRoot\scripts\repair_group_names.py" rescan --raw-root <暂存raw�
 `prepare --apply` 在第一条名册请求前确认 `degraded-name-snapshot.json` 已存在；同一证据目录已有本工具产物时拒绝覆盖，避免重算后反向刷新原始证据。全部 `@chatroom` 会话逐一处理，任意两次 `/group-members` 调用之间主动冷却至少 20 秒，每群最多 3 次；空名册与重试耗尽都记入 `group-roster-index.json` 后跳过，不阻断其他群。
 
 `recompute --apply` 同时要求完整清单与完整名册索引，并校验 raw 文件集合、`session.wxid`、清单前摘要和名册快照摘要。名册命中的发送者会覆盖 `senderRemark`、`senderNickname`、`senderGroupNickname` 三个事实字段（旧产物缺群昵称键时补键），`senderDisplayName` 按 `remark > groupNickname > nickname > 既有兜底 > wxid` 重算；`quotedSenderDisplayName` 仍只填 `quotedSenderDisplayName == quotedSender` 的降级项。名册没有的成员完全不碰。写入沿用 canonical 消息片段替换与“允许字段之外不得变化”守卫，保留消息、媒体引用、顺序、`senderUsername`、换行风格和文件尾形状；完整成功后可原命令重跑，第二遍应为零改动。
+
+## 11. 历史 appmsg 内容回填 `refill_appmsg_content.py`
+
+输入任意 canonical raw 根，包括归档 raw、批量或暂存根。只处理 `weflow.source == http_api`、`type == 其他消息` 且 content 恰为可恢复卡片或位置裸标签的消息；不处理文本、引用、名片、群公告、媒体或已有正文。未知 appmsg 共用的 `[其他消息]` 也纳入重取，但必须经 API 类型核对。候选不等于已证实丢内容：样板文案过滤后仍可能合理地保持裸标签。
+
+```powershell
+# 完全离线统计规模；不读取配置、不调用 API、不写任何文件
+python "$SkillRoot\scripts\refill_appmsg_content.py" --raw-root <canonical raw根> --scan-only
+# 预览：会连接 WeFlow API，只按候选所在会话和日期请求，不取媒体
+python "$SkillRoot\scripts\refill_appmsg_content.py" --raw-root <canonical raw根> --config <config.toml>
+# 写入：逐文件保存改前原件，才原子替换
+python "$SkillRoot\scripts\refill_appmsg_content.py" --raw-root <canonical raw根> --config <config.toml> --apply --backup-dir <新回退目录>
+```
+
+| 参数 | 说明 |
+|---|---|
+| `--raw-root` | 必填；递归扫描的 canonical raw 根，不从配置猜数据目标 |
+| `--config` | API 连接与 `appmsg_text_max_chars` 的工作区配置；按共同规则发现；scan-only 不读取它 |
+| `--scan-only` | 完全离线，只统计候选；不能同时 apply |
+| `--apply` | 实际写入；省略时只重取和验证，不创建备份或改 raw |
+| `--backup-dir` | apply 必填；必须与 raw 根互不包含，并在公开代码根之外；按 raw 相对路径保存原件，已有不同字节的备份拒绝覆盖 |
+
+请求粒度为每个候选文件中的会话日，跨日区间文件仅请求有候选的日子，分页沿用现役 client。内存仅持有当前文件与当前日消息，不累计全部归档或 API 响应；同一会话日在多个快照中重复出现时会分别重取。`api_requests` 计 fetch 调用次数，分页的底层 HTTP 次数可能更多。不请求会话/联系人/群名册，不调用 ASR、OCR、图片视觉或媒体下载。API 内容渲染使用现役 mapper 的纯内容函数，不运行完整导出或媒体本地化。
+
+身份须唯一匹配 `(localId, createTime)`；旧文件有 `platformMessageId` 时还须等于 API `serverId`，再核发送者、发送方向、canonical 类型与对应裸标签；不会只凭 serverId 匹配。重复身份、日期口径不一致或身份字段错位拒绝整文件写入；找不到消息或该日 API 失败只隔离相应消息。媒体模式不影响身份字段。发送者为空且无法按旧 mapper 的会话退路证明一致时保留原样。
+
+身份核对与可修复范围分开：上述核对全部通过，但 API `localType` 的 base 不在 48/49（如 66、11000 的 `[其他消息]`）时，原样保留并计入 `still_bare`，不调用内容渲染、不触发整文件拒写；同文件可修的 appmsg 继续回填。范围外类型的 serverId、收发方向、发送者、canonical 类型或占位真不符时，仍按身份失败拒写整文件。`still_bare` 因而包含样板过滤、缺元数据及修复范围外等不可回填项，不等于 API 丢失消息。
+
+写前两道检查：将指定 content 还原后的 JSON 必须等于改前对象；屏蔽这些 JSON 字符串 token 后，前后 UTF-8 字节必须完全一致。故其他消息的 content、source、转写、图片路径、元数据、键序、缩进、换行、BOM、尾空白均保留；重复 JSON 键无法证明安全，拒绝。重取后仍裸不算回填，不写文件。写前复读原文件检查并发变化，先确认备份字节一致，再用同目录临时文件与替换发布；运行时应避免其他工具并发写相同 raw，复读与替换之间没有跨进程锁。
+
+stdout 为 JSON 行：逐文件只列相对路径、状态计数；末行汇总按原裸标签分组的 `candidate / refillable / refilled / missing / still_bare / rejected / api_failed`、涉及会话与会话日数。不输出消息正文或 API 错误响应；可用 PowerShell `Tee-Object` 存到工作区侧报告，报告路径本身可能含会话名，勿公开。dry-run 的 refillable 表示已通过写前检查，refilled 仅统计实际写入。scan-only 不检查 API 可恢复性。坏 JSON 另列相对路径与通用错误码。
+
+退出码：`0` = 本模式完成且无异常/剩余（scan-only 的候选、dry-run 的可回填项不算异常）；`1` = 文件不可读、身份/字节/备份校验拒绝或 API 失败，可能已有其他文件成功写入；`2` = 配置、路径或参数导致启动失败；`3` = 无真失败，但存在 API 已无消息或重取后仍裸（含身份成立但 base 不在 48/49 的范围外类型），保持原样待审查。优先级为 2（启动）→1→3→0。中断后原命令续跑，已回填项不再命中；候选全部可恢复的根第二遍候选为零、零请求、零写入。missing/still_bare/rejected 未被修改，仍会被重试；不创建状态文件把它们伪装成已完成。
+
+恢复：停止其他写入程序，把回退目录每个文件复制回 raw 下相同相对路径；只还原备份中存在的文件。PowerShell 示例（`$RawRoot`、`$BackupRoot` 使用本次参数）：
+
+```powershell
+Get-ChildItem -LiteralPath $BackupRoot -Recurse -File | ForEach-Object {
+    $relative = [IO.Path]::GetRelativePath($BackupRoot, $_.FullName)
+    $target = Join-Path $RawRoot $relative
+    New-Item -ItemType Directory -Force (Split-Path -Parent $target) | Out-Null
+    Copy-Item -LiteralPath $_.FullName -Destination $target -Force
+}
+```
+
+**processed 采用分离重建**：本工具不写 processed 或既有 insights。processed 由 `archiving.archive()` 调用 preprocessing 后按会话日渲染，日常轮转再合并到 archived/processed；Diary、总结与 sidecar 消费它。群聊筛选、压缩、OCR 和历史渲染差异意味着无法保证整份重新渲染只改候选行。需要刷新时，仅对报告中的已改 raw 文件在新的输出根调用 `preprocess_export(..., image_mode="preserve_paths")`，配置显式关闭 `image_vision.enabled`，再调用 `archive([export], output_root=<独立目录>, clear_first=False)`；保留 paths 引用，不运行语音 fallback、日常或摄取入口。先审查隔离输出，再逐个决定怎样替换已有 processed；图片 OCR 文本可能与 preserve_paths 不同，禁止直接整树覆盖旧归档。raw 的回填不自动更新已经生成的日记。
+
+契约回归：`tests/test_refill_appmsg_content.py` 覆盖上述写前守卫、API 隔离、字节保真、备份与幂等；入口路由由 `tests/test_skill_layout.py` 覆盖。

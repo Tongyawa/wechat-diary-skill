@@ -19,6 +19,7 @@ PYTHON_ENTRYPOINTS = {
     "export_bulk_raw.py",
     "backfill_group_names.py",
     "repair_group_names.py",
+    "refill_appmsg_content.py",
     "doctor.py",
     "archive_exports.py",
     "init_worktree_config.py",
