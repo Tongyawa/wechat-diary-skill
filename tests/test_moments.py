@@ -12,7 +12,8 @@ from wechat_diary_core.preprocessing.moments import (
     load_moments_export,
     render_moments_flow,
 )
-from wechat_diary_core.preprocessing.image_vision import MOMENT_FIXED_USER_INSTRUCTION
+from wechat_diary_core.preprocessing.vision_transport import VisionResponse
+from test_vision_contract import response
 
 
 def _moments_payload(posts: list[dict], usernames: list[str] | None = None) -> dict:
@@ -66,7 +67,8 @@ class MomentsTests(unittest.TestCase):
             raw = root / "raw" / "朋友圈导出_2026-05-15"
             image = raw / "media" / "p1.jpg"
             image.parent.mkdir(parents=True)
-            image.write_bytes(b"real-shape-image-placeholder")
+            from PIL import Image
+            Image.new("RGB", (600, 900)).save(image)
             _write_moments_file(
                 raw,
                 "朋友圈.json",
@@ -77,29 +79,31 @@ class MomentsTests(unittest.TestCase):
                 f'''[paths]\nraw="{(root / 'raw').as_posix()}"\nprocessed="{(root / 'processed').as_posix()}"\narchived="{(root / 'archived').as_posix()}"\n[preprocessing.image_vision]\nenabled=true''',
                 encoding="utf-8",
             )
+            from dataclasses import replace
             cfg = load_config(config_path)
+            cfg = replace(cfg, preprocessing=replace(cfg.preprocessing, image_label=replace(cfg.preprocessing.image_label, enabled=False)))
 
             class Describer:
-                def describe(
+                def request(
                     self,
-                    image_path: Path,
+                    image_paths,
                     context_text: str,
-                    *,
-                    fixed_instruction: str,
-                ) -> str:
+                    system,
+                    schema,
+                    **kwargs,
+                ):
                     self.context = context_text
-                    self.fixed_instruction = fixed_instruction
-                    return "朋友圈视觉描述"
+                    return VisionResponse(response(1, gist="朋友圈视觉描述"))
 
             describer = Describer()
             written = archive_moments_for(["wxid_target"], config=cfg, subroot="朋友圈_自己", vision_describer=describer)
             body = written[0].read_text(encoding="utf-8")
             token = next(line for line in body.splitlines() if line.startswith("[图片："))
-            self.assertEqual(token, "[图片：media/p1.jpg｜朋友圈视觉描述]")
+            self.assertEqual(token, "[图片：media/p1.jpg｜照片｜朋友圈视觉描述]")
             path_text = token.removeprefix("[图片：").split("｜", 1)[0]
             self.assertTrue((written[0].parent / path_text).is_file())
-            self.assertEqual(describer.context, "[发图人]：动态正文")
-            self.assertEqual(describer.fixed_instruction, MOMENT_FIXED_USER_INSTRUCTION)
+            self.assertIn("【语境·组1】本条动态正文（[发图人] 发布）：\n动态正文", describer.context)
+            self.assertIn("本次共 1 张", describer.context)
 
     def test_load_moments_export_returns_filter_and_posts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

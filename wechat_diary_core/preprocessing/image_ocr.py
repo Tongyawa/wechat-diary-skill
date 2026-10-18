@@ -15,7 +15,7 @@ from .image_vision import VisionDescriber, annotate_vision_descriptions, session
 
 LOGGER = logging.getLogger(__name__)
 Message = dict[str, Any]
-IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"}
 ImageMode = Literal["ocr_inline", "preserve_paths"]
 
 
@@ -115,6 +115,8 @@ def annotate_image_messages(
             cache_root,
             _message_image_paths,
             describer=vision_describer,
+            label_settings=settings.image_label,
+            session=session,
         )
 
     if image_mode == "preserve_paths":

@@ -102,18 +102,38 @@ image_ocr_max_inline_chars = 80
 # 图片视觉描述会把图片与脱敏后的相邻对话上传第三方；默认关闭。
 [preprocessing.image_vision]
 enabled = false
+backend = "cheap-api"                    # "codex" uses the installed Codex CLI; no automatic routing in this version
 provider = "doubao"
 model = "pro"
+effort = "medium"                       # Codex only; cheap-api uses its resolved service ID and sends no explicit effort
 max_inline_chars = 1000
-concurrency = 4
-timeout_sec = 60
-max_tokens = 2000
+concurrency = 4                         # upper bound; the current export service dispatches packs serially
+timeout_sec = 300
+max_tokens = 4000
 empty_retry_max_tokens = 16000
 cache_dir = ""
 skip_usernames = []
-context_messages = 2
+context_messages = 3
 anonymize_speakers = true
 include_moment_comments = false
+group_gap_minutes = 5
+group_max = 9
+pack_max = 0                            # 0 = codex 8 / cheap-api 1; a single oversized group stays intact
+force_single = false                    # explicit diagnostic mode; normally keep groups intact
+codex_command = "codex"                 # native executable or a JS entrypoint; machine path belongs in private config
+allow_image_sha256 = []                 # explicitly unlock individual sensitive images
+allow_usernames = []                    # explicitly unlock a session; never implicit in provider selection
+
+# Extra external transfer: 512px thumbnails, without any conversation context.
+# This layer only runs when image_vision.enabled=true. Failed labels are retried
+# on the next run; they do not block transcription. Default: Codex Luna / low.
+[preprocessing.image_label]
+enabled = true
+engine = "codex:luna/low"
+batch_size = 50
+thumbnail_px = 512
+label_version = "label-v2"
+timeout_sec = 480
 # Install OCR dependency with: python -m pip install -r requirements.txt
 
 [preprocessing.group_context_window]

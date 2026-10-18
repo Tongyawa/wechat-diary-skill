@@ -141,25 +141,7 @@ def _preprocess_export(
     cfg = config or load_config()
     path = Path(source_path)
     data = load_chat_export(path)
-    messages = list(data.get("messages") or [])
-    messages = clean_messages(
-        messages,
-        cfg.preprocessing,
-        pat_keep_names=cfg.preprocessing.group_context_window.anchor_keywords,
-        source_path=path,
-    )
-
-    session_type = str(data.get("session", {}).get("type") or "")
-    window = cfg.preprocessing.group_context_window
-    if session_type == "群聊" and window.enabled:
-        messages = filter_group_context_window(
-            messages,
-            messages_before=window.messages_before,
-            messages_after=window.messages_after,
-            time_window_minutes=window.time_window_minutes,
-            self_wxids=cfg.user.self_wxids,
-            anchor_keywords=window.anchor_keywords,
-        )
+    messages = prepare_chat_messages(data, cfg, source_path=path)
 
     messages = annotate_image_messages(
         messages,
@@ -178,6 +160,22 @@ def _preprocess_export(
     processed["messages"] = messages
     processed.setdefault("session", {})["messageCount"] = len(messages)
     return ProcessedChatExport(source_path=path, source_folder=path.parent.name, data=processed)
+
+
+def prepare_chat_messages(data: dict[str, Any], config: Config, *, source_path: Path | None = None) -> list[Message]:
+    """One canonical file's immutable visual input, before OCR and compression.
+
+    Both export and an offline consumer must use this exact cleaning/window step.
+    """
+    settings = config.preprocessing
+    window = settings.group_context_window
+    messages = clean_messages(list(data.get("messages") or []), settings,
+                              pat_keep_names=window.anchor_keywords, source_path=source_path)
+    if str(data.get("session", {}).get("type") or "") == "群聊" and window.enabled:
+        messages = filter_group_context_window(messages, messages_before=window.messages_before,
+            messages_after=window.messages_after, time_window_minutes=window.time_window_minutes,
+            self_wxids=config.user.self_wxids, anchor_keywords=window.anchor_keywords)
+    return messages
 
 
 def resolve_reply_context(messages: list[Message]) -> list[Message]:

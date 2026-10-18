@@ -78,15 +78,26 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "model": "pro",
             "max_inline_chars": 1000,
             "concurrency": 4,
-            "timeout_sec": 60,
-            "max_tokens": 2000,
+            "timeout_sec": 300,
+            "max_tokens": 4000,
             "empty_retry_max_tokens": 16000,
             "cache_dir": "",
             "skip_usernames": [],
-            "context_messages": 2,
+            "context_messages": 3,
             "anonymize_speakers": True,
             "include_moment_comments": False,
+            "backend": "cheap-api",
+            "effort": "medium",
+            "group_gap_minutes": 5,
+            "group_max": 9,
+            "pack_max": 0,
+            "force_single": False,
+            "codex_command": "codex",
+            "allow_image_sha256": [],
+            "allow_usernames": [],
         },
+        "image_label": {"enabled": True, "engine": "codex:luna/low", "batch_size": 50,
+                        "thumbnail_px": 512, "label_version": "label-v2", "timeout_sec": 480},
         "group_context_window": {
             "enabled": True,
             "messages_before": 3,
@@ -219,6 +230,16 @@ class GroupContextWindowConfig:
 
 
 @dataclass(frozen=True)
+class ImageLabelConfig:
+    enabled: bool = True
+    engine: str = "codex:luna/low"
+    batch_size: int = 50
+    thumbnail_px: int = 512
+    label_version: str = "label-v2"
+    timeout_sec: float = 480
+
+
+@dataclass(frozen=True)
 class ImageVisionConfig:
     enabled: bool
     provider: str
@@ -233,6 +254,15 @@ class ImageVisionConfig:
     context_messages: int
     anonymize_speakers: bool
     include_moment_comments: bool
+    backend: str = "cheap-api"
+    effort: str = "medium"
+    group_gap_minutes: float = 5
+    group_max: int = 9
+    pack_max: int = 0
+    force_single: bool = False
+    codex_command: str = "codex"
+    allow_image_sha256: list[str] = field(default_factory=list)
+    allow_usernames: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -245,6 +275,7 @@ class PreprocessingConfig:
     image_ocr_max_inline_chars: int
     image_vision: ImageVisionConfig
     group_context_window: GroupContextWindowConfig
+    image_label: ImageLabelConfig = field(default_factory=ImageLabelConfig)
 
 
 @dataclass(frozen=True)
@@ -420,10 +451,10 @@ def _build_config(raw: dict[str, Any], base_dir: Path, *, source: dict[str, Any]
         raise ValueError("asr worker timeout 必须大于 0 秒")
     image_vision_max_inline_chars = int(image_vision.get("max_inline_chars", 1000))
     image_vision_concurrency = int(image_vision.get("concurrency", 4))
-    image_vision_timeout_sec = float(image_vision.get("timeout_sec", 60))
-    image_vision_max_tokens = int(image_vision.get("max_tokens", 2000))
+    image_vision_timeout_sec = float(image_vision.get("timeout_sec", 300))
+    image_vision_max_tokens = int(image_vision.get("max_tokens", 4000))
     image_vision_retry_tokens = int(image_vision.get("empty_retry_max_tokens", 16000))
-    image_vision_context_messages = int(image_vision.get("context_messages", 2))
+    image_vision_context_messages = int(image_vision.get("context_messages", 3))
     if image_vision_max_inline_chars < 1:
         raise ValueError("preprocessing.image_vision.max_inline_chars 必须大于等于 1")
     if image_vision_concurrency < 1:
@@ -437,10 +468,35 @@ def _build_config(raw: dict[str, Any], base_dir: Path, *, source: dict[str, Any]
     explicit_vision = ((source.get("preprocessing") or {}).get("image_vision") or {})
     image_vision_provider = str(image_vision.get("provider") or "doubao").strip()
     image_vision_model = str(image_vision.get("model") or "pro").strip()
+    vision_backend = str(image_vision.get("backend", "cheap-api"))
+    if vision_backend not in {"cheap-api", "codex"}:
+        raise ValueError("image_vision.backend 必须是 cheap-api 或 codex")
+    if vision_backend == "codex":
+        if "model" not in explicit_vision:
+            image_vision_model = "gpt-6.1-sol"
+        if "timeout_sec" not in explicit_vision:
+            image_vision_timeout_sec = 480
+    elif "timeout_sec" not in explicit_vision and "kimi" in image_vision_model.casefold():
+        image_vision_timeout_sec = 600
+    label = preprocessing.get("image_label", {})
+    if str(label.get("engine", "codex:luna/low")) != "codex:luna/low":
+        raise ValueError("image_label.engine 本版仅支持 codex:luna/low")
+    if str(label.get("label_version", "label-v2")) != "label-v2":
+        raise ValueError("image_label.label_version 与内置提示词不一致")
+    for key, default in (("batch_size", 50), ("thumbnail_px", 512)):
+        if int(label.get(key, default)) < 1:
+            raise ValueError(f"image_label.{key} 必须大于 0")
+    if float(label.get("timeout_sec", 480)) <= 0:
+        raise ValueError("image_label.timeout_sec 必须大于 0")
+    if (int(image_vision.get("group_max", 9)) < 1 or int(image_vision.get("pack_max", 0)) < 0
+            or float(image_vision.get("group_gap_minutes", 5)) < 0):
+        raise ValueError("image_vision 成组与装包参数无效")
     if "max_tokens" not in explicit_vision and (
         image_vision_provider.casefold() == "jisuan" and "qwen" in image_vision_model.casefold()
     ):
         image_vision_max_tokens = 8000
+    if "max_tokens" not in explicit_vision and "kimi" in image_vision_model.casefold():
+        image_vision_max_tokens = 16000
     if (
         image_vision_provider.casefold() == "jisuan"
         and "qwen" in image_vision_model.casefold()
@@ -538,6 +594,20 @@ def _build_config(raw: dict[str, Any], base_dir: Path, *, source: dict[str, Any]
                 context_messages=image_vision_context_messages,
                 anonymize_speakers=bool(image_vision.get("anonymize_speakers", True)),
                 include_moment_comments=bool(image_vision.get("include_moment_comments", False)),
+                backend=vision_backend,
+                effort=str(image_vision.get("effort", "medium")),
+                group_gap_minutes=float(image_vision.get("group_gap_minutes", 5)),
+                group_max=int(image_vision.get("group_max", 9)),
+                pack_max=int(image_vision.get("pack_max", 0)),
+                force_single=bool(image_vision.get("force_single", False)),
+                codex_command=str(image_vision.get("codex_command", "codex")),
+                allow_image_sha256=[str(x) for x in image_vision.get("allow_image_sha256", [])],
+                allow_usernames=[str(x) for x in image_vision.get("allow_usernames", [])],
+            ),
+            image_label=ImageLabelConfig(
+                enabled=bool(label.get("enabled", True)), engine=str(label.get("engine", "codex:luna/low")),
+                batch_size=int(label.get("batch_size", 50)), thumbnail_px=int(label.get("thumbnail_px", 512)),
+                label_version=str(label.get("label_version", "label-v2")), timeout_sec=float(label.get("timeout_sec", 480)),
             ),
             group_context_window=GroupContextWindowConfig(
                 enabled=bool(group_window["enabled"]),

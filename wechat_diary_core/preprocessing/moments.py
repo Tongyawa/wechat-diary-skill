@@ -137,6 +137,7 @@ def archive_moments_for(
         cfg.preprocessing.image_vision,
         cfg.paths.archived,
         describer=vision_describer,
+        label_settings=cfg.preprocessing.image_label,
     )
     by_day = _group_posts_by_day(all_posts)
     written: list[Path] = []
@@ -163,7 +164,7 @@ def _render_single_post(post: Post) -> str:
             lines.append(f"[视频：{local_path}]")
         else:
             description = _safe(media.get("image_vision_inline"))
-            suffix_text = f"｜{description.replace('｜', ' ')}" if description else ""
+            suffix_text = f"｜{description}" if description else ""
             lines.append(f"[图片：{local_path}{suffix_text}]")
 
     for comment in post.get("comments") or []:
