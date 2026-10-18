@@ -14,7 +14,7 @@ import xml.etree.ElementTree as ET
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 from ...media_store import (
@@ -39,6 +39,85 @@ class ImageMediaStats:
     missing_video_md5: int = 0
     missing_video_files: int = 0
     extension_conflicts: int = 0
+    rejected_media_collisions: int = 0
+    rejected_media_type_mismatches: int = 0
+
+
+MEDIA_TYPE_CLASSES = {
+    "image": "images", "voice": "voices", "video": "videos", "emoji": "emojis",
+}
+_LOCAL_TYPE_MEDIA_CLASSES = {3: "images", 34: "voices", 43: "videos", 47: "emojis"}
+
+
+class _CheckedMediaMessage(dict[str, Any]):
+    """In-memory decision that survives page concatenation and day splitting.
+
+    Attributes deliberately stay out of the API mapping and canonical JSON.
+    """
+
+    def __init__(self, message: Mapping[str, Any], rejection: str = "") -> None:
+        super().__init__(message)
+        self.media_rejection = rejection
+
+
+def guard_message_page(messages: Sequence[Mapping[str, Any]]) -> list[_CheckedMediaMessage]:
+    """Check one actual API response before concatenating pages or sorting.
+
+    Previously checked records may be passed again after splitting by date.
+    A plain sequence supplied directly to the mapper represents one API page.
+    """
+
+    if all(isinstance(message, _CheckedMediaMessage) for message in messages):
+        return list(messages)
+    if any(isinstance(message, _CheckedMediaMessage) for message in messages):
+        raise ValueError("不能混合已检查消息与未检查的 API 页")
+    checked: list[_CheckedMediaMessage] = []
+    groups: dict[tuple[str, str], list[_CheckedMediaMessage]] = {}
+    for message in messages:
+        base, _ = unpack_local_type(int(message.get("localType") or 0))
+        expected_class = MEDIA_TYPE_CLASSES.get(message.get("mediaType"))
+        mismatch = expected_class is not None and _LOCAL_TYPE_MEDIA_CLASSES.get(base) != expected_class
+        item = _CheckedMediaMessage(message, "type" if mismatch else "")
+        checked.append(item)
+        path = str(message.get("mediaLocalPath") or "")
+        local_id = message.get("localId")
+        if path and local_id not in (None, ""):
+            groups.setdefault((str(local_id), path), []).append(item)
+
+    for (_, path), group in groups.items():
+        if len(group) < 2:
+            continue
+        candidates = [message for message in group if not message.media_rejection]
+        if len(candidates) <= 1:
+            continue
+        bases = {unpack_local_type(int(message.get("localType") or 0))[0] for message in candidates}
+        # Missing/unknown mediaType is not a type mismatch, but cannot establish
+        # a unique media class for a mixed group. Never guess its owner.
+        identities = [_message_media_md5(message) for message in candidates]
+        stem = PureWindowsPath(path).stem.lower()
+        comparable = (
+            len(bases) == 1 and bases <= {3, 47}
+            and re.fullmatch(r"[0-9a-f]{32}", stem) is not None
+            and all(identities)
+        )
+        for message, identity in zip(candidates, identities):
+            if not comparable or identity != stem:
+                message.media_rejection = "collision"
+    return checked
+
+
+def _message_media_md5(message: Mapping[str, Any]) -> str:
+    base, _ = unpack_local_type(int(message.get("localType") or 0))
+    tag = {3: "img", 47: "emoji"}.get(base)
+    if tag is None:
+        return ""
+    try:
+        root = ET.fromstring(_xml_payload(message.get("rawContent")))
+    except (ET.ParseError, TypeError, UnicodeEncodeError, ValueError):
+        return ""
+    element = root if root.tag == tag else root.find(f".//{tag}")
+    value = str(element.get("md5") or "").strip().lower() if element is not None else ""
+    return value if re.fullmatch(r"[0-9a-f]{32}", value) else ""
 
 
 @dataclass(frozen=True)
@@ -130,7 +209,7 @@ def map_session_json(
     nickname = str(session_contact.get("nickname") or display_name)
     remark = str(session_contact.get("remark") or "")
     ordered_messages = sorted(
-        messages,
+        guard_message_page(messages),
         key=lambda message: (
             _message_sort_value(message.get("createTime")),
             _message_sort_value(message.get("localId")),
@@ -753,6 +832,13 @@ def _localize_media(
     require_media: bool,
     image_media_stats: ImageMediaStats,
 ) -> _LocalizedMedia | None:
+    rejection = getattr(message, "media_rejection", "")
+    if rejection:
+        if rejection == "type":
+            image_media_stats.rejected_media_type_mismatches += 1
+        else:
+            image_media_stats.rejected_media_collisions += 1
+        return None
     if base not in {3, 34, 43, 47} or media_dir is None:
         return None
     source_text = str(message.get("mediaLocalPath") or "")
@@ -773,7 +859,7 @@ def _localize_media(
         elif base == 43:
             image_media_stats.missing_video_files += 1
         return None
-    media_class = {3: "images", 34: "voices", 43: "videos", 47: "emojis"}[base]
+    media_class = _LOCAL_TYPE_MEDIA_CLASSES[base]
     stored = store_media_file(source, media_dir, media_class)
     if stored.extension_conflict:
         image_media_stats.extension_conflicts += 1

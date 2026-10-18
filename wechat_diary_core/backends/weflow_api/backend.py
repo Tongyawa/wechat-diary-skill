@@ -485,6 +485,7 @@ class WeflowApiBackend:
                         interval_completed = True
                         messages_written += interval_message_count
                         files_written.extend(_unique_paths(interval_files))
+                        self._report_media_rejections(talker, display_name, image_media_stats)
                         if image_media_stats.missing_image_paths or image_media_stats.missing_image_files:
                             marker = (
                             f"export_chat_image_media:{talker}:"
@@ -691,6 +692,7 @@ class WeflowApiBackend:
                         f"有 md5 但本地文件不存在 {image_media_stats.missing_video_files} 条。已继续导出。",
                         file=sys.stderr,
                     )
+                self._report_media_rejections(talker, display_name, image_media_stats)
                 published_sessions += 1
                 self._record_session_success(state, talker, display_name)
             except Exception as exc:
@@ -754,6 +756,21 @@ class WeflowApiBackend:
 
         if self.partial_failures and (successful_requests == 0 or (messages_found > 0 and published_sessions == 0)):
             raise RuntimeError("全部会话请求失败，未发布任何 canonical raw")
+
+    def _report_media_rejections(self, talker: str, display_name: str, stats: ImageMediaStats) -> None:
+        if not (stats.rejected_media_collisions or stats.rejected_media_type_mismatches):
+            return
+        self.partial_failures.append(
+            f"export_chat_media_rejected:{talker}:"
+            f"collision={stats.rejected_media_collisions}:"
+            f"type_mismatch={stats.rejected_media_type_mismatches}"
+        )
+        print(
+            f"[WARN] 会话「{_readable_error_summary(display_name, limit=60)}」已拒绝媒体引用："
+            f"碰撞组归属不符或无法判定 {stats.rejected_media_collisions} 条；"
+            f"媒体类别不符 {stats.rejected_media_type_mismatches} 条。已继续导出。",
+            file=sys.stderr,
+        )
 
     def _group_members_or_fallback(
         self,

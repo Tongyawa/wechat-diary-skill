@@ -12,6 +12,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+from .mapper import guard_message_page
+
 
 MAX_HTTP_ERROR_BODY_BYTES = 64 * 1024
 MAX_HTTP_ERROR_DETAIL_CHARS = 500
@@ -148,7 +150,7 @@ class WeflowApiClient:
                     )
                 page_keys.add(key)
             seen.update(page_keys)
-            messages.extend(page)
+            messages.extend(guard_message_page(page))
 
             _validate_page_count(payload, page, "/api/v1/messages")
 

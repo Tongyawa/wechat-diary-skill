@@ -71,6 +71,8 @@ class ExportOnDemandResult:
     missing_video_md5: int = 0
     missing_video_files: int = 0
     image_backfill: ImageBackfillResult = field(default_factory=ImageBackfillResult)
+    rejected_media_collisions: int = 0
+    rejected_media_type_mismatches: int = 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -161,6 +163,13 @@ def main(argv: list[str] | None = None) -> int:
         print(
             f"API 图片（补前诊断）：缺少本地路径 {result.missing_image_paths} 条；"
             f"路径指向的文件不存在 {result.missing_image_files} 条。",
+            file=sys.stderr,
+        )
+    if result.rejected_media_collisions or result.rejected_media_type_mismatches:
+        print(
+            "[WARN] API 媒体引用已拒绝（补前诊断）："
+            f"碰撞组归属不符或无法判定 {result.rejected_media_collisions} 条；"
+            f"媒体类别不符 {result.rejected_media_type_mismatches} 条。导出已继续。",
             file=sys.stderr,
         )
     print_backfill_result(
@@ -340,6 +349,8 @@ def export_on_demand(
         missing_video_md5=image_media_stats.missing_video_md5,
         missing_video_files=image_media_stats.missing_video_files,
         image_backfill=image_backfill,
+        rejected_media_collisions=image_media_stats.rejected_media_collisions,
+        rejected_media_type_mismatches=image_media_stats.rejected_media_type_mismatches,
     )
 
 
