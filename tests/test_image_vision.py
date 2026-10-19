@@ -102,6 +102,24 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(self.successes()[0]["unit"]["group_size"], 2)
         self.annotate(deepcopy(messages), FakeTransport(lambda *args: self.fail("strong hit must make zero requests")))
 
+    def test_full_group_resend_upgrades_weak_hits_without_changing_old_context_cache(self):
+        messages = self.messages(3)
+        old = self.annotate(deepcopy(messages[:2]), FakeTransport())
+        files = list((self.root / "archive/_image-descriptions").glob("[0-9a-f][0-9a-f]/*/*.json"))
+        old_bytes = {p: p.read_bytes() for p in files}
+        fake = FakeTransport(lambda paths, *args: VisionResponse(response(len(paths), gist="三张不同颜色的照片")))
+        result = self.annotate(deepcopy(messages), fake)
+        self.assertNotEqual(result[0]["image_context_sha256"], old[0]["image_context_sha256"])
+        self.assertEqual([len(call["paths"]) for call in fake.calls], [3])
+        for item in result:
+            self.assertNotIn("weak_hit", item)
+            self.assertNotIn("image_vision_pending", item)
+            self.assertEqual(item["image_vision"]["gist"], "三张不同颜色的照片")
+        self.assertEqual(len(self.successes()), 5)
+        for path, content in old_bytes.items():
+            self.assertEqual(path.read_bytes(), content)
+        self.annotate(deepcopy(messages), FakeTransport(lambda *args: self.fail("upgraded group must be strong hits")))
+
     def test_weak_hit_no_request_model_and_prompt_versions_do_not_cross(self):
         messages = self.messages(1)
         self.annotate(deepcopy(messages), FakeTransport())
@@ -186,7 +204,7 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(len(labeler.calls), 1)
         self.assertEqual(len(rerun.calls[0]["paths"]), 2)
         self.assertIn("image_vision", result[0])
-        self.assertTrue(result[1]["weak_hit"])
+        self.assertNotIn("weak_hit", result[1])
 
     def test_all_sensitive_and_skip_or_disabled_are_zero_formal_or_all_calls(self):
         messages = self.messages(1)

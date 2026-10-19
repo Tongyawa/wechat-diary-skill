@@ -210,7 +210,7 @@ class VisionService:
             return "" if response_failed(response) else response.content
 
         for (gi, group, item), record in zip(flat, records):
-            if item.entry is not None:  # Full-group resend must not overwrite hits.
+            if item.entry is not None and not item.weak_hit:  # Preserve strong hits; refresh weak ones.
                 continue
             cached, weak = self.store.lookup(item.sha256, group.context_sha256, self.model)
             if cached and not weak:

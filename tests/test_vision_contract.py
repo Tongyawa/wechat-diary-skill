@@ -28,7 +28,7 @@ def response(count=1, **values):
 
 class ContractTests(unittest.TestCase):
     def test_versioned_prompt_and_label_hashes_have_mutation_controls(self):
-        for value, expected in ((SYSTEM_PROMPT, "fe8eadbfaa77"), (LABEL_PROMPT, "00400b363161")):
+        for value, expected in ((SYSTEM_PROMPT, "b5aa1c0f78e0"), (LABEL_PROMPT, "00400b363161")):
             self.assertEqual(hashlib.sha256(value.encode()).hexdigest()[:12], expected)
             self.assertNotEqual(hashlib.sha256((value + "错").encode()).hexdigest()[:12], expected)
         self.assertEqual(hashlib.sha256(json.dumps(LABEL_SCHEMA, sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:12], "78699661e5d8")
