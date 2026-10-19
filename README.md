@@ -230,7 +230,7 @@ daily = ["wechat-diary-skill"]
 
 `backend="cheap-api"` 兼容现有 provider/model 配置；选 `backend="codex"` 时使用具体模型名（如 `gpt-6.1-sol`）和 `effort`，并配置已有的原生 CLI 或 JS 入口 `codex_command`。缺少 CLI 时会告警降级，不会自动安装。两种接入都只接受经过 JSON、附件数和 slot 校验的描述；失败不写成功缓存，包失败按组重试。此版本不包含后台续跑、agy、自动路由或开机自启。
 
-缓存默认在 `[paths].archived/_image-descriptions/`，自定义 `cache_dir` 也必须位于 archived 下；图片字节、组语境、提示词版本与模型身份共同决定命中。Codex 身份包含具体模型与强度；cheap-api 使用目录解析后的服务 ID，现有 CLI 不传显式 effort。命中直接渲染；同图不同语境可借旧记录并标记待补。组内部分失败后的补跑保留完整组重新发送，只写缺失条目，已有条目不覆盖。近重复 pHash 只记录信号，不合并或跳过图片；依赖不可用时单次告警并继续转写。显式旧配置会盖过新默认值，启用前应核对 `context_messages`、超时与 token 预算，详见 `config.example.toml`。
+缓存默认在 `[paths].archived/_image-descriptions/`，自定义 `cache_dir` 也必须位于 archived 下；图片字节、组语境、提示词版本与模型身份共同决定命中。Codex 身份包含具体模型与强度；cheap-api 使用目录解析后的服务 ID，现有 CLI 不传显式 effort。命中直接渲染；同图不同语境可借旧记录并标记待补。组内部分失败后的补跑保留完整组重新发送，保留已有强命中；弱命中成功重转后升级为当前语境的强命中，旧语境缓存保持原样。近重复 pHash 只记录信号，不合并或跳过图片；依赖不可用时单次告警并继续转写。显式旧配置会盖过新默认值，启用前应核对 `context_messages`、超时与 token 预算，详见 `config.example.toml`。
 
 公开仓库单元测试：
 
