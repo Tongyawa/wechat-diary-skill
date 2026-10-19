@@ -4,6 +4,7 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import replace
 from datetime import datetime, timezone
+from functools import cached_property
 import logging
 from pathlib import Path
 import subprocess
@@ -38,9 +39,19 @@ class VisionService:
         self.counts = Counter()
         self.provider_unavailable = False
 
-    @property
+    @cached_property
     def model(self):
-        return self.settings.model + "/" + self.settings.effort
+        if self.settings.backend == "codex":
+            return self.settings.model + "/" + self.settings.effort
+        identity = getattr(self.transport, "model_identity", None)
+        if not callable(identity):
+            # Preserve the existing request-only custom-describer interface.
+            # The production CheapApiTransport supplies a concrete identity.
+            return self.settings.model + "/" + self.settings.effort
+        value = identity()
+        if not isinstance(value, str) or not value.strip():
+            raise ProviderUnavailable("cheap-api concrete model identity unavailable")
+        return value
 
     def labels(self, items):
         if not self.label_settings.enabled:

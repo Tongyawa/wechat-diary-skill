@@ -36,9 +36,13 @@ def coarse(slot=1, **kwargs):
 
 
 class FakeTransport:
-    def __init__(self, handler=None):
+    def __init__(self, handler=None, model="fake-vision-model"):
         self.calls = []
         self.handler = handler
+        self.model = model
+
+    def model_identity(self):
+        return self.model
 
     def request(self, paths, context, system, schema=None, *, max_tokens=None):
         self.calls.append(dict(paths=list(paths), context=context, system=system, schema=schema,
@@ -261,6 +265,22 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(len(fake.calls), 1)
         self.assertEqual(len(logs.output), 1)
         self.assertEqual(len(self.successes()), 0)
+
+    def test_cheap_cache_uses_concrete_model_across_aliases_and_separates_changed_model(self):
+        settings = replace(self.settings, backend="cheap-api", provider="jisuan", model="alias-a")
+        messages = self.messages(1)
+        first = FakeTransport(model="concrete-vision-model")
+        self.annotate(deepcopy(messages), first, settings=settings)
+        self.assertEqual(self.successes()[0]["model"], "concrete-vision-model")
+        cache = {p: p.read_bytes() for p in (self.root / "archive/_image-descriptions").glob("[0-9a-f][0-9a-f]/*/*.json")}
+        same = FakeTransport(lambda *args: self.fail("same concrete model must hit despite alias change"), model="concrete-vision-model")
+        self.annotate(deepcopy(messages), same, settings=replace(settings, model="alias-b"))
+        self.assertEqual(same.calls, [])
+        self.assertTrue(all(p.read_bytes() == raw for p, raw in cache.items()))
+        changed = FakeTransport(model="another-concrete-model")
+        self.annotate(deepcopy(messages), changed, settings=settings)
+        self.assertEqual(len(changed.calls), 1)
+        self.assertEqual({x["model"] for x in self.successes()}, {"concrete-vision-model", "another-concrete-model"})
 
     def test_qwen_budget_retry_is_shared_not_nested(self):
         fake = FakeTransport(lambda *args: VisionResponse("", "length"))
