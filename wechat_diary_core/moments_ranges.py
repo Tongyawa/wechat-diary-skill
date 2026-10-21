@@ -18,12 +18,21 @@ RANGE_PATTERN = re.compile(
     r"^朋友圈导出_区间_(?:[0-9]{8}-[0-9]{8}|空)_([0-9a-f]{8})"
     r"(?:_保留_[0-9a-f]{32})?\.json$"
 )
+DAILY_PATTERN = re.compile(
+    r"^朋友圈导出_[0-9]{8}_([0-9a-f]{8})(?:_保留_[0-9a-f]{32})?\.json$"
+)
 REVIEW_EXIT_CODE = 3
 
 
 def range_digest(path: Path) -> str | None:
     match = RANGE_PATTERN.fullmatch(path.name)
     return match.group(1) if match else None
+
+
+def moments_digest(path: Path) -> str | None:
+    """Coverage supports daily and range names; range discovery stays unchanged."""
+    match = DAILY_PATTERN.fullmatch(path.name)
+    return match.group(1) if match else range_digest(path)
 
 
 @dataclass(frozen=True)
@@ -171,7 +180,7 @@ def compare_coverage(old: Path, new: Path, *, new_media_root: Path | None = None
     Staged JSON references are already anchored to its eventual publication root.
     Digest and the actual account set must both match; dates never prove coverage.
     """
-    if range_digest(old) is None or range_digest(old) != range_digest(new):
+    if moments_digest(old) is None or moments_digest(old) != moments_digest(new):
         return Coverage(("账号 digest 不同或不是区间文件",))
     try:
         previous, incoming = _read(old), _read(new)

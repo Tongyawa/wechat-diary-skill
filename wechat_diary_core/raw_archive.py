@@ -21,7 +21,7 @@ import uuid
 from .archiving import strip_date_suffix
 from .chat_identity import (
     _collision_failure_reason, _is_chat_json, _read_stored_session,
-    _chat_regression_reason, compare_chat_identities,
+    _chat_regression_reason, compare_chat_identities, _moments_collision_kind,
 )
 from .media_store import MEDIA_STORE_NAME, is_media_reference
 from .moments_ranges import range_digest, plan_range_publication
@@ -922,6 +922,7 @@ def _final_target_check(plan: RawIngestPlan, action: RawAction, *, incoming_byte
                         refuse('overwrite_guard')
                         return
     else:
+        moments_kind = _moments_collision_kind(action.source, action.target, incoming, old)
         decision = _collision_failure_reason(action.source, evidence(action.target),
             range_media_root=plan.archive if plan.range_initial is not None else None,
             range_media_objects=plan.media_objects)
@@ -934,12 +935,15 @@ def _final_target_check(plan: RawIngestPlan, action: RawAction, *, incoming_byte
             if guard not in action.guards:
                 action.guards.append(guard)
             if not force or plan.policy != 'bulk':
-                refuse('overwrite_guard')
+                refuse(reason if moments_kind == "daily" else 'overwrite_guard')
                 return
+        covered_daily_moments = moments_kind == "daily" and decision is None
         record = {'path': action.target.relative_to(plan.archive).as_posix(),
                   'sha256': target_sha, 'action': 'replace', 'coverageRequired': False,
-                  'backupRequired': True, 'backupBasis': 'non_chat_replacement',
-                  'coverage': {'covered': False, 'basis': 'byte_backup'}}
+                  'backupRequired': not covered_daily_moments,
+                  'backupBasis': 'moments_coverage' if covered_daily_moments else 'non_chat_replacement',
+                  'coverage': {'covered': covered_daily_moments,
+                               'basis': 'moments_coverage' if covered_daily_moments else 'byte_backup'}}
     if action.target not in records:
         action.existing.append(record)
     elif record is not records[action.target]:

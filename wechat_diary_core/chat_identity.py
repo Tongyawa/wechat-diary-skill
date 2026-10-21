@@ -228,6 +228,18 @@ def _files_equal(left: Path, right: Path) -> bool:
                 return True
 
 
+def _moments_collision_kind(source: Path, destination: Path, incoming: object, archived: object) -> str | None:
+    from .moments_ranges import range_digest, moments_digest
+    # Preserve the existing conservative handling of even malformed range files.
+    if range_digest(source) and range_digest(source) == range_digest(destination):
+        return "range"
+    both_moments = all(isinstance(data, dict) and isinstance(data.get("posts"), list)
+                       and isinstance(data.get("filters"), dict) for data in (incoming, archived))
+    if both_moments and moments_digest(source) and moments_digest(source) == moments_digest(destination):
+        return "daily"
+    return None
+
+
 def _collision_failure_reason(source: Path, destination: Path, *, range_media_root: Path | None = None,
                               range_media_objects: dict[Path, Path] | None = None) -> tuple[str, bool] | None:
     if source.suffix.lower() != ".json" or destination.suffix.lower() != ".json":
@@ -241,13 +253,20 @@ def _collision_failure_reason(source: Path, destination: Path, *, range_media_ro
     if not both_chat_json:
         # Range snapshots already have a collision rule: covered posts and
         # landed media permit replacement. Reuse it at final archive inspection.
-        from .moments_ranges import range_digest, compare_coverage
-        if range_digest(source) and range_digest(source) == range_digest(destination):
-            coverage = compare_coverage(destination, source, new_media_root=range_media_root or source.parent,
-                                        old_media_root=range_media_root, media_objects=range_media_objects)
+        from .moments_ranges import compare_coverage
+        moments_kind = _moments_collision_kind(source, destination, incoming, archived)
+        if moments_kind:
+            if moments_kind == "daily":
+                # Daily files live at their own raw roots. An unrelated range
+                # in this batch must not replace these roots with its projection.
+                coverage = compare_coverage(destination, source)
+            else:
+                coverage = compare_coverage(destination, source, new_media_root=range_media_root or source.parent,
+                                            old_media_root=range_media_root, media_objects=range_media_objects)
             if coverage.covered:
                 return None
-            return '朋友圈区间未覆盖旧动态或媒体', False
+            return ('朋友圈区间未覆盖旧动态或媒体' if moments_kind == "range"
+                    else "；".join(coverage.reasons)), False
         return "同路径非聊天 JSON 内容不同，没有可用的消息身份契约", True
     if incoming == archived:
         return None
