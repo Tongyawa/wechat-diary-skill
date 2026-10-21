@@ -17,12 +17,14 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from wechat_diary_core.archiving import SELF_MOMENTS_SUBROOT, normalize_target_subroot
 from wechat_diary_core.archiving import archive, archive_chats_for
 from wechat_diary_core.config import Config, load_config
 from wechat_diary_core.media_store import MEDIA_STORE_NAME
 from wechat_diary_core.preprocessing import archive_moments_for
 from wechat_diary_core.preprocessing import collect_voice_transcription_failures
-from wechat_diary_core.workspace import merge_tree
+from wechat_diary_core.workspace import merge_processed_into_archive, retained_raw_sources
+from wechat_diary_core.raw_archive import remove_empty_directories
 from wechat_diary_core.workspace_discovery import WorkspaceResolutionError, resolve_config_path
 
 
@@ -144,10 +146,13 @@ def process_existing_raw(
     print(f"Processed root: {cfg.paths.processed}")
     print(f"Day: {resolved_day or 'not inferred'}")
 
+    excluded = retained_raw_sources(cfg.paths.archived, live_raw_root=cfg.paths.raw)
     backup = _run_stage(
         "archive_existing_processed",
-        lambda: archive_existing_processed(cfg.paths.processed, cfg.paths.archived / "processed"),
+        lambda: archive_existing_processed(cfg.paths.processed, cfg.paths.archived / "processed", cfg, excluded),
     )
+
+    render_options = {'excluded_sources': excluded} if excluded else {}
 
     if cfg.daily_export.voice_fallback_script and not skip_voice_fallback:
         _run_stage(
@@ -162,7 +167,7 @@ def process_existing_raw(
     with collect_voice_transcription_failures():
         diary_files = _run_stage(
             "archive_diary_processed",
-            lambda: active_deps.archive(source, config=cfg, clear_first=True),
+            lambda: active_deps.archive(source, config=cfg, clear_first=True, **render_options),
         )
 
         self_moment_files: list[Path] = []
@@ -174,11 +179,13 @@ def process_existing_raw(
                     self_moments_usernames,
                     raw_path=source,
                     config=cfg,
-                    subroot="朋友圈_自己",
+                    subroot=SELF_MOMENTS_SUBROOT,
                     clear_first=True,
+                    **render_options,
                 ),
             )
-            _ensure_day_file_if_needed(cfg.paths.processed / "朋友圈_自己", resolved_day, self_moment_files)
+            if not excluded:
+                _ensure_day_file_if_needed(cfg.paths.processed / SELF_MOMENTS_SUBROOT, resolved_day, self_moment_files)
 
         target_usernames = list(cfg.daily_export.target_usernames)
         subroot = _normalize_subroot(cfg.daily_export.target_processed_subroot)
@@ -194,9 +201,11 @@ def process_existing_raw(
                     subroot=f"{subroot}/chats",
                     image_mode="preserve_paths",
                     clear_first=True,
+                    **render_options,
                 ),
             )
-            _ensure_day_file_if_needed(cfg.paths.processed / subroot / "chats", resolved_day, sidecar_chat_files)
+            if not excluded:
+                _ensure_day_file_if_needed(cfg.paths.processed / subroot / "chats", resolved_day, sidecar_chat_files)
             sidecar_moment_files = _run_stage(
                 "archive_target_moments",
                 lambda: active_deps.archive_moments_for(
@@ -205,9 +214,11 @@ def process_existing_raw(
                     config=cfg,
                     subroot=f"{subroot}/moments",
                     clear_first=True,
+                    **render_options,
                 ),
             )
-            _ensure_day_file_if_needed(cfg.paths.processed / subroot / "moments", resolved_day, sidecar_moment_files)
+            if not excluded:
+                _ensure_day_file_if_needed(cfg.paths.processed / subroot / "moments", resolved_day, sidecar_moment_files)
 
     return ExistingRawProcessResult(
         raw_root=source,
@@ -243,6 +254,8 @@ def infer_single_day(raw_root: str | Path) -> str | None:
 def archive_existing_processed(
     processed_root: str | Path,
     archived_processed_root: str | Path,
+    config: Config | None = None,
+    excluded_sources: set[Path] | None = None,
 ) -> Path | None:
     """Merge the current processed tree into the long-term archive library.
 
@@ -255,8 +268,8 @@ def archive_existing_processed(
         return None
 
     target = Path(archived_processed_root)
-    merge_tree(source, target)
-    shutil.rmtree(source, onerror=_handle_remove_error)
+    merge_processed_into_archive(source, target, config=config, excluded_sources=excluded_sources)
+    remove_empty_directories(source)
     source.mkdir(parents=True, exist_ok=True)
     return target
 
@@ -309,8 +322,7 @@ def _format_day(value: str) -> str:
 
 
 def _normalize_subroot(value: str) -> str:
-    cleaned = value.strip().strip("/\\")
-    return cleaned or "_targets"
+    return normalize_target_subroot(value)
 
 
 def _is_non_empty_dir(path: Path) -> bool:

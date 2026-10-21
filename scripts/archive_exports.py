@@ -1,12 +1,8 @@
 from __future__ import annotations
 
 import argparse
-from collections import Counter
 from dataclasses import dataclass
 import json
-import os
-import shutil
-import stat
 import sys
 from pathlib import Path
 
@@ -17,11 +13,24 @@ if str(ROOT) not in sys.path:
 from wechat_diary_core.archiving import strip_date_suffix
 from wechat_diary_core.config import load_config
 from wechat_diary_core.media_store import MEDIA_SCHEME_KEY, MEDIA_SCHEME_VALUE, MEDIA_STORE_NAME
-from wechat_diary_core.moments_ranges import REVIEW_EXIT_CODE, publish_range, range_digest
+from wechat_diary_core.moments_ranges import REVIEW_EXIT_CODE, range_digest
 from wechat_diary_core.raw_schema import RawSchemaError, validate_moments_json, validate_session_json
-from wechat_diary_core.workspace import merge_raw_exports_into_archive, merge_tree
+from wechat_diary_core.workspace import merge_processed_into_archive, retained_raw_sources
+from wechat_diary_core.processed_reporting import report_raw_result
+from wechat_diary_core.raw_archive import (
+    plan_raw_ingest, apply_raw_ingest_plan, reject_overlapping_roots,
+    remove_empty_directories, _fingerprint, _unlink,
+)
 from wechat_diary_core.workspace_discovery import WorkspaceResolutionError, resolve_config_path
 
+
+# Compatibility imports; the policy and identity counters have one core implementation.
+from wechat_diary_core.chat_identity import (
+    _chat_regression_reason, _chat_lineage, _legacy_exported_at,
+    _local_identity_counter, _platform_identity_counter, _max_create_time,
+    _numeric_create_time, _shared_messages_changed, _messages_by_local_identity,
+    _files_equal, _collision_failure_reason, _read_json, _is_chat_json,
+)
 
 MAX_REPORTED_GUARD_FAILURES = 12
 
@@ -37,184 +46,119 @@ class GuardFailure:
 def main(argv: list[str] | None = None) -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-
-    parser = argparse.ArgumentParser(
-        description=(
-            "Merge existing WeFlow export trees (e.g. backfill dirs like "
-            "WeFlow-raw-exports-去年) into the long-term archive library at "
-            "[paths].archived. Per-session, same-name files: newer wins."
-        )
-    )
+    parser = argparse.ArgumentParser(description="Plan or ingest raw exports into the archive.")
     parser.add_argument("--config", default=None, help="Path to the local config file.")
-    parser.add_argument("--raw-root", default="", help="A raw export tree to ingest into archived/raw/.")
-    parser.add_argument(
-        "--processed-root", default="", help="A processed tree to ingest into archived/processed/."
-    )
+    parser.add_argument("--raw-root", action="append", default=[], help="Raw source root; repeat for one batch.")
+    parser.add_argument("--processed-root", default="", help="Processed source root.")
+    parser.add_argument("--print-plan", action="store_true", help="Read-only JSON plan; never writes files.")
+    parser.add_argument("--archive-raw-root", default="", help="Explicit archive raw root for --print-plan.")
     source_mode = parser.add_mutually_exclusive_group()
-    source_mode.add_argument(
-        "--move-source",
-        action="store_true",
-        help="Delete successfully ingested source trees. Without this flag, sources are kept.",
-    )
-    source_mode.add_argument(
-        "--keep-source",
-        action="store_true",
-        help="Compatibility no-op: copy and keep the source tree (now the default).",
-    )
-    parser.add_argument(
-        "--force-overwrite",
-        action="store_true",
-        help=(
-            "Bypass only collisions whose age cannot be determined from file contents, after independently "
-            "confirming the incoming snapshot is newer. Evidence-backed regressions and raw schema failures "
-            "are never bypassed."
-        ),
-    )
+    source_mode.add_argument("--move-source", action="store_true", help="Remove only successfully ingested sources.")
+    source_mode.add_argument("--keep-source", action="store_true", help="Compatibility no-op; keep sources by default.")
+    parser.add_argument("--force-overwrite", action="store_true", help="Confirm only age-unknown collisions; never bypass hard guards.")
     args = parser.parse_args(argv)
-
     if not args.raw_root and not args.processed_root:
         parser.error("Pass at least one of --raw-root / --processed-root.")
-
+    if args.print_plan and (args.move_source or args.force_overwrite):
+        parser.error("--print-plan cannot be combined with --move-source / --force-overwrite")
+    if args.archive_raw_root and not args.print_plan:
+        parser.error("--archive-raw-root requires --print-plan")
+    if args.print_plan and args.processed_root:
+        parser.error("--print-plan describes raw ingestion; omit --processed-root")
     try:
-        config_path = resolve_config_path(args.config)
+        if args.archive_raw_root:
+            cfg = None
+            base = Path.cwd()
+            archive_raw = Path(args.archive_raw_root).resolve()
+        else:
+            cfg = load_config(resolve_config_path(args.config))
+            base = cfg.base_dir
+            archive_raw = (cfg.paths.archived / "raw").resolve()
+        raw_roots = [(base / Path(p)).resolve() for p in args.raw_root]
+        processed = (base / args.processed_root).resolve() if args.processed_root else None
+        sources = raw_roots + ([processed] if processed else [])
+        reject_overlapping_roots(archive_raw.parent, sources)
+        if any(not p.is_dir() for p in sources):
+            raise ValueError("source root is not a directory")
+        plan = plan_raw_ingest(archive_raw, raw_roots) if raw_roots else None
     except WorkspaceResolutionError as exc:
         print(str(exc), file=sys.stderr)
         return 2
-    cfg = load_config(config_path)
-    move = args.move_source
-    raw_validation_failures: list[tuple[Path, str]] = []
-
-    sources: list[tuple[str, Path]] = []
-    for label, source_arg in (("raw", args.raw_root), ("processed", args.processed_root)):
-        if not source_arg:
-            continue
-        source = Path(source_arg)
-        if not source.is_absolute():
-            source = (cfg.base_dir / source).resolve()
-        if not source.is_dir():
-            print(f"FAILED: {label} root is not a directory: {source}", file=sys.stderr)
-            return 1
-        sources.append((label, source))
-
-    invalid_paths: set[Path] = set()
-    range_paths: list[Path] = []
-    raw_source = next((source for label, source in sources if label == "raw"), None)
-    if raw_source is not None:
-        raw_validation_failures = _validate_raw_export_tree(raw_source)
-        invalid_paths = {path.resolve() for path, _reason in raw_validation_failures}
-        for failed_path, reason in raw_validation_failures:
-            print(f"RAW SCHEMA VALIDATION FAILED: {failed_path}", file=sys.stderr)
-            print(f"  {reason}", file=sys.stderr)
-        range_paths = [
-            path for path in sorted(raw_source.iterdir())
-            if path.is_file() and range_digest(path) is not None and path.resolve() not in invalid_paths
-        ]
-        archive_root = (cfg.paths.archived / "raw").resolve()
-        if range_paths and (raw_source.resolve().is_relative_to(archive_root) or archive_root.is_relative_to(raw_source.resolve())):
-            print("FAILED: range source and archive roots must not overlap", file=sys.stderr)
-            return 1
-
-    guard_failures: list[GuardFailure] = []
-    for label, source in sources:
-        destination = cfg.paths.archived / label
-        pairs = (
-            _raw_ingest_pairs(source, destination, invalid_paths)
-            if label == "raw"
-            else _tree_ingest_pairs(source, destination)
-        )
-        # Range JSON collisions are handled by the shared publish/retire path.
-        # Other raw and all processed files retain the existing batch guards.
-        if label == "raw" and range_paths:
-            pairs = [(src, dst) for src, dst in pairs if src not in range_paths]
-            media_pairs = [
-                (src, dst) for src, dst in pairs
-                if src.is_relative_to(source / MEDIA_STORE_NAME)
-                and dst.exists() and not _files_equal(src, dst)
-            ]
-            for src, dst in media_pairs:
-                guard_failures.append(GuardFailure(
-                    src, dst, "区间媒体同路径字节不同，不得覆盖既有 CAS", False,
-                ))
-            pairs = [(src, dst) for src, dst in pairs if (src, dst) not in media_pairs]
-        guard_failures.extend(_find_guard_failures(pairs))
-
-    blocking_guard_failures = [
-        failure
-        for failure in guard_failures
-        if not (args.force_overwrite and failure.force_eligible)
-    ]
-    if guard_failures:
-        _report_guard_failures(
-            guard_failures,
-            force_requested=args.force_overwrite,
-            blocking_count=len(blocking_guard_failures),
-        )
-        if blocking_guard_failures:
-            return 1
-
-    range_needs_review = False
-    for label, source in sources:
-        if label == "raw":
-            if range_paths:
-                # Copy all media before publishing any range discovery marker.
-                # Keep sources until every publication/retirement has succeeded.
-                excluded = invalid_paths | {path.resolve() for path in range_paths}
-                count = _copy_raw_exports_except(source, cfg.paths.archived / "raw", excluded)
-                for path in range_paths:
-                    try:
-                        publication = publish_range(path, cfg.paths.archived / "raw" / path.name)
-                    except (OSError, ValueError) as exc:
-                        print(f"FAILED: range publication {path.name}: {exc}", file=sys.stderr)
-                        return 1
-                    count += 1
-                    range_needs_review |= publication.needs_review
-            elif raw_validation_failures:
-                count = _copy_raw_exports_except(source, cfg.paths.archived / "raw", invalid_paths)
-            else:
-                count = merge_raw_exports_into_archive(
-                    source,
-                    cfg.paths.archived / "raw",
-                    move=move,
-                )
-        else:
-            count = merge_tree(source, cfg.paths.archived / "processed", move=move)
-        print(f"Merged {count} {label} files into {cfg.paths.archived / label}")
-        if move and not (label == "raw" and (raw_validation_failures or range_needs_review)):
-            # Moving leaves empty directory shells behind; drop the whole source.
-            shutil.rmtree(source, ignore_errors=True)
-            print(f"Removed emptied source: {source}")
-        elif move and label == "raw" and (raw_validation_failures or range_needs_review):
-            print(f"Kept raw source for validation/replacement review: {source}")
-
-    if raw_validation_failures:
-        print("\nRaw schema validation failures:", file=sys.stderr)
-        for failed_path, reason in raw_validation_failures:
-            print(f"- {failed_path}: {reason}", file=sys.stderr)
+    except (OSError, ValueError) as exc:
+        print(f"FAILED: {exc}", file=sys.stderr)
         return 1
+    if args.print_plan:
+        print(json.dumps(plan.to_dict(), ensure_ascii=False))
+        return 1 if any(plan.summary[k] for k in ("resolutionBlocked", "hardBlocked", "schemaInvalid", "coverageFailed")) else 0
 
-    return REVIEW_EXIT_CODE if range_needs_review else 0
-
-
-def _raw_ingest_pairs(
-    source: Path,
-    archive_raw_root: Path,
-    invalid_paths: set[Path],
-) -> list[tuple[Path, Path]]:
-    pairs: list[tuple[Path, Path]] = []
-    for entry in sorted(source.iterdir()):
-        if entry.is_dir():
-            destination_root = archive_raw_root / (
-                MEDIA_STORE_NAME
-                if entry.name == MEDIA_STORE_NAME
-                else strip_date_suffix(entry.name)
-            )
-            for path in sorted(entry.rglob("*")):
-                if path.is_file() and path.resolve() not in invalid_paths:
-                    pairs.append((path, destination_root / path.relative_to(entry)))
-            continue
-        if entry.resolve() not in invalid_paths:
-            pairs.append((entry, archive_raw_root / entry.name))
-    return pairs
+    raw_validation_failures = plan.schema_failures if plan else []
+    for failure in raw_validation_failures:
+        print(f"RAW SCHEMA VALIDATION FAILED: {failure['path']}\n  {failure['reason']}", file=sys.stderr)
+    guard_failures = []
+    if plan:
+        for action in plan.actions:
+            for guard in action.guards:
+                guard_failures.append(GuardFailure(action.source, archive_raw / guard["path"],
+                                                   guard["reason"], guard["forceEligible"]))
+            if action.status != "ready":
+                guard_failures.append(GuardFailure(action.source, action.target,
+                                                   "; ".join(action.reasons), False))
+    if processed:
+        # Reject the whole supplied batch before any raw/processed/report write,
+        # even when the eventual residual-source rule would skip a chat render.
+        guard_failures.extend(_find_guard_failures(_tree_ingest_pairs(processed, archive_raw.parent / 'processed')))
+    blocked = [f for f in guard_failures if not (args.force_overwrite and f.force_eligible)]
+    if guard_failures:
+        _report_guard_failures(guard_failures, force_requested=args.force_overwrite, blocking_count=len(blocked))
+        if blocked:
+            return 1
+    range_review = False
+    if plan:
+        ranges = [a for a in plan.actions if a.kind == "range"]
+        # Range retirement can require review; keep all input until that is known.
+        range_review = any(a.range_review for a in plan.actions)
+        move_now = args.move_source and not raw_validation_failures and not ranges
+        try:
+            result = apply_raw_ingest_plan(plan, move_source=move_now, force_overwrite=args.force_overwrite)
+            range_review = result.range_review
+            report_raw_result(plan, result)
+            for action in ranges:
+                for warning in action.warnings:
+                    print(f'[WARN] 朋友圈区间待核对：{warning}')
+            if args.move_source and not raw_validation_failures and not range_review and ranges:
+                source_hashes = {a.source: a.source_sha for a in plan.actions}
+                for source in result.consumed:
+                    if source.exists():
+                        if _fingerprint(source) != source_hashes[source]:
+                            raise ValueError('source changed before removal')
+                        _unlink(source)
+            for root in raw_roots:
+                if args.move_source and not raw_validation_failures and not range_review:
+                    remove_empty_directories(root, remove_root=True)
+                elif args.move_source:
+                    print(f"Kept raw source for validation/replacement review: {root}")
+            print(f"Merged {len(result.published)} raw files into {archive_raw}")
+        except (OSError, ValueError) as exc:
+            print(f"FAILED: raw publication: {exc}", file=sys.stderr)
+            return 1
+    if processed:
+        # Files left after apply are the fact, including schema failures and
+        # intentionally kept copies. Raw force authorization never lifts this.
+        try:
+            excluded = {p for root in raw_roots for p in root.rglob('*.json')
+                        if p.is_file() and MEDIA_STORE_NAME not in p.relative_to(root).parts} if raw_roots else retained_raw_sources(
+                            archive_raw.parent, live_raw_root=cfg.paths.raw)
+            count = merge_processed_into_archive(processed, archive_raw.parent / "processed",
+                                                  move=args.move_source, excluded_sources=excluded, config=cfg)
+        except (OSError, ValueError) as exc:
+            print(f"FAILED: processed merge: {exc}", file=sys.stderr)
+            return 1
+        if args.move_source:
+            remove_empty_directories(processed, remove_root=True)
+        print(f"Merged {count} processed files into {archive_raw.parent / 'processed'}")
+    if raw_validation_failures:
+        return 1
+    return REVIEW_EXIT_CODE if range_review else 0
 
 
 def _tree_ingest_pairs(source: Path, destination: Path) -> list[tuple[Path, Path]]:
@@ -235,204 +179,6 @@ def _find_guard_failures(pairs: list[tuple[Path, Path]]) -> list[GuardFailure]:
             reason, force_eligible = decision
             failures.append(GuardFailure(source, destination, reason, force_eligible))
     return failures
-
-
-def _files_equal(left: Path, right: Path) -> bool:
-    if left.stat().st_size != right.stat().st_size:
-        return False
-    with left.open("rb") as left_fh, right.open("rb") as right_fh:
-        while True:
-            left_chunk = left_fh.read(1024 * 1024)
-            right_chunk = right_fh.read(1024 * 1024)
-            if left_chunk != right_chunk:
-                return False
-            if not left_chunk:
-                return True
-
-
-def _collision_failure_reason(source: Path, destination: Path) -> tuple[str, bool] | None:
-    if source.suffix.lower() != ".json" or destination.suffix.lower() != ".json":
-        return "同路径非 JSON 文件内容不同，无法从文件内容证明 incoming 更新", True
-    try:
-        incoming = _read_json(source)
-        archived = _read_json(destination)
-    except (OSError, json.JSONDecodeError) as exc:
-        return f"同路径 JSON 无法比较（{type(exc).__name__}）", True
-    both_chat_json = _is_chat_json(incoming) and _is_chat_json(archived)
-    if not both_chat_json:
-        return "同路径非聊天 JSON 内容不同，没有可用的消息身份契约", True
-    if incoming == archived:
-        return None
-    return _chat_regression_reason(incoming, archived)
-
-
-def _read_json(path: Path) -> object:
-    with path.open("r", encoding="utf-8-sig") as fh:
-        return json.load(fh)
-
-
-def _is_chat_json(value: object) -> bool:
-    return (
-        isinstance(value, dict)
-        and isinstance(value.get("session"), dict)
-        and isinstance(value.get("messages"), list)
-    )
-
-
-def _chat_regression_reason(incoming: dict, archived: dict) -> tuple[str, bool] | None:
-    incoming_session = incoming["session"]
-    archived_session = archived["session"]
-    incoming_wxid = str(incoming_session.get("wxid") or "")
-    archived_wxid = str(archived_session.get("wxid") or "")
-    if incoming_wxid != archived_wxid:
-        return (
-            f"会话身份不一致（incoming wxid={incoming_wxid!r}, archived wxid={archived_wxid!r}）",
-            False,
-        )
-
-    incoming_messages = incoming["messages"]
-    archived_messages = archived["messages"]
-    incoming_lineage = _chat_lineage(incoming)
-    archived_lineage = _chat_lineage(archived)
-    same_lineage = incoming_lineage is not None and incoming_lineage == archived_lineage
-
-    if same_lineage:
-        identity_label = "(createTime, localId)"
-        incoming_identities = _local_identity_counter(incoming_messages)
-        archived_identities = _local_identity_counter(archived_messages)
-    else:
-        identity_label = "platformMessageId"
-        incoming_identities, incoming_missing = _platform_identity_counter(incoming_messages)
-        archived_identities, archived_missing = _platform_identity_counter(archived_messages)
-        if incoming_missing or archived_missing:
-            return (
-                "跨代消息身份不可比：platformMessageId 存在空值"
-                f"（incoming={incoming_missing}, archived={archived_missing}）",
-                True,
-            )
-        if not (incoming_identities & archived_identities):
-            return (
-                "跨代消息身份不可比：platformMessageId 零交集"
-                f"（incoming lineage={incoming_lineage or 'unknown'}, "
-                f"archived lineage={archived_lineage or 'unknown'}）",
-                True,
-            )
-
-    incoming_max = _max_create_time(incoming_messages)
-    archived_max = _max_create_time(archived_messages)
-    if incoming_max < archived_max:
-        return f"incoming 时间水位更旧（max createTime {incoming_max} < {archived_max}）", False
-
-    missing_from_incoming = archived_identities - incoming_identities
-    if missing_from_incoming:
-        return (
-            f"incoming 未覆盖 archived 的全部消息身份（按 {identity_label} 多重集合缺 "
-            f"{sum(missing_from_incoming.values())} 条）",
-            False,
-        )
-
-    shared_messages_changed = same_lineage and _shared_messages_changed(
-        incoming_messages,
-        archived_messages,
-    )
-    if same_lineage and incoming_lineage == "legacy_gui":
-        incoming_exported_at = _legacy_exported_at(incoming)
-        archived_exported_at = _legacy_exported_at(archived)
-        if incoming_exported_at is not None and archived_exported_at is not None:
-            if incoming_exported_at < archived_exported_at:
-                return (
-                    "incoming legacy 快照 exportedAt 更旧"
-                    f"（{incoming_exported_at} < {archived_exported_at}）",
-                    False,
-                )
-            if shared_messages_changed and incoming_exported_at > archived_exported_at:
-                return None
-
-    if shared_messages_changed:
-        return "同代共同消息内容不同，缺少可信快照版本字段，无法证明 incoming 更新", True
-    return None
-
-
-def _chat_lineage(data: dict) -> str | None:
-    metadata = data.get("weflow")
-    if not isinstance(metadata, dict):
-        return None
-    source = str(metadata.get("source") or "").strip().casefold()
-    if source == "http_api":
-        media_scheme = str(metadata.get(MEDIA_SCHEME_KEY) or "").strip()
-        if not media_scheme or media_scheme == MEDIA_SCHEME_VALUE:
-            return "http_api"
-        return None
-    generator = str(metadata.get("generator") or "").strip().casefold()
-    if generator == "weflow":
-        return "legacy_gui"
-    return None
-
-
-def _legacy_exported_at(data: dict) -> int | None:
-    metadata = data.get("weflow")
-    if not isinstance(metadata, dict):
-        return None
-    value = metadata.get("exportedAt")
-    if isinstance(value, bool):
-        return None
-    try:
-        timestamp = int(value)
-    except (TypeError, ValueError, OverflowError):
-        return None
-    return timestamp if timestamp > 0 else None
-
-
-def _local_identity_counter(messages: list) -> Counter[tuple[int, str]]:
-    return Counter(
-        (_numeric_create_time(message), str(message.get("localId")))
-        for message in messages
-        if isinstance(message, dict)
-    )
-
-
-def _platform_identity_counter(messages: list) -> tuple[Counter[str], int]:
-    identities: Counter[str] = Counter()
-    missing = 0
-    for message in messages:
-        if not isinstance(message, dict):
-            continue
-        value = message.get("platformMessageId")
-        if value is None or str(value) == "":
-            missing += 1
-        else:
-            identities[str(value)] += 1
-    return identities, missing
-
-
-def _max_create_time(messages: list) -> int:
-    return max((_numeric_create_time(message) for message in messages if isinstance(message, dict)), default=0)
-
-
-def _numeric_create_time(message: dict) -> int:
-    try:
-        return int(message.get("createTime") or 0)
-    except (TypeError, ValueError, OverflowError):
-        return 0
-
-
-def _shared_messages_changed(incoming_messages: list, archived_messages: list) -> bool:
-    incoming_by_identity = _messages_by_local_identity(incoming_messages)
-    archived_by_identity = _messages_by_local_identity(archived_messages)
-    for identity in incoming_by_identity.keys() & archived_by_identity.keys():
-        if incoming_by_identity[identity] != archived_by_identity[identity]:
-            return True
-    return False
-
-
-def _messages_by_local_identity(messages: list) -> dict[tuple[int, str], list[dict]]:
-    grouped: dict[tuple[int, str], list[dict]] = {}
-    for message in messages:
-        if not isinstance(message, dict):
-            continue
-        identity = (_numeric_create_time(message), str(message.get("localId")))
-        grouped.setdefault(identity, []).append(message)
-    return grouped
 
 
 def _report_guard_failures(
@@ -497,45 +243,6 @@ def _validate_raw_export_tree(source: Path) -> list[tuple[Path, str]]:
         except (OSError, json.JSONDecodeError, RawSchemaError) as exc:
             failures.append((path, str(exc)))
     return failures
-
-
-def _copy_raw_exports_except(source: Path, archive_raw_root: Path, invalid_paths: set[Path]) -> int:
-    count = 0
-    for entry in sorted(source.iterdir()):
-        if entry.is_dir():
-            destination_name = (
-                MEDIA_STORE_NAME
-                if entry.name == MEDIA_STORE_NAME
-                else strip_date_suffix(entry.name)
-            )
-            count += _copy_tree_except(entry, archive_raw_root / destination_name, invalid_paths)
-            continue
-        if entry.resolve() in invalid_paths:
-            continue
-        _copy_file_replacing(entry, archive_raw_root / entry.name)
-        count += 1
-    return count
-
-
-def _copy_tree_except(source: Path, destination: Path, invalid_paths: set[Path]) -> int:
-    count = 0
-    for src in sorted(source.rglob("*")):
-        if not src.is_file() or src.resolve() in invalid_paths:
-            continue
-        dst = destination / src.relative_to(source)
-        _copy_file_replacing(src, dst)
-        count += 1
-    return count
-
-
-def _copy_file_replacing(src: Path, dst: Path) -> None:
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        shutil.copy2(src, dst)
-    except OSError:
-        if dst.exists():
-            os.chmod(dst, stat.S_IREAD | stat.S_IWRITE)
-        shutil.copy2(src, dst)
 
 
 if __name__ == "__main__":

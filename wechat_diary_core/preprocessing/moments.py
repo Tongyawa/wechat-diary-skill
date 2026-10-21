@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 import json
+import re
 import shutil
 
 from ..config import Config, load_config
@@ -49,16 +50,19 @@ def load_moments_export(path: str | Path) -> MomentsExport:
     return MomentsExport(source_path=file, posts=posts, filters=filters)
 
 
-def discover_moments_exports(root: str | Path) -> list[Path]:
+def discover_moments_exports(root: str | Path, *, excluded_sources: set[Path] | None = None) -> list[Path]:
     """Find Moments-export JSON files (depth-1 inside ``root``)."""
     path = Path(root)
+    excluded = {Path(p).resolve() for p in excluded_sources or ()}
+    if path.resolve() in excluded:
+        return []
     if path.is_file() and _looks_like_moments_export(path):
         return [path]
     if not path.exists():
         return []
     found: list[Path] = []
     for candidate in sorted(path.rglob("*.json")):
-        if _looks_like_moments_export(candidate):
+        if candidate.resolve() not in excluded and _looks_like_moments_export(candidate):
             found.append(candidate)
     return found
 
@@ -95,6 +99,7 @@ def archive_moments_for(
     subroot: str | Path = "_targets/moments",
     clear_first: bool = True,
     vision_describer: VisionDescriber | None = None,
+    excluded_sources: set[Path] | None = None,
 ) -> list[Path]:
     """Archive Moments exports into ``<paths.processed>/<subroot>/<yyyy-mm-dd>.md``.
 
@@ -117,18 +122,11 @@ def archive_moments_for(
     root.mkdir(parents=True, exist_ok=True)
 
     all_posts: list[Post] = []
-    for export_path in discover_moments_exports(source):
+    targets: set[Path] = set()
+    for export_path in discover_moments_exports(source, excluded_sources=excluded_sources):
         export = load_moments_export(export_path)
-        include_full_export = (
-            target_set is None
-            or (
-                _export_filter_belongs_to(export, target_set)
-                and not any(_post_matches_usernames(post, target_set) for post in export.posts)
-            )
-        )
-        for post in export.posts:
-            if not include_full_export and not _post_matches_usernames(post, target_set):
-                continue
+        targets.update(moments_render_targets(export, usernames, subroot))
+        for post in _selected_posts(export, target_set):
             all_posts.append(_with_localized_media(post, export.source_path.parent, root / "media"))
 
     annotate_moment_vision(
@@ -141,11 +139,53 @@ def archive_moments_for(
     )
     by_day = _group_posts_by_day(all_posts)
     written: list[Path] = []
-    for day, posts in sorted(by_day.items()):
-        out_path = root / f"{day}.md"
+    for relative in sorted(targets):
+        posts = by_day.get(relative.stem)
+        if not posts:
+            continue
+        out_path = cfg.paths.processed / relative
         out_path.write_text(render_moments_flow(posts), encoding="utf-8")
         written.append(out_path)
     return written
+
+
+def _selected_posts(export: MomentsExport, target_set: set[str] | None) -> list[Post]:
+    include_full = target_set is None or (
+        _export_filter_belongs_to(export, target_set)
+        and not any(_post_matches_usernames(post, target_set) for post in export.posts))
+    return [post for post in export.posts if include_full or _post_matches_usernames(post, target_set)]
+
+
+def moments_render_targets(export: MomentsExport, usernames: Sequence[str] | None, subroot: str | Path) -> list[Path]:
+    """Relative daily outputs, using the renderer's own recipient/day selection."""
+    target_set = {str(name).strip() for name in usernames if str(name).strip()} if usernames is not None else None
+    days = {_post_day(post) for post in _selected_posts(export, target_set)}
+    # The existing-raw entrypoint can create a day placeholder for a zero-post
+    # export. Include that potential path even though the renderer has no body.
+    if not export.posts and target_set != set():
+        filters = {str(name).strip() for name in export.filters.get('usernames', [])}
+        relevant = target_set is None or not filters or bool(filters & target_set)
+        declared = declared_single_day(export.source_path, moments=True)
+        if relevant and declared:
+            days.add(declared)
+    return [Path(subroot) / f"{day}.md" for day in sorted(days)]
+
+
+def declared_single_day(source_path: Path, *, moments: bool = False) -> str | None:
+    """Read only the canonical single-day slot, never an arbitrary 8-digit hash.
+
+    No range/unknown-date inference. A populated export's actual content dates
+    take precedence; this hint is used only for a genuinely empty export.
+    """
+    stem = Path(source_path).stem
+    pattern = r"^朋友圈导出_(\d{8})(?:_[0-9a-fA-F]+)?$" if moments else r"_(\d{8})$"
+    match = re.search(pattern, stem)
+    if not match:
+        return None
+    try:
+        return datetime.strptime(match.group(1), '%Y%m%d').date().isoformat()
+    except ValueError:
+        return None
 
 
 def _render_single_post(post: Post) -> str:

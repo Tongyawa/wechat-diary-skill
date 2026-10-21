@@ -1,0 +1,295 @@
+{
+  "scripts/archive_exports.py": {
+    "main:_unlink": 1,
+    "main:apply_raw_ingest_plan": 1,
+    "main:merge_processed_into_archive": 1
+  },
+  "scripts/backfill_group_names.py": {
+    "_plan_file_patch:replace": 1,
+    "backfill_group_names:atomic_replace_bytes": 1
+  },
+  "scripts/export_bulk_raw.py": {
+    "_driver_log:mkdir": 1,
+    "_driver_log:open": 1,
+    "finish:write": 1,
+    "write:write": 2
+  },
+  "scripts/export_on_demand.py": {
+    "_config_for_on_demand:replace": 3,
+    "_copy_referenced_media:replace": 1,
+    "_make_short_staging_root:mkdir": 1,
+    "_merge_processed_session:merge_tree": 1,
+    "_move_written_files:mkdir": 2,
+    "_move_written_files:move": 1,
+    "_move_written_files:rmdir": 1,
+    "_move_written_files:unlink": 1,
+    "_publish_raw_session:move": 1,
+    "_publish_raw_session:rmtree": 1,
+    "_publish_raw_store:copy2": 1,
+    "_publish_raw_store:mkdir": 1,
+    "_publish_raw_store:unlink": 1,
+    "_rewrite_canonical_references:write_text": 1,
+    "_rewrite_media_references:replace": 1,
+    "_rewrite_media_references:write_text": 1,
+    "_write_merged:write_text": 1,
+    "_write_merged_with_header:write_text": 1,
+    "export_on_demand:mkdir": 1,
+    "export_on_demand:rmtree": 1
+  },
+  "scripts/init_worktree_config.py": {
+    "init_worktree_config:write_text": 1
+  },
+  "scripts/process_existing_raw.py": {
+    "_ensure_day_file_if_needed:mkdir": 1,
+    "_ensure_day_file_if_needed:write_text": 1,
+    "archive_existing_processed:merge_processed_into_archive": 1,
+    "archive_existing_processed:mkdir": 2,
+    "run_voice_fallback_script_for_raw:copy": 1
+  },
+  "scripts/refill_appmsg_content.py": {
+    "refill:atomic_replace_bytes": 1,
+    "refill:mkdir": 1,
+    "refill:open": 1,
+    "refill:write": 1
+  },
+  "scripts/repair_group_names.py": {
+    "_fetch_all_group_rosters:atomic_replace_bytes": 1,
+    "_plan_file_patch:replace": 1,
+    "_utc_now:replace": 2,
+    "_write_json:atomic_replace_bytes": 1,
+    "prepare_group_name_repair:mkdir": 1,
+    "recompute_group_names:atomic_replace_bytes": 1,
+    "rescan_group_names:mkdir": 1
+  },
+  "scripts/run_daily_export.py": {
+    "_open_session_rename_report:replace": 1,
+    "ensure_local_config:copy2": 1,
+    "ensure_local_config:mkdir": 1,
+    "ensure_local_config:write_text": 1,
+    "run_voice_fallback_script:copy": 1
+  },
+  "scripts/sensevoice_worker.py": {
+    "_emit:write": 1
+  },
+  "wechat_diary_core/archiving.py": {
+    "archive:mkdir": 2,
+    "archive:rmtree": 1,
+    "archive:write_text": 1,
+    "archive_chats_for:mkdir": 1,
+    "archive_chats_for:rmtree": 1,
+    "archive_chats_for:write_text": 1
+  },
+  "wechat_diary_core/asr/sensevoice.py": {
+    "transcribe:write": 1
+  },
+  "wechat_diary_core/backends/weflow/exporter.py": {
+    "_dump_failure_diagnostics:dump": 1
+  },
+  "wechat_diary_core/backends/weflow/launcher.py": {
+    "_process_image_basename:replace": 1,
+    "launch_weflow:mkdir": 1,
+    "launch_weflow:open": 1
+  },
+  "wechat_diary_core/backends/weflow_api/backend.py": {
+    "_append_ignored_failure_detail:mkdir": 1,
+    "_append_ignored_failure_detail:open": 1,
+    "_append_ignored_failure_detail:write": 1,
+    "_write_json_atomically:dump": 1,
+    "_write_json_atomically:fdopen": 1,
+    "_write_json_atomically:mkdir": 1,
+    "_write_json_atomically:mkstemp": 1,
+    "_write_json_atomically:replace": 1,
+    "_write_json_atomically:unlink": 1,
+    "_write_json_atomically:write": 1,
+    "export_chats_range:mkdir": 1,
+    "export_moments_range:mkdir": 1,
+    "export_moments_range:mkdtemp": 1,
+    "export_moments_range:rmdir": 1,
+    "export_moments_range:rmtree": 1
+  },
+  "wechat_diary_core/backends/weflow_api/bulk_plan.py": {
+    "_record_event:mkdir": 1,
+    "_record_event:open": 1,
+    "_record_event:write": 1,
+    "save:dump": 1,
+    "save:fdopen": 1,
+    "save:mkdir": 1,
+    "save:mkstemp": 1,
+    "save:replace": 1,
+    "save:unlink": 2,
+    "save:write": 1
+  },
+  "wechat_diary_core/backends/weflow_api/bulk_state.py": {
+    "_record_event:mkdir": 1,
+    "_record_event:open": 1,
+    "_record_event:write": 2,
+    "save:dump": 1,
+    "save:fdopen": 1,
+    "save:mkdir": 1,
+    "save:mkstemp": 1,
+    "save:replace": 1,
+    "save:unlink": 2,
+    "save:write": 1
+  },
+  "wechat_diary_core/backends/weflow_api/client.py": {
+    "_api_date:replace": 1,
+    "_http_error_detail:replace": 1
+  },
+  "wechat_diary_core/backends/weflow_api/failure_state.py": {
+    "save:mkdir": 1,
+    "save:replace": 1,
+    "save:unlink": 1,
+    "save:write_text": 1
+  },
+  "wechat_diary_core/backends/weflow_api/mapper.py": {
+    "_replace_directory:rmtree": 1,
+    "_replace_path_with_retry:replace": 1,
+    "write_moments_export:mkdir": 1,
+    "write_moments_export:publish_range": 1,
+    "write_moments_export:replace": 2,
+    "write_moments_export:unlink": 1,
+    "write_moments_export:write_text": 1,
+    "write_session_export:mkdir": 2,
+    "write_session_export:mkdtemp": 1,
+    "write_session_export:rmdir": 1,
+    "write_session_export:rmtree": 1,
+    "write_session_export:write_text": 1
+  },
+  "wechat_diary_core/backup_state.py": {
+    "_parse_timestamp:replace": 1
+  },
+  "wechat_diary_core/chat_flow.py": {
+    "_compact_message_text:replace": 2,
+    "_quote_text_for_target:replace": 1
+  },
+  "wechat_diary_core/config.py": {
+    "load_config:replace": 1
+  },
+  "wechat_diary_core/insights_io.py": {
+    "write_daily_markdown:mkdir": 1,
+    "write_daily_markdown:write_text": 1,
+    "write_summary:mkdir": 1,
+    "write_summary:write_text": 1
+  },
+  "wechat_diary_core/media_store.py": {
+    "_copy_and_hash:fdopen": 1,
+    "_copy_and_hash:write": 1,
+    "is_media_reference:replace": 1,
+    "store_media_file:mkdir": 1,
+    "store_media_file:mkstemp": 1,
+    "store_media_file:replace": 1,
+    "store_media_file:unlink": 1
+  },
+  "wechat_diary_core/moments_ranges.py": {
+    "publish_range:copy2": 1,
+    "publish_range:mkdir": 2,
+    "publish_range:replace": 1,
+    "publish_range:rmtree": 1,
+    "publish_range:unlink": 1
+  },
+  "wechat_diary_core/name_patch.py": {
+    "atomic_replace_bytes:fdopen": 1,
+    "atomic_replace_bytes:mkstemp": 1,
+    "atomic_replace_bytes:replace": 1,
+    "atomic_replace_bytes:unlink": 1,
+    "atomic_replace_bytes:write": 1,
+    "canonical_message_fragment:replace": 1
+  },
+  "wechat_diary_core/on_demand_image_backfill.py": {
+    "_restore:replace": 1,
+    "_restore:unlink": 1,
+    "_restore:write": 1,
+    "backfill_on_demand:unlink": 2,
+    "powershell_command:replace": 1
+  },
+  "wechat_diary_core/preprocessing/cleaner.py": {
+    "_is_emoji_ref:replace": 1
+  },
+  "wechat_diary_core/preprocessing/image_ocr.py": {
+    "_looks_like_image_ref:replace": 1,
+    "_message_image_path_strings:replace": 1
+  },
+  "wechat_diary_core/preprocessing/image_vision.py": {
+    "annotate_moment_vision.getter:replace": 1
+  },
+  "wechat_diary_core/preprocessing/moments.py": {
+    "_compact_text:replace": 2,
+    "_with_localized_media:copy2": 1,
+    "_with_localized_media:mkdir": 1,
+    "archive_moments_for:mkdir": 1,
+    "archive_moments_for:rmtree": 1,
+    "archive_moments_for:write_text": 1
+  },
+  "wechat_diary_core/preprocessing/vision_records.py": {
+    "clean_field:replace": 1
+  },
+  "wechat_diary_core/preprocessing/vision_service.py": {
+    "__init__:replace": 1
+  },
+  "wechat_diary_core/preprocessing/vision_store.py": {
+    "atomic_json:dump": 1,
+    "atomic_json:fdopen": 1,
+    "atomic_json:mkdir": 1,
+    "atomic_json:mkstemp": 1,
+    "atomic_json:replace": 1,
+    "atomic_json:unlink": 1,
+    "diagnostic:mkdir": 1,
+    "diagnostic:open": 1,
+    "diagnostic:write": 1
+  },
+  "wechat_diary_core/preprocessing/vision_transport.py": {
+    "request:write_text": 1
+  },
+  "wechat_diary_core/preprocessing/vision_units.py": {
+    "moment_body:replace": 2
+  },
+  "wechat_diary_core/processed_reporting.py": {
+    "update_processed_report:_atomic_bytes": 1
+  },
+  "wechat_diary_core/raw_archive.py": {
+    "_atomic_bytes:fdopen": 1,
+    "_atomic_bytes:mkdir": 1,
+    "_atomic_bytes:mkstemp": 1,
+    "_atomic_bytes:replace": 1,
+    "_atomic_bytes:unlink": 1,
+    "_atomic_bytes:write": 1,
+    "_chat_cas_references:replace": 1,
+    "_move_daily_attachment:mkdir": 1,
+    "_move_daily_attachment:replace": 1,
+    "_observed_day_files:replace": 1,
+    "_unlink:unlink": 2,
+    "apply_raw_ingest_plan.backup:_atomic_bytes": 2,
+    "apply_raw_ingest_plan.backup:mkdir": 2,
+    "apply_raw_ingest_plan:_atomic_bytes": 2,
+    "apply_raw_ingest_plan:_unlink": 2,
+    "plan_raw_ingest:replace": 1,
+    "remove_empty_directories:rmdir": 1,
+    "report_daily_result:_atomic_bytes": 2,
+    "report_daily_result:replace": 1
+  },
+  "wechat_diary_core/session_rename_alarm.py": {
+    "_merge_session_directories:apply_raw_ingest_plan": 1,
+    "_save_state_document:mkdir": 1,
+    "_save_state_document:replace": 1,
+    "_save_state_document:unlink": 1,
+    "_save_state_document:write_text": 1,
+    "write_session_rename_report:mkdir": 1,
+    "write_session_rename_report:replace": 1,
+    "write_session_rename_report:unlink": 1,
+    "write_session_rename_report:write_text": 1
+  },
+  "wechat_diary_core/workspace.py": {
+    "_remove_tree:rmtree": 1,
+    "_replace_file:copy2": 3,
+    "_replace_file:replace": 2,
+    "_replace_file:unlink": 1,
+    "merge_processed_into_archive:_replace_file": 1,
+    "merge_processed_into_archive:mkdir": 1,
+    "merge_raw_exports_into_archive:apply_raw_ingest_plan": 1,
+    "merge_tree:_replace_file": 1,
+    "merge_tree:mkdir": 1,
+    "rotate_export_workspace:merge_processed_into_archive": 1,
+    "rotate_export_workspace:merge_raw_exports_into_archive": 1,
+    "rotate_export_workspace:mkdir": 5
+  }
+}

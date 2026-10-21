@@ -29,7 +29,7 @@
 
 **导出会话的目录名带类型前缀**
 
-`{私聊|群聊}_<会话名>[_<日期>]`。前缀是契约的一部分，归档库靠它做会话连续性，别在中途重命名。
+`{私聊|群聊}_<会话名>[_<日期>]`。类型前缀仍是命名契约，参与新会话建目录、多目录名称匹配和日常按名退路，别在中途重命名；单日归档身份由 wxid 与文件名日期决定。
 会话名优先取 `/contacts` 名册的当前 `displayName`（群聊同样适用）；名册没有该 username 时回退 `/sessions.displayName`，再缺失才用 wxid。
 
 **同一时间只在一个工作区跑完整导出**（路径 ① 会归档轮转 live roots）。
@@ -82,7 +82,7 @@ python "$SkillRoot\scripts\process_existing_raw.py" --raw-root <raw目录> --day
 | `--skip-voice-fallback` | 跳过 `[daily_export].voice_fallback_script` |
 | `--config` | 配置文件路径 |
 
-若当前 processed 非空，会先合并进归档 processed，再重建 diary 与 sidecar processed。**raw 原样保留、不轮转。**
+若当前 processed 非空，会先按 §5 合并进归档，再重建 diary 与 sidecar。账本记录且仍在 live raw 的输入被排除，不参与任何渲染或聚合；就绪输入更新所有对应输出。合并跳过的会话日文件会在重建时被正常清掉。**raw 原样保留、不轮转。** manual 后端使用同一流程。
 
 ## 3. 按需导出 `export_on_demand.py`
 
@@ -139,21 +139,49 @@ python "$SkillRoot\scripts\doctor.py"
 把换机备份、`--out` 的一次性产物等旧目录摄取进长期归档库。**默认只复制、不动源树。**
 
 ```powershell
-python "$SkillRoot\scriptsrchive_exports.py" --raw-root <旧raw目录> --processed-root <旧processed目录>
+python "$SkillRoot/scripts/archive_exports.py" --raw-root <旧raw目录> --processed-root <旧processed目录>
 ```
 
 | 参数 | 说明 |
 |---|---|
-| `--raw-root` | 要摄取的 raw 树 |
+| `--raw-root` | 要摄取的 raw 树，可重复；多个根作为同一批次预检 |
 | `--processed-root` | 要摄取的 processed 树 |
-| `--move-source` | 摄取成功后删除源树；不传即复制保源 |
+| `--print-plan` | 只读输出一份 JSON 计划，不创建目录、备份、日志或状态；不可与 move / force 参数同给 |
+| `--archive-raw-root` | 只读计划的显式归档 raw 根；不传时从 config 解析 |
+| `--move-source` | 只删除已成功落盘且字节未变的源文件，再清空目录；schema / 区间审查失败时保源 |
 | `--keep-source` | 旧命令兼容参数，现在是 no-op |
-| `--force-overwrite` | 只放行「机器判不出新旧」的同路径冲突；越不过严格子集 / 时间水位倒退 / 会话身份错配 |
+| `--force-overwrite` | 只放行「机器判不出新旧」的覆盖冲突；同身份旧件即使路径不同也受检，不能越过身份缺失、时间倒退、身份错配或目标阻断 |
 | `--config` | 配置文件路径 |
 
-写入前整批预检：判定 incoming 更旧就**拒绝整批、退出 `1`、一个文件都不写**（报告最多列 12 条），坏 JSON 逐个跳过并在结尾汇总。判据实现在 `scripts/archive_exports.py`，元数据形态与设计理由在工程 `CLAUDE.md`。
+写入前整批预检：判定 incoming 更旧就**拒绝整批、退出 `1`、一个文件都不写**（报告最多列 12 条），坏的 incoming JSON 逐个跳过并在结尾汇总。单日聊天按 `session.wxid` 与文件名日期解析到既有会话目录，重新写入的文件名统一为 `<目录名>_<yyyymmdd>.json`。批量摄取将替换或退休的每份旧聊天都须由 incoming 的消息身份多重集合覆盖，包含目标同名件；原件先保存到 archived 下的 `raw-folded/<批次-入口>/` 并复读，附 SHA256 与覆盖证明 manifest。覆盖失败、旧聊天正文不可读或 schema 非法、目录身份冲突、多个 incoming 同键或无法解析的聊天形态均为不可强放的硬阻断。仅支持一级会话目录内的单日聊天；不拆分多日 JSON，也不额外核对消息日期。媒体跟随解析后的会话目录，CAS 布局不变。
 
-根级本人朋友圈区间 JSON 走 §8 的共享覆盖判据：先复制媒体、发布新 JSON，再删除被完全覆盖的旧区间文件。同名但无法覆盖时保留新旧两份，`--force-overwrite` 也不能跳过覆盖判据；涉及区间摄取时，同路径 CAS 字节冲突拒绝整批。退出 `3` 表示新文件已发布，但有旧区间未覆盖或删除失败，需要查看报告；此时 `--move-source` 保留 raw 源树。聊天和日常单日朋友圈仍按原护栏处理。
+目标解析与执行共用 `wechat_diary_core/raw_archive.py` 的计划，身份与原覆盖护栏共用 `chat_identity.py`。先预览可用：
+
+```powershell
+python "$SkillRoot/scripts/archive_exports.py" --print-plan --archive-raw-root <归档raw根> --raw-root <暂存根一> --raw-root <暂存根二>
+```
+
+stdout 只有一份 JSON，含每个聊天的 target、旧文件 / 摘要 / 覆盖证明、非聊天配对与阻断原因；`retainedDirectories` 列出执行后预计仍有内容的旧目录、剩余文件和 media 等保留原因。合法计划即使含阻断也完整输出，硬阻断或 schema 失败退出 `1`；身份齐全但正文变化的 `forceEligible` 单列，不代表已授权覆盖。输入根非法时 stdout 为空、错误进 stderr。只读计划不支持 processed；计划与实际摄取都拒绝源根与 archived 根重叠。计划输出包含本地路径和会话信息，应保存在自己的数据工作区。
+
+实际摄取只删除已经清空的旧目录，保留明细写入 archived 下的 `raw-fold-report.json`，同时按条目生成 `raw-fold-report.md`；日常 fallback 共用这份报告。报告 v2 的 `items` 带 `entrypoint`，会话问题按入口、wxid、日期累积，只更新本轮触达的键；确认该日恰好一份、成功发布且未走退路才清除，批量不会覆盖日常条目。新条目的 `details` 记录 incoming、最终目标的身份与消息数、保留源位置，`affectedIdentities` 记录受影响目标的身份键；无法读取的消息数为 null，不冒充零。md 提供通用 Agent 开场词，正文列出具体路径与不处理的持续影响；控制台指向 md，日常入口复用改名报告的 Notepad 打开函数，只在内容变化且有待处理项时打开。旧报告没有的字段标为未知；清空后 JSON 和已有 md 保留空态，不新建空 md、不弹窗。暂时无法读出身份的旧候选路径持续保留，不能视为问题已解决。改名合并将目录保留明细写入原合并报告。正常承接新文件的目标目录不算“旧目录保留”。
+
+JSON 解析失败或条目结构不合法时（包括 detail 缺 incoming / legacyTarget、嵌套 identity 类型错误），先将整份原件封存为 `raw-fold-report.corrupt-<时间戳>.json`，警告指出路径，然后建立新账本继续记录。旧版可缺省的 details / 消息数仍兼容；存在的字段须满足其消费类型。报告中兼容旧格式的 `legacyTarget` 键记录本轮实际受保护的最终目标。报告读取、封存、更新或 Markdown 渲染异常只打印 `[WARN]`，不阻止已安全发布 raw 的清源及其余 processed 合并。
+
+保留集合只包含 raw 源路径。轮转取本次 `ApplyResult.retained`，通过 `RotationResult.retained_sources` 交给后续渲染。非轮转入口用 `workspace.retained_raw_sources(archived_root, live_raw_root=...)` 读取 `raw-fold-report.json`，仅保留仍存在于 live raw 的 `retainedSource`；不扫描归档、不重新规划。账本缺失返回空集合；存在但解析或逐条校验失败则打印路径并拒绝渲染与合并，不封存、不改写。只有日常轮转负责损坏账本的封存恢复。人工删除账本却留下 raw 会解除非轮转入口的排除，可能影响可重建的 processed Markdown，下次轮转重新核对并记账；应处理完对应 raw 再删账本。
+
+`archive`、`archive_chats_for`、`archive_moments_for`、`preprocessing.run` 与发现函数接受 `excluded_sources`。源路径两侧 resolve 后比较，在预处理、媒体复制与聚合之前排除；直接传入 `ProcessedChatExport` 列表也按 `source_path` 排除。`clear_first=True` 正常清空输出目录。`archiving.chat_render_targets`、`archiving.chat_sidecar_targets`、`preprocessing.moments.moments_render_targets` 分别给出会话、sidecar、朋友圈的相对目标路径，渲染写入与合并判定共用这些函数。合并端从 config 读取用户名及目标子根，与 runner 共用本人朋友圈 subroot 常量和目标子根规范化函数，不按日期粗略扣住其它类型的输出。
+
+`workspace.plan_processed_merge` 只读计算同一份处置：未触及的文件正常并入；触及的 1:1 会话日文件始终跳过；触及的多对一日文件在归档已有同路径时跳过，没有同路径时并入并报告。跳过文件留在 live，不受输出保护，下次 `clear_first` 清掉。就绪输入的最新内容仍进入所有 live 输出；被保留触及的归档多对一文件保持旧版，等待按归档全集补渲染。
+
+`archive_existing_processed` 接受可选 config 与 `excluded_sources`。旧两参数调用只自动采用路径匹配的同级 config.toml；存在保留源却无法获得渲染配置时拒绝合并并要求提供 config，不猜测历史输出的归属。批量 `archive_exports.py --processed-root` 先检查全部 raw／processed 候选的碰撞，任何拒绝均在 raw、processed、报告写入前返回，即使某个 processed 文件随后可能被跳过也先预检。通过后，processed 集合取 apply 后 `--raw-root` 中仍存在的 JSON（排除媒体库），覆盖 schema 失败、阻断、保留和默认复制模式的源副本；无 raw 参数时读账本。`--force-overwrite` 只放行现有规则允许人工确认的碰撞，不解除 processed 判定；`--move-source` 不删除被跳过文件。
+
+`processed_reporting` 只维护报告 Markdown 的「processed 影响」段，不增加或改写 raw 账本字段。该段分别列出被跳过的 1:1、多对一文件，以及归档无同路径而并入的文件；现存 Markdown 没有生成时点记录，无法确认含／缺某输入贡献时会如实标注。未解决记录在后续报告刷新中保留，重复相同报告不重新弹窗；报告异常只 WARN，不阻断已安全执行的合并。处理完 raw 后，这些输出由未来的「processed 按日重生」入口接管。**入口就绪前不要用 `process_existing_raw` 单目录补 sidecar／朋友圈日文件，它会以单会话覆盖整日。** `--day` 不筛输入，不能使单目录重处理成为按日全集重生。账本只记保留路径；不要把新导出写回同一保留路径并期待自动解除排除。
+
+日常轮转对计划的最终 target 与 retire 统一终检，不根据 action 的种类或来路豁免。覆盖失败仍可采用原按名退路，但退路的最终目标也必须通过终检。同字节 no-op；合法聊天替换要求同 wxid、同日且覆盖全部消息，日常可不备份；异身份、未知身份、未覆盖或非法 incoming 遇到现存聊天时保留源并报告。同身份同日的坏旧正文只在日常允许先备份复读再修复，manifest 明记 `backupBasis=archive_unreadable`。退休旧聊天必须有覆盖证明与可复读备份；逐字节相等时可用 `identical_sha256` 证明，不冒充代际身份比较。非聊天异字节走碰撞规则，CAS 冲突不可强放。被保留输入只保留可识别的实际 CAS 引用；截断前缀只用于识别媒体依赖，不能作为合法聊天或覆盖证明。目标不存在且无需保源的日常 CAS / legacy `media/` 优先同卷移动。执行前再次校验源、目标和旧件摘要，并拒绝终检后修改的目标、退休列表或备份义务。
+
+根级本人朋友圈区间 JSON 使用 §8 的动态与媒体覆盖判据。归档计划先确定实际发布路径（含必要的 `_保留_<唯一标识>`）与全部退休兄弟；同输入的保留路径稳定。同批顺序与原 publisher 一致：后项看到的是磁盘现状加前项计划发布、减前项计划退休；媒体判断看到整批计划落盘的附件。执行只使用计划，不重选目标或重枚举兄弟：媒体先落盘、旧件先备份复读、新 JSON 发布成功后再移出退休旧件。本批产生的旧件也遵守备份要求；同路径不同字节版本分别存储，manifest 的 `backupPath` 指向该版备份（旧 manifest 无此字段时使用 `path`）。备份分配避开账本、已有不同字节备份及被普通文件占用的目录前缀；写完账本后再核本项备份 SHA，才发布新 raw。同名但无法覆盖时保留新旧两份，`--force-overwrite` 不能跳过覆盖判据；既有整批预检仍拒绝多个同目标异字节 incoming 与同路径 CAS 字节冲突。退出 `3` 表示本批发布过程中出现旧区间待审查或移出失败；此时 `--move-source` 保留整批 raw 源树。
+
+范围 action 需要本批前序对象时，计划额外列出 `projectedObjects`（归档逻辑路径、`producedBySource`、SHA；空生产者表示原本为空或先前计划退休后的空位）与 `orderedAfterSources`。`targetBeforeSha256` 仍表示计划开始时的磁盘目标；`rangeInitialFiles` 绑定根级文件命名空间，包含不符合区间正则但可能被 Windows 同路径解析命中的大小写别名。终检用已验证的源字节检查将来的对象，执行前再检查初始文件 / 媒体证据，执行到该 action 时核对现场 SHA。执行顺序、对象证据和依赖也被封存；后追加拒绝会保留依赖它的后项，不能跳过前序动作后继续使用其虚拟结果。执行中若前项失败使现场偏离计划，后项停止，不在写入阶段重新规划。
 
 ## 6. 打开产物 `Open-LatestInsights.ps1` / `Open-InsightsByDate.ps1`
 
@@ -247,7 +275,7 @@ python "$SkillRoot\scripts\export_bulk_raw.py" --self-moments --start 2010-01-01
 
 新 JSON 发布成功后，自动检查同 digest 的旧区间（包括首版请求日期命名的区间及保留文件）；还要求实际账号集合一致。**完全覆盖** = 每个旧 post 的账号与 id 在新文件中存在，且旧 post 的每个已落地媒体引用（含 Live Photo）在新文件同一 post 中有同类、可读且逐字节一致的媒体；CAS 文件名 md5 还须与内容一致。只检查 URL、不含本地路径的媒体不构成删除约束；旧本地媒体不可读、空或重复 post 身份、坏 JSON 等无法核验的情况保留旧文件并打印原因。评论、点赞、昵称和 `exportTime` 允许改变，报告对应变化计数（前三者按旧 post 计数，`exportTime` 按文件计数）。日常单日文件、其他 digest 和 CAS 对象不删除。
 
-若新旧常规文件名相同但覆盖不满足，旧文件原名原字节保留，新文件加 `_保留_<32位唯一标识>` 后缀；后续覆盖满足时同样会自动清理这些保留文件。覆盖判据及发布后清理唯一实现在 `wechat_diary_core/moments_ranges.py`，导出根和归档摄取共用。发布失败不删除旧文件，旧文件删除失败不撤回新文件。控制台逐份打印保留原因或「已替换旧区间文件 X（N 条全部被新文件覆盖）」。
+若新旧常规文件名相同但覆盖不满足，旧文件原名原字节保留，新文件加 `_保留_<32位唯一标识>` 后缀；后续覆盖满足时仍可收敛这些保留文件。覆盖判据唯一实现在 `wechat_diary_core/moments_ranges.py`，导出与归档计划共用。导出根继续由 `publish_range` 发布；归档摄取由 `raw_archive` 执行已终检的计划，并为退休旧件增加可复读备份。发布失败不删除旧文件，旧文件移出失败不撤回新文件。
 
 `/sns/export` 走独立数据面 `[export_backend.weflow_api].moments_request_timeout_sec`（新键缺省即生效，默认 `3600` 秒）；探活/列表仍用 `request_timeout_sec`，消息仍用 `message_request_timeout_sec`。超时提示调整朋友圈键并原命令重跑。此模式退出码：`0` = canonical 已发布且无旧区间待审查（含空结果或缺媒体降级，缺失计数与 WARN 可见）；`1` = 配置、请求、映射或发布失败；`2` = 工作区解析或 CLI 用法错误；`3` = 新文件已发布，但有旧区间未覆盖或删除失败，需要查看报告。`0` 不证明服务端历史全齐：动态来自本地 SNS 缓存，已有动态的媒体下载可能访问 CDN；更早动态需先在 PC 微信本人朋友圈向下浏览，再原命令重跑。没有自动拉取未缓存动态的 HTTP API。
 

@@ -29,13 +29,18 @@
 
 约定：
 
-- 会话目录名必须以会话类型开头并带日期后缀：`{私聊|群聊}_<会话名>_<YYYYMMDD>` 或 `{私聊|群聊}_<会话名>_<YYYYMMDD-YYYYMMDD>`。类型前缀用于保证不同导出后端写入同一套长期会话目录；进入长期归档库时会去掉日期后缀，JSON 文件名保留原日期。
+- 导出会话目录名必须以会话类型开头并带日期后缀：`{私聊|群聊}_<会话名>_<YYYYMMDD>` 或 `{私聊|群聊}_<会话名>_<YYYYMMDD-YYYYMMDD>`。类型前缀是命名契约。长期归档的单日聊天按 `session.wxid` 与 JSON 文件名日期解析既有会话目录；全新会话才按导出目录去日期后缀建目录，重新写入的文件名为 `<归档目录名>_<YYYYMMDD>.json`。多日聊天仍是可读取的 schema v1 产物，但不由单日摄取器拆分，批量摄取会明确阻断。
 - 聊天媒体路径始终以会话 JSON 所在目录为基准解析。历史产物可为 `media/images/a.jpg`；新 HTTP API 产物的 `weflow.mediaScheme` 为 `cas-v1`，引用形态为 `../_media/<class>/<hh>/<md5>.<ext>`。
 - 朋友圈 canonical 位置是 raw 根级 `朋友圈导出_*.json`；新产物的 `posts[].media[].localPath` 以 raw 根为基准引用 `_media/<class>/<hh>/<md5>.<ext>`，Live Photo 动态部分写在同一媒体项的 `livePhoto.localPath`。媒体解密失败时该项可保留 URL 而不写 `localPath`；历史 `media/` 布局继续可读、不迁移。
 - 长期归档库中的 `archived/raw/<会话>/...json` 仍是 schema v1；根级朋友圈 JSON 与根级 `media/` 也按原名归档。
+- 归档计划、会话头索引、改名扫描、历史导出身份扫描与群成员历史回退均接受 UTF-8 BOM；归档仍保存 incoming 原字节，不因解码重新序列化。BOM 不改变同目录混入不同 wxid 的拒绝判据。
 - 日常导出收尾会扫描 `archived/raw` 的一级会话目录；同一 `session.wxid` 出现在多个目录时，以本轮 canonical raw 的 `session.displayName` 为目标目录逐文件合并。没有本轮 raw 的会话不猜测目标目录而停留报告；碰撞判据复用历史摄取护栏。相同被拒/停留项在零文件动作时由工作区本地状态去重，明细或目标改变、状态删除或实际移动才重新报告；状态与报告均在工作区本地，且不影响导出退出码。
+- 改名纯搬家不回溯归一文件名。所有将移出 raw 的旧路径都纳入计划并先持久备份；共享媒体仍被旧聊天需要时保留旧源。同日逐字节相同的副本可用字节相等证明覆盖，未知代际不冒充同代证明；其它同日文件保留并报告，等待该日重写时证明覆盖并收敛。备份位于 `archived/raw-folded/`，不作为 raw 输入；JSON 本身不重新序列化。
+- 轮转、改名合并与批量摄取在计划定稿后统一检查最终目标及退休列表，取消日常按名免证明。同字节 no-op；同 wxid、同日且消息覆盖通过的日常替换可不备份；同身份坏旧正文只能在日常先备份复读再替换，非法 incoming 不得覆盖旧聊天。非聊天替换沿用碰撞规则，非聊天退休也必须先备份；朋友圈区间按原顺序在虚拟归档上规划，包含本批先写后退休的对象。其生产者与 SHA 进入计划，退休前仍备份复读；同路径多版本通过 manifest 的 `backupPath` 区分，旧 manifest 无该字段时回退 `path`。范围计划字段和执行前提见 [入口与参数详表](../references/entrypoints.md)。
 
 ## 聊天 JSON
+
+保留约定同时适用于聊天与朋友圈：仍被保留的 raw 所引用的 CAS（含朋友圈 Live Photo 动态部分）保留在 live raw，该输入从后续渲染中排除。processed 合并跳过被保留输入触及的会话日文件，以及归档已有同路径的 sidecar／朋友圈日文件；触及的多对一文件在归档无同路径时可并入并报告。就绪输入在 live 正常更新；受触及的归档聚合保持旧版，等待按归档全集补渲染。三个入口的集合来源、输入排除、目标函数与报告行为见 [入口与参数详表](../references/entrypoints.md)；这些执行约定不改变 canonical raw 字段或 schema 版本。
 
 根对象：
 
@@ -177,7 +182,7 @@
 
 - `preprocessing.cleaner.load_chat_export()`：聊天 raw 校验失败时抛 `InvalidExportError`，消息包含具体文件路径与字段名。
 - `preprocessing.moments.load_moments_export()`：朋友圈 raw 校验失败时抛 `InvalidExportError`，消息包含具体文件路径与字段名。
-- `scripts/archive_exports.py`：摄取 raw 根前逐个 JSON 校验；坏 JSON 跳过，其余文件继续归档，结尾汇总失败清单并返回非零退出码。写入前还会对同路径聊天 JSON 做快照倒退检查（同代按 `(createTime, localId)`、跨代按非空 `platformMessageId`；严格子集、时间水位倒退、会话身份错配一律拒绝整批）。⚠️ `platformMessageId` 不是必填字段、也不保证唯一，摄取护栏只在跨代比较时用它并在有空值时 fail-closed，**不要据此把它升级为 schema 主键**。processed、媒体、朋友圈 JSON 等没有聊天消息集合身份契约，同路径异字节覆盖默认同样 fail-closed，只能由操作者明确确认 incoming 更新后放行。
+- `scripts/archive_exports.py`：摄取 raw 根前逐个 JSON 校验；坏 JSON 跳过，其余文件继续归档，结尾汇总失败清单并返回非零退出码。写入前对解析得到的同 wxid、同日旧件做快照倒退检查，不限于同路径（同代按 `(createTime, localId)`、跨代按非空 `platformMessageId` 的多重集合；身份缺失、时间水位倒退、会话身份错配一律拒绝整批）。所有将被替换或退休的旧聊天（含目标同名件）都须校验正文 schema、证明被覆盖并先备份；人工强放不能跳过这三项。⚠️ `platformMessageId` 不是必填字段、也不保证唯一，摄取护栏只在跨代比较时用它并在有空值时 fail-closed，**不要据此把它升级为 schema 主键**。processed 与其它没有聊天身份契约的同路径异字节冲突默认拒绝，仅可对允许人工确认的类型强放；legacy 会话媒体与朋友圈区间 CAS 的异字节碰撞为硬拒绝。朋友圈区间 JSON 使用动态及媒体覆盖判据决定计划目标和退休列表，随后也通过最终目标终检与备份执行。
 
 ## 字段梳理清单
 

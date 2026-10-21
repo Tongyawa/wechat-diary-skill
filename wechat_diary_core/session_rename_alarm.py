@@ -22,6 +22,7 @@ from typing import Any
 from .archiving import strip_date_suffix
 from .backends.weflow.naming import sanitize_session_name
 from .media_store import MEDIA_STORE_NAME
+from .raw_archive import plan_raw_ingest, apply_raw_ingest_plan, remove_empty_directories
 
 
 STATE_VERSION = 1
@@ -61,6 +62,8 @@ class SessionRenameMerge:
     moved_files: int
     duplicate_files: int
     rejected_files: tuple[tuple[str, str], ...]
+    pending_days: tuple[tuple[str, str], ...] = ()
+    retained_directories: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -183,7 +186,8 @@ def reconcile_archive_session_names(
     """
 
     archive_root = Path(archive_raw_root)
-    directories_by_wxid = _archive_session_directories(archive_root)
+    archive_headers: dict = {}
+    directories_by_wxid = _archive_session_directories(archive_root, header_cache=archive_headers)
     targets, target_issues = _current_session_targets(Path(current_raw_root))
     merges: list[SessionRenameMerge] = []
     stayed: list[SessionRenameStay] = []
@@ -211,6 +215,7 @@ def reconcile_archive_session_names(
                 source_directories=source_directories,
                 find_guard_failures=find_guard_failures,
                 files_equal=files_equal,
+                header_cache=archive_headers,
             )
         )
 
@@ -312,6 +317,15 @@ def write_session_rename_report(
             lines.append(f"  护栏拒绝: {len(merge.rejected_files)} 个文件（原目录已保留）")
             for relative_path, reason in merge.rejected_files:
                 lines.append(f"    - {relative_path}: {reason}")
+    for merge in report.merges:
+        if merge.pending_days:
+            lines.extend(["", "## 同日待收敛", ""])
+            for relative_path, reason in merge.pending_days:
+                lines.append(f"- {relative_path}: {reason}")
+        if merge.retained_directories:
+            lines.extend(["", "## 旧目录保留", ""])
+            for directory, reason in merge.retained_directories:
+                lines.append(f"- {directory}: {reason}")
     if report.stayed:
         lines.extend(["", "## 停留", ""])
         for stayed in report.stayed:
@@ -334,12 +348,14 @@ def _pending_report_records(
 ) -> dict[str, dict[str, Any]]:
     records: dict[str, dict[str, Any]] = {}
     for merge in reconciliation.merges:
-        if not merge.rejected_files:
+        if not merge.rejected_files and not merge.pending_days and not merge.retained_directories:
             continue
         payload = {
             "kind": "guard_rejection",
             "target_directory": merge.target_directory,
             "rejected_files": list(merge.rejected_files),
+            "pending_days": list(merge.pending_days),
+            "retained_directories": list(merge.retained_directories),
         }
         records[merge.wxid] = _fingerprinted_record(payload)
     for stayed in reconciliation.stayed:
@@ -360,20 +376,34 @@ def _fingerprinted_record(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _read_session_wxid(path: Path) -> str:
+def _read_session_wxid(path: Path, *, header_cache: dict | None = None) -> str:
+    session = None
+    before = None
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        if header_cache is not None:
+            before = path.stat()
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
+        if isinstance(payload, dict) and isinstance(payload.get("session"), dict):
+            session = payload["session"]
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-        return ""
-    if not isinstance(payload, dict):
-        return ""
-    session = payload.get("session")
-    if not isinstance(session, dict):
-        return ""
-    return str(session.get("wxid") or "").strip()
+        pass
+    if header_cache is not None and before is not None:
+        def signature(info):
+            return (info.st_size, info.st_mtime_ns, info.st_dev, info.st_ino, info.st_ctime_ns)
+        try:
+            if signature(before) == signature(path.stat()):
+                relative = path.relative_to(Path(header_cache["root"])).as_posix()
+                header_cache["files"][relative] = {"signature": signature(before), "session": session}
+        except OSError:
+            pass
+    return str((session or {}).get("wxid") or "").strip()
 
 
-def _archive_session_directories(root: Path) -> dict[str, set[str]]:
+def _archive_session_directories(root: Path, *, header_cache: dict | None = None) -> dict[str, set[str]]:
+    root = root.resolve()
+    if header_cache is not None:
+        header_cache.clear()
+        header_cache.update(root=str(root), files={})
     if not root.is_dir():
         return {}
     directories_by_wxid: dict[str, set[str]] = {}
@@ -381,7 +411,7 @@ def _archive_session_directories(root: Path) -> dict[str, set[str]]:
         path for path in root.iterdir() if path.is_dir() and path.name != MEDIA_STORE_NAME
     ):
         for json_path in sorted(session_dir.glob("*.json")):
-            wxid = _read_session_wxid(json_path)
+            wxid = _read_session_wxid(json_path, header_cache=header_cache)
             if wxid:
                 directories_by_wxid.setdefault(wxid, set()).add(session_dir.name)
     return directories_by_wxid
@@ -425,7 +455,7 @@ def _current_session_targets(raw_root: Path) -> tuple[dict[str, str], dict[str, 
 
 def _read_session_payload(path: Path) -> dict[str, Any] | None:
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return None
     return payload if isinstance(payload, dict) else None
@@ -439,90 +469,35 @@ def _merge_session_directories(
     source_directories: tuple[str, ...],
     find_guard_failures: Callable[[list[tuple[Path, Path]]], list[Any]],
     files_equal: Callable[[Path, Path], bool],
+    header_cache: dict | None = None,
 ) -> SessionRenameMerge:
-    target_root = archive_root / target_directory
-    pairs: list[tuple[Path, Path]] = []
-    rejected: dict[Path, str] = {}
-    for source_directory in source_directories:
-        source_root = archive_root / source_directory
-        for source_path in sorted(path for path in source_root.rglob("*") if path.is_file()):
-            destination = target_root / source_path.relative_to(source_root)
-            if destination.exists() and not destination.is_file():
-                rejected[source_path] = "目标同路径不是文件，已保留原文件"
-                continue
-            pairs.append((source_path, destination))
-
-    for failure in find_guard_failures(pairs):
-        rejected[Path(failure.source)] = str(failure.reason)
-
-    moved = 0
-    duplicates = 0
-    for source_path, destination in pairs:
-        if source_path in rejected:
-            continue
-        if destination.is_file() and files_equal(source_path, destination):
-            _remove_file(source_path)
-            duplicates += 1
-            continue
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        _move_file(source_path, destination)
-        moved += 1
-
-    for source_directory in source_directories:
-        _remove_empty_directories(archive_root / source_directory)
-
-    relative_rejections = tuple(
-        sorted(
-            (
-                (str(source_path.relative_to(archive_root)), reason)
-                for source_path, reason in rejected.items()
-            ),
-            key=lambda item: item[0],
-        )
-    )
+    selected = {p.resolve() for name in source_directories
+                for p in (archive_root / name).rglob("*") if p.is_file()}
+    plan = plan_raw_ingest(archive_root, [archive_root], policy="rename", only_paths=selected,
+                           rename_targets={name: target_directory for name in source_directories},
+                           header_cache=header_cache)
+    # Retain dependency injection for the established same-path collision policy.
+    pairs = [(a.source, a.target) for a in plan.actions if a.status == "ready" and not a.duplicate]
+    failures = {Path(f.source): str(f.reason) for f in find_guard_failures(pairs)}
+    for action in plan.actions:
+        if action.source in failures:
+            action.block(failures[action.source], "hardBlocked")
+    result = apply_raw_ingest_plan(plan, move_source=True)
+    for name in source_directories:
+        remove_empty_directories(archive_root / name, remove_root=True)
+    rejected = tuple(sorted((a.relative, "; ".join(a.reasons)) for a in plan.actions if a.status != "ready"))
+    pending = tuple(sorted({(f"{target_directory}/{a.day}", warning)
+                            for a in plan.actions for warning in a.warnings}))
     return SessionRenameMerge(
-        wxid=wxid,
-        target_directory=target_directory,
-        source_directories=source_directories,
-        moved_files=moved,
-        duplicate_files=duplicates,
-        rejected_files=relative_rejections,
+        wxid=wxid, target_directory=target_directory, source_directories=source_directories,
+        moved_files=sum(a.status == "ready" and not a.duplicate
+                        and (a.source not in result.retained or a.target_before != a.source_sha)
+                        for a in plan.actions),
+        duplicate_files=result.duplicates,
+        rejected_files=rejected, pending_days=pending,
+        retained_directories=tuple((item["directory"], "; ".join(item["reasons"]))
+                                   for item in result.warnings if "directory" in item),
     )
-
-
-def _move_file(source: Path, destination: Path) -> None:
-    try:
-        os.replace(source, destination)
-    except OSError:
-        if destination.exists():
-            os.chmod(destination, stat.S_IREAD | stat.S_IWRITE)
-        try:
-            os.replace(source, destination)
-        except OSError:
-            shutil.copy2(source, destination)
-            _remove_file(source)
-
-
-def _remove_file(path: Path) -> None:
-    try:
-        path.unlink()
-    except OSError:
-        os.chmod(path, stat.S_IREAD | stat.S_IWRITE)
-        path.unlink()
-
-
-def _remove_empty_directories(root: Path) -> None:
-    if not root.exists():
-        return
-    for directory in sorted((path for path in root.rglob("*") if path.is_dir()), reverse=True):
-        try:
-            directory.rmdir()
-        except OSError:
-            pass
-    try:
-        root.rmdir()
-    except OSError:
-        pass
 
 
 def _empty_state_document() -> dict[str, dict[str, dict[str, Any]] | int]:

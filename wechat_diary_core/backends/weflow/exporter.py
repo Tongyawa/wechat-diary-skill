@@ -39,12 +39,11 @@ def export_all_chats(
 ) -> ExportRun:
     """Export every chat for the given date via WeFlow's automation pipeline.
 
-    ``cleanup`` controls how the raw + processed roots get wiped first so today's
-    WeFlow output never mixes with yesterday's:
+    ``cleanup`` controls what happens to existing raw and processed before export:
 
     - ``"delete"``: rmtree both roots without archiving.
-    - ``"archive"`` (daily default): merge both roots into the ``paths.archived``
-      library first (per-session, newer file wins), so nothing is lost.
+    - ``"archive"`` (daily default): execute the shared raw archive plan and merge
+      processed; retain any raw source that was not safely consumed.
     - ``"skip"``: do nothing (tests / partial reruns).
     """
     cfg = config or load_config()

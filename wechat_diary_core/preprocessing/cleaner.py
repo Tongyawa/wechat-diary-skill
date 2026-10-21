@@ -281,14 +281,16 @@ def clean_messages(
     return cleaned
 
 
-def discover_chat_exports(root: str | Path) -> list[Path]:
+def discover_chat_exports(root: str | Path, *, excluded_sources: set[Path] | None = None) -> list[Path]:
     path = Path(root)
+    excluded = {Path(p).resolve() for p in excluded_sources or ()}
     if path.is_file():
-        return [path]
+        return [] if path.resolve() in excluded else [path]
     if not path.exists():
         raise FileNotFoundError(path)
 
-    return sorted(candidate for candidate in path.rglob("*.json") if _looks_like_chat_export(candidate))
+    return sorted(candidate for candidate in path.rglob("*.json")
+                  if candidate.resolve() not in excluded and _looks_like_chat_export(candidate))
 
 
 def _looks_like_chat_export(path: Path) -> bool:

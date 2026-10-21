@@ -11,9 +11,11 @@ import shutil
 from .chat_flow import render_chat_flow
 from .config import Config, load_config
 from .preprocessing import ImageMode, ProcessedChatExport, run as preprocess_run
+from .preprocessing.moments import declared_single_day
 
 
 DATE_SUFFIX_RE = re.compile(r"_(\d{8})(?:-\d{8})?$")
+SELF_MOMENTS_SUBROOT = "朋友圈_自己"
 
 
 def archive(
@@ -22,6 +24,7 @@ def archive(
     output_root: str | Path | None = None,
     clear_first: bool = True,
     image_mode: ImageMode = "ocr_inline",
+    excluded_sources: set[Path] | None = None,
 ) -> list[Path]:
     """Render preprocessed exports into ``WeFlow-processed-exports/<session>/<yyyy-mm-dd>.md``.
 
@@ -36,20 +39,26 @@ def archive(
     """
     cfg = config or load_config()
     exports = (
-        preprocess_run(processed_exports, config=cfg, image_mode=image_mode)
+        preprocess_run(processed_exports, config=cfg, image_mode=image_mode, excluded_sources=excluded_sources)
         if isinstance(processed_exports, (str, Path))
         else list(processed_exports)
     )
     root = Path(output_root) if output_root is not None else cfg.paths.processed
+    excluded = {Path(p).resolve() for p in excluded_sources or ()}
     if clear_first and root.exists():
         shutil.rmtree(root, ignore_errors=True)
     root.mkdir(parents=True, exist_ok=True)
 
     written: list[Path] = []
     for export in exports:
-        session_dir = strip_date_suffix(export.source_folder)
-        for day, messages in _group_messages_by_day(export.data.get("messages") or []).items():
-            out_path = root / session_dir / f"{day}.md"
+        if export.source_path.resolve() in excluded:
+            continue
+        by_day = _group_messages_by_day(export.data.get("messages") or [])
+        for relative in chat_render_targets(export):
+            out_path = root / relative
+            messages = by_day.get(relative.stem)
+            if not messages:
+                continue
             out_path.parent.mkdir(parents=True, exist_ok=True)
             out_path.write_text(render_chat_flow(messages), encoding="utf-8")
             written.append(out_path)
@@ -64,6 +73,7 @@ def archive_chats_for(
     subroot: str | Path = "_targets/chats",
     image_mode: ImageMode = "preserve_paths",
     clear_first: bool = True,
+    excluded_sources: set[Path] | None = None,
 ) -> list[Path]:
     """Archive only sessions whose participants match ``usernames`` into
     ``<paths.processed>/<subroot>/<yyyy-mm-dd>.md`` (no per-session folder).
@@ -78,8 +88,7 @@ def archive_chats_for(
     if not target_set:
         return []
 
-    exports = preprocess_run(source, config=cfg, image_mode=image_mode)
-    filtered = [export for export in exports if _export_matches_usernames(export, target_set)]
+    exports = preprocess_run(source, config=cfg, image_mode=image_mode, excluded_sources=excluded_sources)
 
     root = cfg.paths.processed / Path(subroot)
     if clear_first and root.exists():
@@ -87,15 +96,36 @@ def archive_chats_for(
     root.mkdir(parents=True, exist_ok=True)
 
     written: list[Path] = []
-    for export in filtered:
-        for day, messages in _group_messages_by_day(export.data.get("messages") or []).items():
-            out_path = root / f"{day}.md"
+    for export in exports:
+        by_day = _group_messages_by_day(export.data.get("messages") or [])
+        for relative in chat_sidecar_targets(export, usernames, subroot):
+            out_path = cfg.paths.processed / relative
+            messages = by_day.get(relative.stem)
+            if not messages:
+                continue
             existing = out_path.read_text(encoding="utf-8") if out_path.exists() else ""
             chunk = render_chat_flow(messages)
             out_path.write_text(existing + chunk if existing else chunk, encoding="utf-8")
             if out_path not in written:
                 written.append(out_path)
     return written
+
+
+def normalize_target_subroot(value: str) -> str:
+    return value.strip().strip("/\\") or "_targets"
+
+
+def chat_sidecar_targets(export: ProcessedChatExport, usernames: Sequence[str], subroot: str | Path) -> list[Path]:
+    """Potential sidecar outputs; preprocessing can remove but never add days."""
+    target_set = {str(name).strip() for name in usernames if str(name).strip()}
+    if not target_set or not _export_matches_usernames(export, target_set):
+        return []
+    days = set(_group_messages_by_day(export.data.get("messages") or []))
+    if not export.data.get('messages'):
+        declared = declared_single_day(export.source_path)
+        if declared:
+            days.add(declared)
+    return [Path(subroot) / f"{day}.md" for day in sorted(days)]
 
 
 def _export_matches_usernames(export: ProcessedChatExport, usernames: set[str]) -> bool:
@@ -116,6 +146,21 @@ def _export_matches_usernames(export: ProcessedChatExport, usernames: set[str]) 
         if sender and sender in usernames and int(message.get("isSend") or 0) == 0:
             return True
     return False
+
+
+def chat_render_targets(export: ProcessedChatExport) -> list[Path]:
+    """Relative per-session/day outputs, shared by rendering and archive merging.
+
+    This also accepts unprocessed message data: filtering may remove outputs,
+    but it cannot create an additional day or session destination.
+    """
+    session_dir = strip_date_suffix(export.source_folder)
+    days = set(_group_messages_by_day(export.data.get("messages") or []))
+    if not export.data.get('messages'):
+        declared = declared_single_day(export.source_path)
+        if declared:
+            days.add(declared)
+    return [Path(session_dir) / f"{day}.md" for day in sorted(days)]
 
 
 def strip_date_suffix(folder_name: str) -> str:

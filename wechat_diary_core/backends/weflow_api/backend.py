@@ -97,6 +97,7 @@ class WeflowApiBackend:
     _last_export_date: date | None = field(default=None, init=False, repr=False)
     _sessions_cache: list[dict[str, Any]] | None = field(default=None, init=False, repr=False)
     _contacts_cache: list[dict[str, Any]] | None = field(default=None, init=False, repr=False)
+    archive_headers: dict | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         if self.process_launcher is None:
@@ -939,7 +940,10 @@ class WeflowApiBackend:
             self.config.paths.raw,
             directory_key=strip_date_suffix,
         )
-        archive_collisions = _stored_session_directory_collisions(self.config.paths.archived / "raw")
+        self.archive_headers = {}
+        archive_collisions = _stored_session_directory_collisions(
+            self.config.paths.archived / "raw", header_cache=self.archive_headers,
+        )
         if current_collisions or live_raw_collisions or archive_collisions:
             details: list[str] = []
             if current_collisions:
@@ -1151,7 +1155,7 @@ def _last_known_group_members(
                 seen_directories.add(resolved_dir)
                 for json_path in session_dir.glob("*.json"):
                     try:
-                        payload = json.loads(json_path.read_text(encoding="utf-8"))
+                        payload = json.loads(json_path.read_text(encoding="utf-8-sig"))
                     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
                         continue
                     session = payload.get("session") if isinstance(payload, dict) else None
@@ -1230,18 +1234,23 @@ def _stored_session_directory_collisions(
     raw_root: Path,
     *,
     directory_key: Callable[[str], str] = str,
+    header_cache: dict | None = None,
 ) -> dict[str, dict[str, str]]:
     """Find preserved evidence that one archive key contains multiple wxids.
 
     We inspect only direct JSON children of first-level session directories, the
     same shape used by the rename reconciler. ``directory_key`` is identity for
-    archived directories and strips the date suffix for live raw, matching the
-    rotation destination exactly. Root-level moments exports and media subtrees
+    archived directories and strips the date suffix for live raw, preserving the
+    existing directory-name gate. Raw target resolution checks wxid separately.
+    Root-level moments exports and media subtrees
     therefore cannot participate in this chat-identity guard.
     """
 
     if not raw_root.is_dir():
         return {}
+    if header_cache is not None:
+        header_cache.clear()
+        header_cache.update(root=str(raw_root.resolve()), files={})
     candidates: dict[str, dict[str, str]] = {}
     for session_dir in sorted(
         path
@@ -1251,7 +1260,23 @@ def _stored_session_directory_collisions(
         directory = directory_key(session_dir.name)
         identities = candidates.setdefault(directory, {})
         for json_path in sorted(session_dir.glob("*.json")):
+            before = None
+            if header_cache is not None:
+                try:
+                    info = json_path.stat()
+                    before = (info.st_size, info.st_mtime_ns, info.st_dev, info.st_ino, info.st_ctime_ns)
+                except OSError:
+                    pass
             session = _read_stored_session(json_path)
+            if header_cache is not None and before is not None:
+                try:
+                    info = json_path.stat()
+                    if before == (info.st_size, info.st_mtime_ns, info.st_dev, info.st_ino, info.st_ctime_ns):
+                        header_cache["files"][json_path.relative_to(raw_root).as_posix()] = {
+                            "signature": before, "session": session,
+                        }
+                except OSError:
+                    pass
             if session is None:
                 continue
             wxid = str(session.get("wxid") or session.get("username") or "").strip()
@@ -1264,83 +1289,7 @@ def _stored_session_directory_collisions(
     }
 
 
-_SESSION_PREFIX_CHUNK_CHARS = 4096
-_SESSION_PREFIX_MAX_CHARS = 65536
-_NEED_MORE_PREFIX = object()
-_USE_FULL_DOCUMENT = object()
-
-
-def _read_stored_session(json_path: Path) -> dict[str, Any] | None:
-    """Read the leading canonical session object without materializing messages.
-
-    Canonical exports serialize ``session`` as the first top-level field. Any
-    other ordering, oversized metadata, or ambiguous prefix falls back to the
-    previous full-document parser so the optimization cannot hide a supported
-    historical shape.
-    """
-
-    try:
-        with json_path.open("r", encoding="utf-8") as stream:
-            prefix = ""
-            while len(prefix) < _SESSION_PREFIX_MAX_CHARS:
-                chunk = stream.read(
-                    min(
-                        _SESSION_PREFIX_CHUNK_CHARS,
-                        _SESSION_PREFIX_MAX_CHARS - len(prefix),
-                    )
-                )
-                prefix += chunk
-                parsed = _parse_leading_session(prefix)
-                if isinstance(parsed, dict):
-                    return parsed
-                if parsed is _USE_FULL_DOCUMENT or not chunk:
-                    break
-    except (OSError, UnicodeDecodeError):
-        return None
-
-    try:
-        payload = json.loads(json_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-        return None
-    if not isinstance(payload, dict) or not isinstance(payload.get("session"), dict):
-        return None
-    return payload["session"]
-
-
-def _parse_leading_session(prefix: str) -> dict[str, Any] | object:
-    """Return a complete first ``session`` value or a parser control sentinel."""
-
-    decoder = json.JSONDecoder()
-    index = 0
-    while index < len(prefix) and prefix[index].isspace():
-        index += 1
-    if index >= len(prefix):
-        return _NEED_MORE_PREFIX
-    if prefix[index] != "{":
-        return _USE_FULL_DOCUMENT
-    index += 1
-    while index < len(prefix) and prefix[index].isspace():
-        index += 1
-    try:
-        key, index = decoder.raw_decode(prefix, index)
-    except json.JSONDecodeError:
-        return _NEED_MORE_PREFIX
-    if key != "session":
-        return _USE_FULL_DOCUMENT
-    while index < len(prefix) and prefix[index].isspace():
-        index += 1
-    if index >= len(prefix):
-        return _NEED_MORE_PREFIX
-    if prefix[index] != ":":
-        return _USE_FULL_DOCUMENT
-    index += 1
-    while index < len(prefix) and prefix[index].isspace():
-        index += 1
-    try:
-        session, _ = decoder.raw_decode(prefix, index)
-    except json.JSONDecodeError:
-        return _NEED_MORE_PREFIX
-    return session if isinstance(session, dict) else _USE_FULL_DOCUMENT
+from ...chat_identity import _read_stored_session, _parse_leading_session
 
 
 def _session_display_name(session: dict[str, Any], wxid: str) -> str:
@@ -1413,7 +1362,7 @@ def _historical_export_wxids(raw_archive: Path) -> tuple[set[str], bool]:
     try:
         paths = list(raw_archive.rglob("*.json"))
         for path in paths:
-            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload = json.loads(path.read_text(encoding="utf-8-sig"))
             if not isinstance(payload, dict):
                 return set(), False
             session = payload.get("session")

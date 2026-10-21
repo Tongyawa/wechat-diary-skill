@@ -149,16 +149,31 @@ class WorkspaceArchiveMergeTests(unittest.TestCase):
             media.parent.mkdir(parents=True)
             media.write_bytes(b"video")
             media.chmod(stat.S_IREAD)
-            # an older, also read-only copy already sits in the library
+            # Identical read-only media are a no-op at the destination.
             old = cfg.paths.archived / "raw" / "私聊_A" / "media" / "videos" / "clip.mp4"
             old.parent.mkdir(parents=True)
-            old.write_bytes(b"old video")
+            old.write_bytes(b"video")
             old.chmod(stat.S_IREAD)
 
             rotate_export_workspace(cfg, label="all_chats")
 
             self.assertEqual(old.read_bytes(), b"video")
             self.assertEqual(list(cfg.paths.raw.iterdir()), [])
+
+    def test_archive_mode_keeps_different_readonly_media_for_review(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = _load_test_config(Path(tmp))
+            media = cfg.paths.raw / '私聊_A_20260611/media/videos/clip.mp4'
+            media.parent.mkdir(parents=True)
+            media.write_bytes(b'incoming video')
+            media.chmod(stat.S_IREAD)
+            old = cfg.paths.archived / 'raw/私聊_A/media/videos/clip.mp4'
+            old.parent.mkdir(parents=True)
+            old.write_bytes(b'old video')
+            old.chmod(stat.S_IREAD)
+            rotate_export_workspace(cfg)
+            self.assertEqual(old.read_bytes(), b'old video')
+            self.assertEqual(media.read_bytes(), b'incoming video')
 
 
 class MergeHelperTests(unittest.TestCase):

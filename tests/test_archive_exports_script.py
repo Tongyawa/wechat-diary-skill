@@ -9,6 +9,7 @@ from pathlib import Path
 
 from scripts.archive_exports import MAX_REPORTED_GUARD_FAILURES
 from scripts.archive_exports import _chat_lineage
+from scripts.archive_exports import _chat_regression_reason
 from scripts.archive_exports import main as archive_exports_main
 
 
@@ -123,7 +124,7 @@ class ArchiveExportsScriptTests(unittest.TestCase):
             root = Path(tmp)
             config_path = _write_config(root)
             raw_source = root / "WeFlow-raw-exports-去年"
-            raw_file = raw_source / "私聊_A_20250606-20260606" / "私聊_A_20250606-20260606.json"
+            raw_file = raw_source / "私聊_A_20260606" / "私聊_A_20260606.json"
             _write_json(raw_file, _chat_payload())
             processed_source = root / "WeFlow-processed-exports-去年"
             processed_file = processed_source / "私聊_A" / "2025-07-01.md"
@@ -385,14 +386,17 @@ class ArchiveExportsScriptTests(unittest.TestCase):
             self.assertEqual(archived_path.read_bytes(), archived_before)
             self.assertIn("platformMessageId 零交集", stderr)
 
-    def test_force_overwrite_can_bypass_only_unverifiable_cross_lineage_collision(self) -> None:
+    def test_force_eligible_guard_cannot_bypass_required_archive_coverage(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             config_path = _write_config(root)
             incoming = _chat_payload(lineage="legacy_gui", messages=[_message(7, 200, "incoming-id")])
             archived = _chat_payload(lineage="http_api", messages=[_message(99, 100, "archived-id")])
             raw_source, _, archived_path = _write_raw_collision(root, incoming, archived)
-
+            archived_before = archived_path.read_bytes()
+            # The original guard verdict stays force-eligible; the independent
+            # archive coverage requirement is stronger and cannot be bypassed.
+            self.assertTrue(_chat_regression_reason(incoming, archived)[1])
             exit_code, _, stderr = _run_silently(
                 [
                     "--config",
@@ -403,9 +407,10 @@ class ArchiveExportsScriptTests(unittest.TestCase):
                 ]
             )
 
-            self.assertEqual(exit_code, 0, stderr)
-            self.assertEqual(json.loads(archived_path.read_text(encoding="utf-8")), incoming)
-            self.assertIn("OVERWRITE GUARD OVERRIDDEN", stderr)
+            self.assertEqual(exit_code, 1, stderr)
+            self.assertEqual(archived_path.read_bytes(), archived_before)
+            self.assertIn("coverage_failed", stderr)
+            self.assertIn("禁止强制覆盖", stderr)
 
     def test_cross_lineage_empty_platform_id_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

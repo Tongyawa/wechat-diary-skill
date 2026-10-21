@@ -43,6 +43,58 @@ class RangePublication:
     needs_review: bool
 
 
+@dataclass(frozen=True)
+class RangePlan:
+    target: Path
+    retire: tuple[tuple[Path, Coverage], ...]
+    preserved: tuple[tuple[Path, Coverage], ...]
+    media_paths: tuple[Path, ...]
+
+
+def plan_range_publication(source: Path, destination: Path, *, new_media_root: Path,
+                           objects: dict[Path, Path] | None = None,
+                           media_objects: dict[Path, Path] | None = None) -> RangePlan:
+    """Resolve the existing publication rules without creating a staging folder."""
+    digest = range_digest(destination)
+    if digest is None:
+        raise ValueError('not a range filename')
+    incoming = _read(source)
+    media_paths = set()
+    if objects is None:
+        objects = {p: p for p in destination.parent.iterdir() if p.is_file()} if destination.parent.is_dir() else {}
+    def coverage(path):
+        # A physical case alias must be addressed as the publisher addresses
+        # it; future objects instead read their bound producer's source bytes.
+        provider = path if objects[path] == path else objects[path]
+        return compare_coverage(provider, source, old_media_root=destination.parent,
+            new_media_root=new_media_root, media_objects=media_objects, observed_media=media_paths)
+    for post in incoming['posts']:
+        for _role, reference in _references(post):
+            media = _media_object(new_media_root, reference, media_objects, media_paths)
+            _fingerprint(media)
+    target = destination
+    if destination in objects and not coverage(destination).covered:
+        # Stable for a given input and occupied destination, including previews.
+        # Preserve the established UUID-shaped retention suffix.
+        seed = str(destination) + hashlib.sha256(source.read_bytes()).hexdigest()
+        seed += hashlib.sha256(objects[destination].read_bytes()).hexdigest()
+        stem = destination.stem.split('_保留_', 1)[0]
+        number = 0
+        while True:
+            token = uuid.uuid5(uuid.NAMESPACE_URL, seed + str(number)).hex
+            target = destination.with_name(f'{stem}_保留_{token}.json')
+            if target not in objects or _same_bytes(source, objects[target]):
+                break
+            number += 1
+    retire, preserved = [], []
+    for old in sorted(objects):
+        if old == target or range_digest(old) != digest:
+            continue
+        proof = coverage(old)
+        (retire if proof.covered else preserved).append((old, proof))
+    return RangePlan(target, tuple(retire), tuple(preserved), tuple(sorted(media_paths)))
+
+
 def _read(path: Path) -> dict:
     data = json.loads(path.read_text(encoding="utf-8-sig"))
     validate_moments_json(data)
@@ -80,6 +132,14 @@ def _media_path(root: Path, reference: str) -> Path:
     return path
 
 
+def _media_object(root, reference, objects=None, observed=None):
+    path = _media_path(root, reference)
+    path = (objects or {}).get(path, path)
+    if observed is not None:
+        observed.add(path)
+    return path
+
+
 def _fingerprint(path: Path) -> tuple[int, str]:
     digest = hashlib.md5()
     size = 0
@@ -103,7 +163,9 @@ def _same_bytes(first: Path, second: Path) -> bool:
                 return True
 
 
-def compare_coverage(old: Path, new: Path, *, new_media_root: Path | None = None) -> Coverage:
+def compare_coverage(old: Path, new: Path, *, new_media_root: Path | None = None,
+                     old_media_root: Path | None = None, media_objects: dict[Path, Path] | None = None,
+                     observed_media: set[Path] | None = None) -> Coverage:
     """Only post identities and landed media constrain retirement; metadata may change.
 
     Staged JSON references are already anchored to its eventual publication root.
@@ -129,7 +191,7 @@ def compare_coverage(old: Path, new: Path, *, new_media_root: Path | None = None
             new_refs = _references(current)
             for role, reference in _references(post):
                 try:
-                    old_path = _media_path(old.parent, reference)
+                    old_path = _media_object(old_media_root or old.parent, reference, media_objects, observed_media)
                     identity = _fingerprint(old_path)
                     matched = False
                     errors = []
@@ -137,7 +199,7 @@ def compare_coverage(old: Path, new: Path, *, new_media_root: Path | None = None
                         if new_role != role:
                             continue
                         try:
-                            new_path = _media_path(new_media_root or new.parent, new_reference)
+                            new_path = _media_object(new_media_root or new.parent, new_reference, media_objects, observed_media)
                             if _fingerprint(new_path) == identity and _same_bytes(old_path, new_path):
                                 matched = True
                                 break

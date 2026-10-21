@@ -70,7 +70,7 @@ def _quiet_deps(root: Path) -> DailyExportDeps:
     """Stub deps that run every stage as a no-op for output-focused tests."""
     return DailyExportDeps(
         backend=FakeBackend(),
-        rotate_export_workspace=lambda cfg, label, mode: SimpleNamespace(target=None),
+        rotate_export_workspace=lambda cfg, label, mode, report_opener: SimpleNamespace(target=None),
         wait_for_raw_exports_stable=lambda raw_path, min_files: None,
         run_voice_fallback_script=lambda script_path, config: None,
         archive=lambda raw_path, config, clear_first: [],
@@ -521,7 +521,7 @@ driver = "uia"
             calls: list[tuple] = []
             deps = DailyExportDeps(
                 backend=FakeBackend(calls=calls),
-                rotate_export_workspace=lambda cfg, label, mode: calls.append(("rotate", label, mode))
+                rotate_export_workspace=lambda cfg, label, mode, report_opener: calls.append(("rotate", label, mode))
                 or SimpleNamespace(target=root / "rotation" / "run"),
                 wait_for_raw_exports_stable=lambda raw_path, min_files: calls.append(("wait_raw", min_files)),
                 run_voice_fallback_script=lambda script_path, config: calls.append(("fallback", script_path)),
@@ -715,7 +715,7 @@ driver = "uia"
 
             deps = DailyExportDeps(
                 backend=FakeBackend(calls=calls),
-                rotate_export_workspace=lambda cfg, label, mode: calls.append(("rotate", label, mode))
+                rotate_export_workspace=lambda cfg, label, mode, report_opener: calls.append(("rotate", label, mode))
                 or SimpleNamespace(target=root / "rotation" / "run"),
                 wait_for_raw_exports_stable=lambda raw_path, min_files: calls.append(("wait_raw", min_files)),
                 run_voice_fallback_script=lambda script_path, config: calls.append(("fallback", script_path)),
@@ -762,7 +762,7 @@ driver = "uia"
 
             deps = DailyExportDeps(
                 backend=FakeBackend(calls=calls),
-                rotate_export_workspace=lambda cfg, label, mode: SimpleNamespace(target=root / "rotation" / "run"),
+                rotate_export_workspace=lambda cfg, label, mode, report_opener: SimpleNamespace(target=root / "rotation" / "run"),
                 wait_for_raw_exports_stable=lambda raw_path, min_files: calls.append(("wait_raw", min_files)),
                 run_voice_fallback_script=lambda script_path, config: calls.append(("fallback", script_path)),
                 archive=lambda raw_path, config, clear_first: calls.append(("archive", clear_first)) or [root / "diary.md"],
@@ -807,7 +807,7 @@ driver = "uia"
 
             deps = DailyExportDeps(
                 backend=FakeBackend(calls=calls, export_moments_action=export_moments),
-                rotate_export_workspace=lambda cfg, label, mode: SimpleNamespace(target=root / "run"),
+                rotate_export_workspace=lambda cfg, label, mode, report_opener: SimpleNamespace(target=root / "run"),
                 wait_for_raw_exports_stable=lambda raw_path, min_files: None,
                 run_voice_fallback_script=lambda script_path, config: None,
                 archive=lambda raw_path, config, clear_first: calls.append(("archive",)) or [root / "diary.md"],
@@ -861,7 +861,7 @@ driver = "uia"
 
             deps = DailyExportDeps(
                 backend=FakeBackend(calls=calls, shutdown_action=fail_shutdown),
-                rotate_export_workspace=lambda cfg, label, mode: SimpleNamespace(target=None),
+                rotate_export_workspace=lambda cfg, label, mode, report_opener: SimpleNamespace(target=None),
                 wait_for_raw_exports_stable=lambda raw_path, min_files: None,
                 archive=lambda raw_path, config, clear_first: calls.append(("archive",)) or [],
                 archive_chats_for=lambda usernames, config, subroot, image_mode, clear_first: [],
@@ -912,7 +912,7 @@ driver = "uia"
             calls: list[tuple] = []
             deps = DailyExportDeps(
                 backend=FakeBackend(calls=calls),
-                rotate_export_workspace=lambda cfg, label, mode: SimpleNamespace(target=None),
+                rotate_export_workspace=lambda cfg, label, mode, report_opener: SimpleNamespace(target=None),
                 wait_for_raw_exports_stable=lambda raw_path, min_files: None,
                 archive=lambda raw_path, config, clear_first: [],
                 archive_chats_for=lambda usernames, config, subroot, image_mode, clear_first: [],
@@ -932,7 +932,7 @@ driver = "uia"
             calls: list[tuple] = []
             deps = DailyExportDeps(
                 backend=FakeBackend(calls=calls, capabilities=frozenset()),
-                rotate_export_workspace=lambda cfg, label, mode: SimpleNamespace(target=None),
+                rotate_export_workspace=lambda cfg, label, mode, report_opener: SimpleNamespace(target=None),
                 wait_for_raw_exports_stable=lambda raw_path, min_files: None,
                 archive=lambda raw_path, config, clear_first: calls.append(("archive",)) or [],
                 archive_chats_for=lambda usernames, config, subroot, image_mode, clear_first: calls.append(
@@ -969,7 +969,7 @@ driver = "uia"
             backend.partial_failures = ["export_chat_session:wxid_placeholder"]
             deps = DailyExportDeps(
                 backend=backend,
-                rotate_export_workspace=lambda cfg, label, mode: SimpleNamespace(target=None),
+                rotate_export_workspace=lambda cfg, label, mode, report_opener: SimpleNamespace(target=None),
                 wait_for_raw_exports_stable=lambda *args: (_ for _ in ()).throw(
                     AssertionError("synchronous API backend must not poll raw stability")
                 ),
@@ -1015,7 +1015,7 @@ driver = "uia"
             calls: list[tuple] = []
             deps = DailyExportDeps(
                 backend=FakeBackend(calls=calls),
-                rotate_export_workspace=lambda cfg, label, mode: SimpleNamespace(target=None),
+                rotate_export_workspace=lambda cfg, label, mode, report_opener: SimpleNamespace(target=None),
                 wait_for_raw_exports_stable=lambda raw_path, min_files: calls.append(("wait_raw",)),
                 run_voice_fallback_script=lambda script_path, config: calls.append(("fallback", Path(script_path).name)),
                 archive=lambda raw_path, config, clear_first: calls.append(("archive",)) or [],
@@ -1034,7 +1034,7 @@ driver = "uia"
             cfg = load_config(_write_config(root))
             deps = DailyExportDeps(
                 backend=FakeBackend(),
-                rotate_export_workspace=lambda cfg, label, mode: SimpleNamespace(target=None),
+                rotate_export_workspace=lambda cfg, label, mode, report_opener: SimpleNamespace(target=None),
                 wait_for_raw_exports_stable=lambda raw_path, min_files: None,
                 archive=archive,
                 archive_chats_for=archive_chats_for,
@@ -1066,7 +1066,7 @@ driver = "uia"
 
             deps = DailyExportDeps(
                 backend=FakeBackend(),
-                rotate_export_workspace=lambda cfg, label, mode: SimpleNamespace(target=None),
+                rotate_export_workspace=lambda cfg, label, mode, report_opener: SimpleNamespace(target=None),
                 wait_for_raw_exports_stable=lambda raw_path, min_files: None,
                 run_voice_fallback_script=apply_fallback,
                 archive=archive,

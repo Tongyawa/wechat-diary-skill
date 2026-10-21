@@ -20,6 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from wechat_diary_core.archiving import SELF_MOMENTS_SUBROOT, normalize_target_subroot
 from wechat_diary_core.archiving import archive, archive_chats_for
 from wechat_diary_core.backends import ExporterBackend, create_backend
 from wechat_diary_core.backends.weflow.driver import DriverCommandError, DriverUnavailable
@@ -35,7 +36,7 @@ from wechat_diary_core.session_rename_alarm import (
     update_session_rename_report_state,
     write_session_rename_report,
 )
-from wechat_diary_core.workspace import rotate_export_workspace
+from wechat_diary_core.workspace import rotate_export_workspace, retained_raw_sources
 from wechat_diary_core.workspace_discovery import WorkspaceResolutionError, resolve_config_path
 from scripts.archive_exports import _files_equal, _find_guard_failures
 from scripts.process_existing_raw import archive_existing_processed
@@ -332,6 +333,7 @@ def run_daily_export(
     moments_failures: list[str] = []
     target_moments_ok = False
     self_moments_ok = False
+    excluded_sources = set()
     if backend.name == "manual":
         print(
             "manual backend: using existing live raw; "
@@ -339,11 +341,14 @@ def run_daily_export(
         )
         rotation = None
         _run_stage("validate_raw_root", lambda: _validate_manual_raw_root(cfg.paths.raw))
+        excluded_sources = retained_raw_sources(cfg.paths.archived, live_raw_root=cfg.paths.raw)
         _run_stage(
             "archive_existing_processed",
             lambda: active_deps.archive_existing_processed(
                 cfg.paths.processed,
                 cfg.paths.archived / "processed",
+                cfg,
+                excluded_sources,
             ),
         )
         # Existing raw may already contain either moments stream. Treat it like
@@ -356,14 +361,21 @@ def run_daily_export(
             # become ready must not mutate the live raw/processed roots.
             _run_stage("prepare_backend", backend.prepare)
             prepared = True
+            # Reuse this run's already-required header reads, never a persistent cache.
+            archive_headers = getattr(backend, "archive_headers", None)
+            rotation_options = {"archive_headers": archive_headers} if archive_headers is not None else {}
             rotation = _run_stage(
                 "rotate_workspace",
                 lambda: active_deps.rotate_export_workspace(
                     cfg,
                     label="daily_export",
                     mode=cfg.daily_export.cleanup_mode,
+                    report_opener=_open_session_rename_report,
+                    **rotation_options,
                 ),
             )
+
+            excluded_sources = getattr(rotation, 'retained_sources', frozenset())
 
             voice_usernames = list(cfg.user.voice_transcribe_usernames) or target_usernames
             if voice_usernames and "voice_transcribe" in backend.capabilities:
@@ -434,10 +446,11 @@ def run_daily_export(
     else:
         print("voice_fallback skipped: no configured script.")
 
+    render_options = {'excluded_sources': excluded_sources} if excluded_sources else {}
     with collect_voice_transcription_failures():
         diary_files = _run_stage(
             "archive_diary_processed",
-            lambda: active_deps.archive(cfg.paths.raw, config=cfg, clear_first=True),
+            lambda: active_deps.archive(cfg.paths.raw, config=cfg, clear_first=True, **render_options),
         )
         self_moment_files = []
         if self_moments_usernames and self_moments_ok:
@@ -446,8 +459,9 @@ def run_daily_export(
                 lambda: active_deps.archive_moments_for(
                     self_moments_usernames,
                     config=cfg,
-                    subroot="朋友圈_自己",
+                    subroot=SELF_MOMENTS_SUBROOT,
                     clear_first=True,
+                    **render_options,
                 ),
             )
         elif self_moments_usernames:
@@ -467,6 +481,7 @@ def run_daily_export(
                     subroot=f"{subroot}/chats",
                     image_mode="preserve_paths",
                     clear_first=True,
+                    **render_options,
                 ),
             )
             if target_moments_ok:
@@ -477,6 +492,7 @@ def run_daily_export(
                         config=cfg,
                         subroot=f"{subroot}/moments",
                         clear_first=True,
+                        **render_options,
                     ),
                 )
             else:
@@ -839,8 +855,7 @@ def _split_values(value: str) -> list[str]:
 
 
 def _normalize_subroot(value: str) -> str:
-    cleaned = value.strip().strip("/\\")
-    return cleaned or "_targets"
+    return normalize_target_subroot(value)
 
 
 def _toml_string(value: Any) -> str:

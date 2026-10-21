@@ -7,6 +7,7 @@ import unittest
 from contextlib import redirect_stderr
 from pathlib import Path
 from types import SimpleNamespace
+from test_raw_archive import payload as canonical_payload
 
 from scripts.run_daily_export import _warn_if_archive_session_names_split
 from wechat_diary_core.session_rename_alarm import (
@@ -23,8 +24,11 @@ from wechat_diary_core.session_rename_alarm import (
 def _write_session(root: Path, directory: str, wxid: str) -> None:
     session_dir = root / directory
     session_dir.mkdir(parents=True, exist_ok=True)
+    data = canonical_payload(ids=(), wxid=wxid)
+    data['session'].update(displayName=directory, nickname=directory,
+                           type='群聊' if directory.startswith('群聊_') else '私聊')
     (session_dir / f"{directory}_20260516.json").write_text(
-        json.dumps({"session": {"wxid": wxid}}, ensure_ascii=False),
+        json.dumps(data, ensure_ascii=False),
         encoding="utf-8",
     )
 
@@ -56,20 +60,11 @@ def _write_current_session(
 def _write_chat(root: Path, directory: str, filename: str, wxid: str, message_times: list[int]) -> Path:
     path = root / directory / filename
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(
-            {
-                "weflow": {"source": "http_api"},
-                "session": {"wxid": wxid, "displayName": "Synthetic", "type": "群聊"},
-                "messages": [
-                    {"localId": index, "createTime": create_time, "platformMessageId": f"p{index}"}
-                    for index, create_time in enumerate(message_times, start=1)
-                ],
-            },
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
-    )
+    data = canonical_payload(ids=range(1, len(message_times) + 1), wxid=wxid)
+    data['session'].update(displayName='Synthetic', type='群聊')
+    for index, (message, create_time) in enumerate(zip(data['messages'], message_times), start=1):
+        message.update(createTime=create_time, platformMessageId=f'p{index}')
+    path.write_text(json.dumps(data, ensure_ascii=False), encoding='utf-8')
     return path
 
 
@@ -250,9 +245,9 @@ class SessionRenameAlarmTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             archive_raw = root / "archived" / "raw"
-            _write_chat(archive_raw, "群聊_OldA", "shared.json", "wxid_group_alpha", [1])
+            _write_chat(archive_raw, "群聊_OldA", "shared_20260516.json", "wxid_group_alpha", [1])
             _write_session(archive_raw, "群聊_OldB", "wxid_group_alpha")
-            _write_chat(archive_raw, "群聊_Current", "shared.json", "wxid_group_alpha", [1, 2])
+            _write_chat(archive_raw, "群聊_Current", "shared_20260516.json", "wxid_group_alpha", [1, 2])
             _write_current_session(root / "raw", "群聊_Current_20260516", "wxid_group_alpha", "Current")
             cfg = SimpleNamespace(
                 base_dir=root,
@@ -275,7 +270,7 @@ class SessionRenameAlarmTests(unittest.TestCase):
                 _warn_if_archive_session_names_split(cfg, report_opener=opened.append)
 
             report_text = report_path.read_text(encoding="utf-8")
-            rejected_file_kept = (archive_raw / "群聊_OldA" / "shared.json").is_file()
+            rejected_file_kept = (archive_raw / "群聊_OldA" / "shared_20260516.json").is_file()
             safe_file_merged = (archive_raw / "群聊_Current" / "群聊_OldB_20260516.json").is_file()
             later_safe_file_merged = (archive_raw / "群聊_Current" / "群聊_OldA_20260516.json").is_file()
 
@@ -299,7 +294,7 @@ class SessionRenameAlarmTests(unittest.TestCase):
                     source_directories=("群聊_Previous",),
                     moved_files=0,
                     duplicate_files=0,
-                    rejected_files=(("群聊_Previous/shared.json", "synthetic guard rejection"),),
+                    rejected_files=(("群聊_Previous/shared_20260516.json", "synthetic guard rejection"),),
                 ),
             ),
             stayed=(),
