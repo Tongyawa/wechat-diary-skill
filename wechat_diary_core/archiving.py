@@ -24,7 +24,6 @@ def archive(
     output_root: str | Path | None = None,
     clear_first: bool = True,
     image_mode: ImageMode = "ocr_inline",
-    excluded_sources: set[Path] | None = None,
 ) -> list[Path]:
     """Render preprocessed exports into ``WeFlow-processed-exports/<session>/<yyyy-mm-dd>.md``.
 
@@ -39,20 +38,17 @@ def archive(
     """
     cfg = config or load_config()
     exports = (
-        preprocess_run(processed_exports, config=cfg, image_mode=image_mode, excluded_sources=excluded_sources)
+        preprocess_run(processed_exports, config=cfg, image_mode=image_mode)
         if isinstance(processed_exports, (str, Path))
         else list(processed_exports)
     )
     root = Path(output_root) if output_root is not None else cfg.paths.processed
-    excluded = {Path(p).resolve() for p in excluded_sources or ()}
     if clear_first and root.exists():
         shutil.rmtree(root, ignore_errors=True)
     root.mkdir(parents=True, exist_ok=True)
 
     written: list[Path] = []
     for export in exports:
-        if export.source_path.resolve() in excluded:
-            continue
         by_day = _group_messages_by_day(export.data.get("messages") or [])
         for relative in chat_render_targets(export):
             out_path = root / relative
@@ -73,7 +69,6 @@ def archive_chats_for(
     subroot: str | Path = "_targets/chats",
     image_mode: ImageMode = "preserve_paths",
     clear_first: bool = True,
-    excluded_sources: set[Path] | None = None,
 ) -> list[Path]:
     """Archive only sessions whose participants match ``usernames`` into
     ``<paths.processed>/<subroot>/<yyyy-mm-dd>.md`` (no per-session folder).
@@ -88,7 +83,7 @@ def archive_chats_for(
     if not target_set:
         return []
 
-    exports = preprocess_run(source, config=cfg, image_mode=image_mode, excluded_sources=excluded_sources)
+    exports = preprocess_run(source, config=cfg, image_mode=image_mode)
 
     root = cfg.paths.processed / Path(subroot)
     if clear_first and root.exists():

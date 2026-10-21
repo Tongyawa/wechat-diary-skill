@@ -3,11 +3,11 @@ from pathlib import Path
 from . import raw_archive
 
 SECTION = '## processed 影响'
-GROUPS = ('1:1 会话文件：已跳过', '多对一日文件：已跳过，待按归档全集重生', '归档无同路径：已并入')
+GROUPS = ('1:1 会话文件：已跳过', '多对一日文件：已跳过，归档保留旧版', '归档无同路径：已并入')
 PROCESSED_GUIDANCE = (
-    '处理本条 raw（删除保留件，或经批量入口确认后归档）；上列 processed 文件由按归档全集的补渲染接管'
-    '（看板「processed 按日重生」条）。在该入口就绪前不要用 `process_existing_raw` 单目录补 sidecar / 朋友圈日文件，'
-    '它会以单会话覆盖整日。'
+    '此日归档 processed 保持旧版；需要与归档 raw 同步时手工按日重生。'
+    '按日全集工具就绪前，不要用 `process_existing_raw` 单目录补 sidecar / 朋友圈日文件，'
+    '它会以单会话覆盖整日。归档 processed 是历史快照，不自动重生。'
 )
 OLD_INSTRUCTION = 'process_existing_raw --raw-root <归档会话目录>'
 
@@ -31,6 +31,8 @@ def _previous_rows(text):
     for line in text.split(SECTION, 1)[1].splitlines():
         if line.startswith('### '):
             candidate = line[4:]
+            if candidate.startswith('多对一日文件：已跳过'):
+                candidate = GROUPS[1]
             group = candidate if candidate in rows else None
         elif group and line.startswith('- '):
             rows[group].add(line)
@@ -38,7 +40,7 @@ def _previous_rows(text):
 
 
 def update_processed_report(archived_root, *, skipped_chat=(), skipped_multi=(), introduced=None, previous_text=None):
-    """Keep unresolved impact rows visible until the future rebuild can settle them."""
+    """Preserve human-readable history; these rows never decide a later merge."""
     path = Path(archived_root) / 'raw-fold-report.md'
     try:
         current = read_report_text(archived_root)
@@ -59,7 +61,7 @@ def update_processed_report(archived_root, *, skipped_chat=(), skipped_multi=(),
         base = '\n'.join(line for line in base.splitlines() if OLD_INSTRUCTION not in line).rstrip()
         lines = [base, '', SECTION, '',
                  '以下路径相对于本报告同目录的 processed/。已跳过的文件仍在 live processed 同路径。',
-                 '记录保留到按归档全集补渲染后核销；本轮没有再次生成这些文件不代表问题已解决。', '', PROCESSED_GUIDANCE, '']
+                 '以下为并入影响的历史记录，不参与后续轮转判定，也不触发自动重生。', '', PROCESSED_GUIDANCE, '']
         for group in GROUPS:
             if rows[group]:
                 lines.extend(['### ' + group, '', *sorted(rows[group]), ''])

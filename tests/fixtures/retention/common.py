@@ -7,10 +7,10 @@ import sys
 import tempfile
 from pathlib import Path
 
-WT = Path(__file__).resolve().parents[3]
+WT = Path(os.environ.get('WT', Path(__file__).resolve().parents[3])).resolve()
 sys.path.insert(0, str(WT))
 sys.path.insert(0, str(WT / 'scripts'))
-HERE = Path(__file__).resolve().parent
+HERE = Path(os.environ.get('RETENTION_PROBE_ROOT', Path(__file__).resolve().parent)).resolve()
 
 
 def sha(b):

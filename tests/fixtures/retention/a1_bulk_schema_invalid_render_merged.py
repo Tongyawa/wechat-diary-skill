@@ -1,7 +1,6 @@
-"""A1: archive_exports.py --raw-root R --processed-root P (bulk).
-A chat raw that fails canonical schema (createTime order violation) is NOT archived and stays
-in R (schema_failures are not plan actions, move_now=False).  Its render in P must stay out of
-archived/processed per §8.10 #2.  Variant arg: 'force' adds --force-overwrite, 'move' adds --move-source.
+"""Schema-invalid raw remains unarchived. Processed behavior matches main:
+plain and move reject the collision; explicit force can replace the Markdown.
+The closed snapshot contract accepts that existing main behavior.
 """
 from common import *  # noqa
 import archive_exports
@@ -25,4 +24,4 @@ print('rc =', rc)
 print('incoming raw still unarchived in raw root:', incoming.exists(), '| archive raw has victim only:',
       sorted(p.relative_to(archive).as_posix() for p in archive.rglob('*.json')))
 print('archived md =', victim_md.read_bytes())
-print('VIOLATION (render of unarchived raw merged)' if victim_md.read_bytes() != b'VICTIM W1 RENDER\n' else 'ok')
+print('processed overwritten under explicit force' if victim_md.read_bytes() != b'VICTIM W1 RENDER\n' else 'ok')

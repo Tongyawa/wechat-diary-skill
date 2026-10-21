@@ -69,7 +69,7 @@ class ManyToOneRetentionTests(unittest.TestCase):
         rotate_export_workspace(cfg, report_opener=opened.append)
         self.assertEqual(len(opened), 1, 'identical raw plus processed report must not reopen')
         archive_moments_for(cfg.daily_export.self_moments_usernames, config=cfg,
-                            subroot=SELF_MOMENTS_SUBROOT, excluded_sources=rotation.retained_sources)
+                            subroot=SELF_MOMENTS_SUBROOT)
         self.assertFalse(live.exists())
         self.assertEqual(archived.read_bytes(), b'INCOMING: p1 p2\n')
         rotate_export_workspace(cfg)
@@ -107,8 +107,8 @@ class ManyToOneRetentionTests(unittest.TestCase):
         self.assertIn('1:1 会话文件：已跳过', report)
         # A later fresh export still updates both live outputs without F.
         save(cfg.paths.raw / 'Target_20300102/Target_20300102.json', target)
-        archive(cfg.paths.raw, config=cfg, excluded_sources={held})
-        archive_chats_for(cfg.daily_export.target_usernames, config=cfg, excluded_sources={held})
+        archive(cfg.paths.raw, config=cfg)
+        archive_chats_for(cfg.daily_export.target_usernames, config=cfg)
         self.assertIn('TARGET-LATEST', (cfg.paths.processed/'Target/2030-01-02.md').read_text(encoding='utf-8'))
         process_existing_raw.archive_existing_processed(cfg.paths.processed, cfg.paths.archived/'processed', cfg)
         self.assertFalse((cfg.paths.processed/'_targets/chats/2030-01-02.md').exists())
@@ -143,11 +143,10 @@ class ManyToOneRetentionTests(unittest.TestCase):
         report = (cfg.paths.archived / 'raw-fold-report.md').read_text(encoding='utf-8')
         self.assertNotIn((Path(SELF_MOMENTS_SUBROOT) / '2030-01-02.md').as_posix(), report)
 
-    def test_nonrotation_and_bulk_processed_entry_reuse_the_same_multi_decision(self):
+    def test_nonrotation_and_bulk_processed_entry_use_main_merge_behavior(self):
         cfg, _, _, _, archived, live = self.held_moments()
         rotate_export_workspace(cfg)
         report_path = cfg.paths.archived / 'raw-fold-report.md'
-        report_path.write_text('old: process_existing_raw --raw-root <归档会话目录> --day <日>\n' + report_path.read_text(encoding='utf-8'), encoding='utf-8')
         process_existing_raw.archive_existing_processed(cfg.paths.processed, cfg.paths.archived / 'processed', cfg)
         self.assertNotIn('process_existing_raw --raw-root <归档会话目录>', report_path.read_text(encoding='utf-8'))
         self.assertFalse(live.exists())

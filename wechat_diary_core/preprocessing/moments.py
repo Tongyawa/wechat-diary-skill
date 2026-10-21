@@ -50,19 +50,16 @@ def load_moments_export(path: str | Path) -> MomentsExport:
     return MomentsExport(source_path=file, posts=posts, filters=filters)
 
 
-def discover_moments_exports(root: str | Path, *, excluded_sources: set[Path] | None = None) -> list[Path]:
+def discover_moments_exports(root: str | Path) -> list[Path]:
     """Find Moments-export JSON files (depth-1 inside ``root``)."""
     path = Path(root)
-    excluded = {Path(p).resolve() for p in excluded_sources or ()}
-    if path.resolve() in excluded:
-        return []
     if path.is_file() and _looks_like_moments_export(path):
         return [path]
     if not path.exists():
         return []
     found: list[Path] = []
     for candidate in sorted(path.rglob("*.json")):
-        if candidate.resolve() not in excluded and _looks_like_moments_export(candidate):
+        if _looks_like_moments_export(candidate):
             found.append(candidate)
     return found
 
@@ -99,7 +96,6 @@ def archive_moments_for(
     subroot: str | Path = "_targets/moments",
     clear_first: bool = True,
     vision_describer: VisionDescriber | None = None,
-    excluded_sources: set[Path] | None = None,
 ) -> list[Path]:
     """Archive Moments exports into ``<paths.processed>/<subroot>/<yyyy-mm-dd>.md``.
 
@@ -123,7 +119,7 @@ def archive_moments_for(
 
     all_posts: list[Post] = []
     targets: set[Path] = set()
-    for export_path in discover_moments_exports(source, excluded_sources=excluded_sources):
+    for export_path in discover_moments_exports(source):
         export = load_moments_export(export_path)
         targets.update(moments_render_targets(export, usernames, subroot))
         for post in _selected_posts(export, target_set):

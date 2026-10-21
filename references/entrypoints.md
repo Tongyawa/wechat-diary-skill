@@ -82,7 +82,7 @@ python "$SkillRoot\scripts\process_existing_raw.py" --raw-root <raw目录> --day
 | `--skip-voice-fallback` | 跳过 `[daily_export].voice_fallback_script` |
 | `--config` | 配置文件路径 |
 
-若当前 processed 非空，会先按 §5 合并进归档，再重建 diary 与 sidecar。账本记录且仍在 live raw 的输入被排除，不参与任何渲染或聚合；就绪输入更新所有对应输出。合并跳过的会话日文件会在重建时被正常清掉。**raw 原样保留、不轮转。** manual 后端使用同一流程。
+若当前 processed 非空，会先整树合并进归档，再从现存 raw 重建 diary 与 sidecar。不读取保留账本，不按保留状态跳过输入或输出。**raw 原样保留、不轮转。** manual 后端使用同一流程。
 
 ## 3. 按需导出 `export_on_demand.py`
 
@@ -167,13 +167,13 @@ stdout 只有一份 JSON，含每个聊天的 target、旧文件 / 摘要 / 覆�
 
 JSON 解析失败或条目结构不合法时（包括 detail 缺 incoming / legacyTarget、嵌套 identity 类型错误），先将整份原件封存为 `raw-fold-report.corrupt-<时间戳>.json`，警告指出路径，然后建立新账本继续记录。旧版可缺省的 details / 消息数仍兼容；存在的字段须满足其消费类型。报告中兼容旧格式的 `legacyTarget` 键记录本轮实际受保护的最终目标。报告读取、封存、更新或 Markdown 渲染异常只打印 `[WARN]`，不阻止已安全发布 raw 的清源及其余 processed 合并。
 
-轮转隔离 daily 的 `ApplyResult.retained`，保留原源身份，并用 `isolated_sources` 记录成功搬移后的路径；`RotationResult.retained_sources` 交给本轮 processed 合并的是现存隔离副本，失败项仍指向 live。隔离根由 archived 派生为同级 `<archived名>-retained/<时间戳>/`，manifest 为同级 `<时间戳>.manifest.json`。apply 在任何归档写入前复用现有根关系谓词，隔离根与 archived 或任一源根重叠就拒绝本轮写入并告警；两处规划入口守卫不变。复制、复读校验后才删源，CAS 先复制、依赖它的 JSON 先删源。归档侧 `retainedDirectories` 的旧目录残留不搬。非轮转入口目前仍用 `workspace.retained_raw_sources` 读取账本里存在于 live 的路径，不重新规划；隔离成功的路径不在此集合。隔离批次删除或摄取移空后，下一次轮转按子目录是否存在清项；孤儿 manifest 只提示。
+轮转隔离 daily 的 `ApplyResult.retained`，保留原源身份，并用 `isolated_sources` 记录成功搬移后的路径；本轮 processed 合并收到现存隔离副本，失败项仍指向 live。隔离根由 archived 派生为同级 `<archived名>-retained/<时间戳>/`，manifest 为同级 `<时间戳>.manifest.json`。apply 在任何归档写入前复用现有根关系谓词，隔离根与 archived 或任一源根重叠就拒绝本轮写入并告警；两处规划入口守卫不变。复制、复读校验后才删源，CAS 先复制、依赖它的 JSON 先删源。归档侧 `retainedDirectories` 的旧目录残留不搬。隔离批次删除或摄取移空后，下一次轮转按子目录是否存在清项；孤儿 manifest 只提示。
 
-`archive`、`archive_chats_for`、`archive_moments_for`、`preprocessing.run` 与发现函数接受 `excluded_sources`。源路径两侧 resolve 后比较，在预处理、媒体复制与聚合之前排除；直接传入 `ProcessedChatExport` 列表也按 `source_path` 排除。`clear_first=True` 正常清空输出目录。`archiving.chat_render_targets`、`archiving.chat_sidecar_targets`、`preprocessing.moments.moments_render_targets` 分别给出会话、sidecar、朋友圈的相对目标路径，渲染写入与合并判定共用这些函数。合并端从 config 读取用户名及目标子根，与 runner 共用本人朋友圈 subroot 常量和目标子根规范化函数，不按日期粗略扣住其它类型的输出。
+渲染器与发现函数没有输入排除集，live raw 中有什么就处理什么。`clear_first=True` 正常清空输出目录。`archiving.chat_render_targets`、`archiving.chat_sidecar_targets`、`preprocessing.moments.moments_render_targets` 分别给出会话、sidecar、朋友圈的相对目标路径，渲染写入与本轮合并判定共用这些函数。合并端从本次 config 读取用户名及目标子根，与 runner 共用本人朋友圈 subroot 常量和目标子根规范化函数，不按日期粗略扣住其它类型的输出。
 
-`workspace.plan_processed_merge` 只读计算同一份处置：未触及的文件正常并入；触及的 1:1 会话日文件始终跳过；触及的多对一日文件在归档已有同路径时跳过，没有同路径时并入并报告。跳过文件留在 live，不受输出保护，下次 `clear_first` 清掉。就绪输入的最新内容仍进入所有 live 输出；被保留触及的归档多对一文件保持旧版，等待按归档全集补渲染。
+`workspace.plan_processed_merge` 只用显式传入的本轮 `retained_sources` 计算处置：未触及的文件正常并入；触及的 1:1 会话日文件跳过；触及的多对一日文件在归档已有同路径时跳过，没有同路径时并入并报告。没有本轮保留源时没有跳过项，不读取历史账本或 processed 记录。跳过文件留在 live，不受输出保护，下次 `clear_first` 清掉。归档 processed 属于历史快照；需要同步归档 raw 时手工按日重生。
 
-`archive_existing_processed` 接受可选 config 与 `excluded_sources`。旧两参数调用只自动采用路径匹配的同级 config.toml；存在保留源却无法获得渲染配置时拒绝合并并要求提供 config，不猜测历史输出的归属。批量 `archive_exports.py --processed-root` 先检查全部 raw／processed 候选的碰撞，任何拒绝均在 raw、processed、报告写入前返回，即使某个 processed 文件随后可能被跳过也先预检。通过后，processed 集合取 apply 后 `--raw-root` 中仍存在的 JSON（排除媒体库），覆盖 schema 失败、阻断、保留和默认复制模式的源副本；无 raw 参数时读账本。`--force-overwrite` 只放行现有规则允许人工确认的碰撞，不解除 processed 判定；`--move-source` 不删除被跳过文件。
+`archive_existing_processed` 整树并入已有 processed，保留可选 config 参数作为调用兼容，不读取账本或推导保留集。批量 `archive_exports.py --processed-root` 先检查全部 raw／processed 候选的碰撞，任何拒绝均在首次写入前返回。通过后，processed 整批复制或移动；默认复制模式的 raw 副本不参与 processed 判定。`--force-overwrite` 仍只放行现有规则允许人工确认的碰撞。归档 processed 不自动按 raw 重建；单目录补渲染会以单会话覆盖整日多对一文件，按日全集工具就绪前不要这样操作。
 
 `processed_reporting` 只维护报告 Markdown 的「processed 影响」段，不增加或改写 raw 账本字段。该段分别列出被跳过的 1:1、多对一文件，以及归档无同路径而并入的文件；现存 Markdown 没有生成时点记录，无法确认含／缺某输入贡献时会如实标注。未解决记录在后续报告刷新中保留，重复相同报告不重新弹窗；报告异常只 WARN，不阻断已安全执行的合并。处理完 raw 后，这些输出由未来的「processed 按日重生」入口接管。**入口就绪前不要用 `process_existing_raw` 单目录补 sidecar／朋友圈日文件，它会以单会话覆盖整日。** `--day` 不筛输入，不能使单目录重处理成为按日全集重生。账本只记保留路径；不要把新导出写回同一保留路径并期待自动解除排除。
 

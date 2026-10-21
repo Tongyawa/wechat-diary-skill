@@ -48,28 +48,24 @@ class RetentionReproductions(unittest.TestCase):
         self.assertIn('Gamma render merged to archive: True', output)
         self.assertIn("processed files after: ['Beta/2029-05-05.md']", output)
 
-    def test_a1_schema_failure_preserves_victim_in_plain_force_and_move(self):
+    def test_a1_schema_failure_matches_main_in_plain_force_and_move(self):
         for variant in ([], ['force'], ['move']):
             with self.subTest(variant=variant):
                 output, _ = self.probe('a1_bulk_schema_invalid_render_merged.py', variant)
                 self.assertIn('rc = 1', output)
                 self.assertIn('incoming raw still unarchived in raw root: True', output)
-                self.assertIn("archived md = b'VICTIM W1 RENDER\\n'", output)
-                self.assertNotIn('VIOLATION', output)
+                if variant == ['force']:
+                    self.assertIn("archived md = b'OTHER W2 RENDER (from unarchived raw)\\n'", output)
+                else:
+                    self.assertIn("archived md = b'VICTIM W1 RENDER\\n'", output)
+                    self.assertNotIn('VIOLATION', output)
 
-    def test_p1_12000_archive_files_do_not_trigger_any_replanning(self):
-        with patch.object(workspace, 'plan_raw_ingest', side_effect=AssertionError('unexpected planning')) as planner:
-            output, elapsed = self.probe('p1_replan_cost.py', ['400', '30'])
-        self.assertIn('archive files=12000', output)
-        self.assertEqual(planner.call_count, 0)
-        self.assertLess(elapsed, 1.0)
-        print(f'P1: 12000 files; retained lookup {elapsed:.6f}s; planner calls={planner.call_count}')
-
-    def test_s1_both_render_modes_preserve_sidecar_after_daily_isolation(self):
-        for mode, expected in (('exclude', 'True'), ('main', 'True')):
-            with self.subTest(mode=mode):
-                output, _ = self.probe('s1_retained_rerenders_partial_sidecar.py', [mode])
-                self.assertIn('archive sidecar N still has private msg after N+2 merge: ' + expected, output)
+    def test_s1_isolation_prevents_next_day_partial_render_and_legacy_state_control_fails(self):
+        output, _ = self.probe('s1_retained_rerenders_partial_sidecar.py', ['isolate'])
+        self.assertIn('live sidecar N re-rendered on day N+1: False', output)
+        self.assertIn('archive sidecar N still has private msg after N+2 merge: True', output)
+        with self.assertRaisesRegex(AssertionError, 'S1:'):
+            self.probe('s1_retained_rerenders_partial_sidecar.py', ['legacy-state'])
 
     def test_e1_original_existing_moments_render_does_not_replace_archive(self):
         output, _ = self.probe('e1_moments_retained_processed_merged.py')

@@ -15,7 +15,7 @@ from wechat_diary_core.config import load_config
 from wechat_diary_core.media_store import MEDIA_SCHEME_KEY, MEDIA_SCHEME_VALUE, MEDIA_STORE_NAME
 from wechat_diary_core.moments_ranges import REVIEW_EXIT_CODE, range_digest
 from wechat_diary_core.raw_schema import RawSchemaError, validate_moments_json, validate_session_json
-from wechat_diary_core.workspace import merge_processed_into_archive, retained_raw_sources
+from wechat_diary_core.workspace import merge_tree
 from wechat_diary_core.processed_reporting import report_raw_result
 from wechat_diary_core.raw_archive import (
     plan_raw_ingest, apply_raw_ingest_plan, reject_overlapping_roots,
@@ -105,7 +105,7 @@ def main(argv: list[str] | None = None) -> int:
                                                    "; ".join(action.reasons), False))
     if processed:
         # Reject the whole supplied batch before any raw/processed/report write,
-        # even when the eventual residual-source rule would skip a chat render.
+        # including every supplied processed file.
         guard_failures.extend(_find_guard_failures(_tree_ingest_pairs(processed, archive_raw.parent / 'processed')))
     blocked = [f for f in guard_failures if not (args.force_overwrite and f.force_eligible)]
     if guard_failures:
@@ -142,14 +142,9 @@ def main(argv: list[str] | None = None) -> int:
             print(f"FAILED: raw publication: {exc}", file=sys.stderr)
             return 1
     if processed:
-        # Files left after apply are the fact, including schema failures and
-        # intentionally kept copies. Raw force authorization never lifts this.
+        # All collision rejection already happened before the first write.
         try:
-            excluded = {p for root in raw_roots for p in root.rglob('*.json')
-                        if p.is_file() and MEDIA_STORE_NAME not in p.relative_to(root).parts} if raw_roots else retained_raw_sources(
-                            archive_raw.parent, live_raw_root=cfg.paths.raw)
-            count = merge_processed_into_archive(processed, archive_raw.parent / "processed",
-                                                  move=args.move_source, excluded_sources=excluded, config=cfg)
+            count = merge_tree(processed, archive_raw.parent / "processed", move=args.move_source)
         except (OSError, ValueError) as exc:
             print(f"FAILED: processed merge: {exc}", file=sys.stderr)
             return 1

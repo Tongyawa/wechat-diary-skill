@@ -15,10 +15,10 @@ from .preprocessing.moments import MomentsExport, moments_render_targets
 from .processed_reporting import (report_raw_result, read_report_text, update_processed_report,
                                   open_report_if_changed)
 from .preprocessing import ProcessedChatExport
-from .config import Config, load_config
+from .config import Config
 from .media_store import MEDIA_STORE_NAME
 from .raw_archive import (plan_raw_ingest, apply_raw_ingest_plan,
-                          remove_empty_directories, validate_archive_report)
+                          remove_empty_directories)
 
 
 CleanupMode = Literal["archive", "delete", "skip"]
@@ -92,14 +92,14 @@ def rotate_export_workspace(
         moved["raw"] = destination
     if "processed" in populated:
         destination = cfg.paths.archived / "processed"
-        merge_processed_into_archive(populated['processed'], destination, excluded_sources=retained_inputs,
+        merge_processed_into_archive(populated['processed'], destination, retained_sources=retained_inputs,
                                      config=cfg, report_opener=defer_report)
         moved["processed"] = destination
 
     if report_requests:
         open_report_if_changed(cfg.paths.archived, previous_report, report_opener)
 
-    # Raw execution removes only verified consumed files. Never clear retained input.
+    # Publication and isolation own file removal; only remove empty shells here.
     if "processed" in populated:
         remove_empty_directories(populated['processed'])
     if "raw" in populated:
@@ -150,44 +150,6 @@ def merge_raw_exports_into_archive(
     return len(result.published)
 
 
-class RetentionReportError(ValueError):
-    """An existing ledger cannot safely authorize rendering or merging."""
-
-
-def retained_raw_sources(archived_root: str | Path, *, live_raw_root: str | Path | None = None) -> set[Path]:
-    """Read surviving live sources from the ledger; never plan raw ingestion.
-
-    With no configured live root, the ledger's absolute source locations are
-    used, excluding anything already inside the archive. Missing ledger means
-    no exclusions; an unreadable ledger stops the caller before any rendering.
-    """
-    archived = Path(archived_root).resolve()
-    report_path = archived / 'raw-fold-report.json'
-    try:
-        report = json.loads(report_path.read_text(encoding='utf-8-sig'))
-        validate_archive_report(report)
-    except FileNotFoundError:
-        return set()
-    except (OSError, ValueError, TypeError) as exc:
-        message = f'保留账本不可读取，拒绝渲染与合并：{report_path}（{type(exc).__name__}）'
-        print('[WARN] ' + message)
-        raise RetentionReportError(message) from exc
-    live = Path(live_raw_root).resolve() if live_raw_root is not None else None
-    held = set()
-    for item in report['items']:
-        for detail in item.get('details', []):
-            value = detail.get('retainedSource')
-            if not value or not Path(value).is_absolute():
-                continue
-            path = Path(value)
-            resolved = path.resolve()
-            if path.is_file() and not resolved.is_relative_to(archived) and (live is None or resolved.is_relative_to(live)):
-                # Preserve the logical session folder for the render mapping;
-                # exclusion comparisons themselves always resolve both sides.
-                held.add(path)
-    return held
-
-
 def _retained_exports(retained_sources):
     for source in retained_sources:
         source = Path(os.path.abspath(source))
@@ -232,17 +194,6 @@ def retained_multi_targets(retained_sources, config) -> dict[Path, set[Path]]:
     return targets
 
 
-def _processed_config(source, destination, config):
-    if config is not None:
-        return config
-    path = source.parent / 'config.toml'
-    if path.is_file():
-        candidate = load_config(path)
-        if candidate.paths.processed.resolve() == source and candidate.paths.archived.resolve() == destination.parent:
-            return candidate
-    return None
-
-
 @dataclass(frozen=True)
 class ProcessedMergePlan:
     skipped_chat: frozenset[Path]
@@ -250,18 +201,14 @@ class ProcessedMergePlan:
     introduced_multi: dict[Path, set[Path]]
 
 
-def plan_processed_merge(source, destination, *, excluded_sources=None, config=None) -> ProcessedMergePlan:
+def plan_processed_merge(source, destination, *, retained_sources=(), config=None) -> ProcessedMergePlan:
     """Read-only B' decision; it never changes or replans raw ingestion."""
     source, destination = Path(source).resolve(), Path(destination).resolve()
-    config = _processed_config(source, destination, config)
-    if excluded_sources is None:
-        excluded_sources = retained_raw_sources(destination.parent,
-            live_raw_root=config.paths.raw if config is not None else None)
-    excluded_sources = set(excluded_sources)
-    if excluded_sources and config is None:
+    retained_sources = set(retained_sources)
+    if retained_sources and config is None:
         raise ValueError('retained inputs require the renderer config for processed merging')
-    one_to_one = retained_chat_targets(excluded_sources)
-    many_to_one = retained_multi_targets(excluded_sources, config)
+    one_to_one = retained_chat_targets(retained_sources)
+    many_to_one = retained_multi_targets(retained_sources, config)
     skipped_chat, skipped_multi, introduced = set(), set(), {}
     for path in source.rglob('*'):
         if not path.is_file():
@@ -277,10 +224,10 @@ def plan_processed_merge(source, destination, *, excluded_sources=None, config=N
     return ProcessedMergePlan(frozenset(skipped_chat), frozenset(skipped_multi), introduced)
 
 
-def merge_processed_into_archive(source, destination, *, move=True, excluded_sources=None, config=None, report_opener=None) -> int:
+def merge_processed_into_archive(source, destination, *, move=True, retained_sources=(), config=None, report_opener=None) -> int:
     """Leave skipped files live and unprotected; clear_first removes them later."""
     source, destination = Path(source).resolve(), Path(destination).resolve()
-    decision = plan_processed_merge(source, destination, excluded_sources=excluded_sources, config=config)
+    decision = plan_processed_merge(source, destination, retained_sources=retained_sources, config=config)
     skipped = decision.skipped_chat | decision.skipped_multi
     count = 0
     introduced = {}

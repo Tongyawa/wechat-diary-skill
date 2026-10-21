@@ -2,7 +2,7 @@
   "scripts/archive_exports.py": {
     "main:_unlink": 1,
     "main:apply_raw_ingest_plan": 1,
-    "main:merge_processed_into_archive": 1
+    "main:merge_tree": 1
   },
   "scripts/backfill_group_names.py": {
     "_plan_file_patch:replace": 1,
@@ -42,7 +42,7 @@
   "scripts/process_existing_raw.py": {
     "_ensure_day_file_if_needed:mkdir": 1,
     "_ensure_day_file_if_needed:write_text": 1,
-    "archive_existing_processed:merge_processed_into_archive": 1,
+    "archive_existing_processed:merge_tree": 1,
     "archive_existing_processed:mkdir": 2,
     "run_voice_fallback_script_for_raw:copy": 1
   },

@@ -23,12 +23,11 @@ def run(
     ocr_engine: OcrEngine | None = None,
     image_mode: ImageMode = "ocr_inline",
     vision_describer: VisionDescriber | None = None,
-    excluded_sources: set[Path] | None = None,
 ) -> list[ProcessedChatExport]:
     cfg = config or load_config()
     exports: list[ProcessedChatExport] = []
     with collect_voice_transcription_failures():
-        for source_path in discover_chat_exports(raw_path, excluded_sources=excluded_sources):
+        for source_path in discover_chat_exports(raw_path):
             processed = preprocess_export(
                 source_path,
                 config=cfg,
