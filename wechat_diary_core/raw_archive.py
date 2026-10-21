@@ -1072,6 +1072,8 @@ class ApplyResult:
     warnings: list[dict] = field(default_factory=list)
     backup_dir: Path | None = None
     range_review: bool = False
+    isolated_sources: dict[Path, Path] = field(default_factory=dict)
+    isolation_dir: Path | None = None
 
 
 def _atomic_bytes(path: Path, data: bytes) -> None:
@@ -1182,6 +1184,15 @@ def apply_raw_ingest_plan(plan: RawIngestPlan, *, move_source: bool = False,
         raise ValueError("raw plan requires explicit overwrite confirmation")
     validated_sources = validate_plan(plan)
     result = ApplyResult(range_review=any(a.range_review for a in plan.actions))
+    if plan.policy == "daily":
+        from .raw_isolation import check_isolation_roots
+        try:
+            check_isolation_roots(plan)
+        except (OSError, ValueError) as exc:
+            result.retained.extend(a.source for a in plan.actions)
+            result.warnings.append({"source": str(plan.roots[0]), "reasons": ["isolation_root_overlap"]})
+            print(f"[WARN] 隔离根与归档或源根重叠，本轮不写归档、不搬移：{exc}")
+            return result
     manifest = {"schemaVersion": 1, "entrypoint": plan.policy, "items": []}
     current_targets = {a.target: a.target_before for a in plan.actions}
     saved_versions = {}
@@ -1321,6 +1332,9 @@ def apply_raw_ingest_plan(plan: RawIngestPlan, *, move_source: bool = False,
     for directory in old_directories:
         remove_empty_directories(directory, remove_root=True)
     result.warnings.extend(_directory_retention(plan, old_directories, after_cleanup=True))
+    if plan.policy == "daily":
+        from .raw_isolation import isolate_retained
+        isolate_retained(plan, result)
     if move_source:
         for root in plan.roots:
             if root != plan.archive:
@@ -1330,6 +1344,8 @@ def apply_raw_ingest_plan(plan: RawIngestPlan, *, move_source: bool = False,
 
 def _report_item_key(item: dict) -> tuple[str, ...]:
     owner = str(item.get("entrypoint") or "daily")
+    if item.get("isolationDirectory"):
+        return owner, "isolated", str(item["isolationDirectory"]), json.dumps(item.get("identity", {}), sort_keys=True), str(item.get("source", ""))
     identity = item.get("identity") or {}
     if identity.get("wxid") and identity.get("day"):
         return owner, "chat", str(identity["wxid"]), str(identity["day"])
@@ -1438,14 +1454,15 @@ def _updated_report_items(plan: RawIngestPlan, result: ApplyResult, previous: di
             ledger[key] = dict(retained_directories[directory], entrypoint=plan.policy)
         elif not path.exists():
             ledger.pop(key, None)
-    return [ledger[key] for key in sorted(ledger)]
+    from .raw_isolation import refresh_isolation_report
+    return refresh_isolation_report(plan, result, [ledger[key] for key in sorted(ledger)])
 
 
 REPORT_OPENER = (
     '请读取本报告所在目录的 raw-fold-report.json，并以同目录的 raw/ 为归档根，'
     '逐项核对报告中 incoming、最终目标和旧副本的身份、消息覆盖及媒体引用。'
-    '先只读取证，再按项目授权和备份规则处理能证明安全的项目并复查；'
-    '无法裁定的项目保留原件，列出具体差异和待裁决问题。不要直接覆盖、删除或清空保留输入。'
+    '逐项核对后，用 archive_exports.py --raw-root <隔离子目录> 再摄取'
+    '（可证明覆盖的会自动通过；交叉的走合并工具），或删除该子目录。'
 )
 
 
@@ -1453,7 +1470,9 @@ def _report_markdown(plan: RawIngestPlan, items: list[dict]) -> str:
     lines = ['# 归档待处理报告', '', '复制下面这段开场词，并把本报告交给 Agent：', '',
              '```text', REPORT_OPENER, '```', '', f'归档根：{plan.archive}',
              '机器明细：raw-fold-report.json。条目保留到再次处理并确认解决；历史条目可能需要重新取证。',
-             '处理完对应 raw 再删账本；提前删除会使非轮转入口失去保留记录，可能影响可从归档 raw 重建的 processed Markdown。下次轮转会重新核对并记账。', '']
+             '待处理隔离批次以现存子目录为准；子目录摄取或删除后，下次轮转自动清项。', '']
+    from .raw_isolation import isolation_report_lines
+    lines.extend(isolation_report_lines(plan.archive.parent))
     if not items:
         return '\n'.join([*lines, 'raw 已无待处理项；processed 影响见下文（如有）。', ''])
     for number, item in enumerate(items, 1):
@@ -1484,16 +1503,15 @@ def _report_markdown(plan: RawIngestPlan, items: list[dict]) -> str:
                              f"wxid={identity.get('wxid') or '未知'}；日期={identity.get('day') or '未知'}；"
                              f"消息 {count_text}；路径：{record.get('path') or '未记录'}")
             retained = detail.get('retainedSource')
-            lines.append(f'- live raw 保留位置：{retained or "本次已发布，源已消费；请核对归档文件。"}')
+            lines.append(f'- 保留文件位置（隔离成功后位于隔离子目录）：{retained or "本次已发布，源已消费；请核对归档文件。"}')
             if retained:
                 from .processed_reporting import PROCESSED_GUIDANCE
                 lines.append('- ' + PROCESSED_GUIDANCE)
-            lines.append('- 不处理的影响：' + ('每天轮转会再次遇到这份输入；问题仍在时继续保留它及已识别的媒体引用，报告内容相同不会再弹窗。'
-                                                   if retained else '每天报告仍保留此项；未再次处理并确认解决前，归档旧副本或歧义不会自动消失。'))
+            if item.get('isolationDirectory'):
+                lines.append('- 隔离批次：' + item['isolationDirectory'])
         if not details:
             lines.extend(['- 目标与 incoming 身份、消息数：旧报告或目录项未记录，须读取明细路径核实。',
-                          '- live raw 保留位置：' + str(item.get('source') or item.get('sources') or '未记录；见机器明细'),
-                          '- 不处理的影响：每天清单继续保留，相关目录或历史问题不会自动消失。'])
+                          '- 保留位置：' + str(item.get('source') or item.get('sources') or '未记录；见机器明细')])
         lines.extend(['', '机器原因：' + '；'.join(str(r) for r in reasons),
                       '归档证据路径：' + json.dumps(item.get('archiveFiles', item.get('directory', [])), ensure_ascii=False), ''])
     return '\n'.join(lines)
@@ -1561,12 +1579,15 @@ def report_daily_result(plan: RawIngestPlan, result: ApplyResult, *, report_open
             print(f'[WARN] 归档报告损坏，原字节已封存：{corrupt}')
             previous, recovered = None, True
         payload = {"schemaVersion": 2, "items": _updated_report_items(plan, result, previous)}
-        if not payload['items'] and previous is None and not recovered:
+        from .raw_isolation import retention_root
+        isolation = retention_root(plan.archive.parent)
+        has_isolation = isolation.is_dir() and any(isolation.iterdir())
+        if not payload['items'] and previous is None and not recovered and not has_isolation:
             return
         if payload != previous:
             _atomic_bytes(path, json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8"))
         markdown_path = path.with_suffix('.md')
-        if not payload['items'] and not markdown_path.exists():
+        if not payload['items'] and not markdown_path.exists() and not has_isolation:
             return
         markdown = _report_markdown(plan, payload['items']).encode('utf-8')
         if markdown_path.exists() and markdown_path.read_bytes() == markdown:

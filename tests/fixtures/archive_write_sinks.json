@@ -267,6 +267,11 @@
     "report_daily_result:_atomic_bytes": 2,
     "report_daily_result:replace": 1
   },
+  "wechat_diary_core/raw_isolation.py": {
+    "isolate_retained:_atomic_bytes": 2,
+    "isolate_retained:_unlink": 1,
+    "isolate_retained:mkdir": 2
+  },
   "wechat_diary_core/session_rename_alarm.py": {
     "_merge_session_directories:apply_raw_ingest_plan": 1,
     "_save_state_document:mkdir": 1,

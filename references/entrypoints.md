@@ -167,7 +167,7 @@ stdout 只有一份 JSON，含每个聊天的 target、旧文件 / 摘要 / 覆�
 
 JSON 解析失败或条目结构不合法时（包括 detail 缺 incoming / legacyTarget、嵌套 identity 类型错误），先将整份原件封存为 `raw-fold-report.corrupt-<时间戳>.json`，警告指出路径，然后建立新账本继续记录。旧版可缺省的 details / 消息数仍兼容；存在的字段须满足其消费类型。报告中兼容旧格式的 `legacyTarget` 键记录本轮实际受保护的最终目标。报告读取、封存、更新或 Markdown 渲染异常只打印 `[WARN]`，不阻止已安全发布 raw 的清源及其余 processed 合并。
 
-保留集合只包含 raw 源路径。轮转取本次 `ApplyResult.retained`，通过 `RotationResult.retained_sources` 交给后续渲染。非轮转入口用 `workspace.retained_raw_sources(archived_root, live_raw_root=...)` 读取 `raw-fold-report.json`，仅保留仍存在于 live raw 的 `retainedSource`；不扫描归档、不重新规划。账本缺失返回空集合；存在但解析或逐条校验失败则打印路径并拒绝渲染与合并，不封存、不改写。只有日常轮转负责损坏账本的封存恢复。人工删除账本却留下 raw 会解除非轮转入口的排除，可能影响可重建的 processed Markdown，下次轮转重新核对并记账；应处理完对应 raw 再删账本。
+轮转隔离 daily 的 `ApplyResult.retained`，保留原源身份，并用 `isolated_sources` 记录成功搬移后的路径；`RotationResult.retained_sources` 交给本轮 processed 合并的是现存隔离副本，失败项仍指向 live。隔离根由 archived 派生为同级 `<archived名>-retained/<时间戳>/`，manifest 为同级 `<时间戳>.manifest.json`。apply 在任何归档写入前复用现有根关系谓词，隔离根与 archived 或任一源根重叠就拒绝本轮写入并告警；两处规划入口守卫不变。复制、复读校验后才删源，CAS 先复制、依赖它的 JSON 先删源。归档侧 `retainedDirectories` 的旧目录残留不搬。非轮转入口目前仍用 `workspace.retained_raw_sources` 读取账本里存在于 live 的路径，不重新规划；隔离成功的路径不在此集合。隔离批次删除或摄取移空后，下一次轮转按子目录是否存在清项；孤儿 manifest 只提示。
 
 `archive`、`archive_chats_for`、`archive_moments_for`、`preprocessing.run` 与发现函数接受 `excluded_sources`。源路径两侧 resolve 后比较，在预处理、媒体复制与聚合之前排除；直接传入 `ProcessedChatExport` 列表也按 `source_path` 排除。`clear_first=True` 正常清空输出目录。`archiving.chat_render_targets`、`archiving.chat_sidecar_targets`、`preprocessing.moments.moments_render_targets` 分别给出会话、sidecar、朋友圈的相对目标路径，渲染写入与合并判定共用这些函数。合并端从 config 读取用户名及目标子根，与 runner 共用本人朋友圈 subroot 常量和目标子根规范化函数，不按日期粗略扣住其它类型的输出。
 

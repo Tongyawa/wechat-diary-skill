@@ -16,6 +16,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from test_raw_archive import payload, save, tree
+from raw_isolation_support import isolated_file, assert_self_contained
 import test_moments_ranges as range_fixtures
 from wechat_diary_core import raw_archive as ra
 from wechat_diary_core.workspace import rotate_export_workspace
@@ -129,10 +130,27 @@ def observe_execution(archive, live, policy, *, disable_gate=False, forced_targe
             violations.append(('changed_old_bytes', path.name))
     for action in plan.actions:
         if action.status != 'ready':
-            if not action.source.is_file() or action.source.read_bytes() != inputs[action.source]:
+            if policy == 'daily' and result is not None:
+                if action.source.exists():
+                    violations.append(('blocked_source_still_live', action.relative))
+                try:
+                    saved = isolated_file(archive, live, action.source)
+                    if saved.read_bytes() != inputs[action.source]:
+                        violations.append(('changed_isolated_bytes', action.relative))
+                except AssertionError:
+                    violations.append(('missing_isolated_source', action.relative))
+            elif not action.source.is_file() or action.source.read_bytes() != inputs[action.source]:
                 violations.append(('lost_blocked_source', action.relative))
         elif result is not None and action.target.read_bytes() != inputs[action.source]:
             violations.append(('wrong_published_bytes', action.relative))
+    if result is not None and policy == 'daily' and result.isolation_dir:
+        for action in plan.actions:
+            if action.source not in result.retained:
+                continue
+            for reference in action.cas_references:
+                target = result.isolation_dir / reference.relative_to(live)
+                if not target.is_file():
+                    violations.append(('missing_isolated_cas', action.relative))
     return plan, result, violations, len(operations)
 
 
@@ -249,7 +267,7 @@ class FinalTargetTests(unittest.TestCase):
                 plan, result, violations, _ = observe_execution(archive, live, 'daily')
                 self.assertFalse(violations)
                 self.assertEqual(old.read_bytes(), before)
-                self.assertEqual(source.read_bytes(), bad)
+                self.assertEqual(isolated_file(archive, live, source).read_bytes(), bad)
                 self.assertFalse((archive.parent / 'raw-folded').exists())
                 with redirect_stdout(io.StringIO()):
                     ra.report_daily_result(plan, result)
@@ -328,7 +346,8 @@ class FinalTargetTests(unittest.TestCase):
         plan, result, errors, _ = observe_execution(self.archive, self.live, 'daily')
         self.assertFalse(errors)
         self.assertEqual(victim.read_bytes(), before)
-        self.assertTrue(bad.exists())
+        self.assertFalse(bad.exists())
+        self.assertTrue(isolated_file(self.archive, self.live, bad).exists())
         self.assertFalse((self.archive.parent / 'raw-folded').exists())
         self.assertEqual(len(document((self.archive / 'X/X_20300101.json').read_bytes())['messages']), 2)
         with redirect_stdout(io.StringIO()):
@@ -373,7 +392,9 @@ class FinalTargetTests(unittest.TestCase):
             with redirect_stdout(io.StringIO()):
                 rotate_export_workspace(cfg, report_opener=opener)
             self.assertFalse(fresh.exists())
-            self.assertTrue(source.exists() and cas.exists())
+            self.assertFalse(source.exists() or cas.exists())
+            self.assertTrue(isolated_file(self.archive, self.live, source).exists())
+            self.assertTrue(isolated_file(self.archive, self.live, cas).exists())
             self.assertEqual(victim.read_bytes(), before)
             report = tuple((self.archive.parent / name).read_bytes()
                            for name in ('raw-fold-report.json', 'raw-fold-report.md'))
@@ -401,7 +422,8 @@ class FinalTargetTests(unittest.TestCase):
                 plan, result, errors, _ = observe_execution(archive, live, 'daily')
                 self.assertFalse(errors)
                 self.assertEqual(tree(archive), before)
-                self.assertTrue(source.exists())
+                self.assertFalse(source.exists())
+                self.assertTrue(isolated_file(archive, live, source).exists())
 
     def test_q6_two_identities_same_proposed_target_are_checked_individually(self):
         for exists in (False, True):
@@ -419,7 +441,9 @@ class FinalTargetTests(unittest.TestCase):
                 actions = {a.source: a for a in plan.actions}
                 self.assertEqual(actions[first].target, target)
                 self.assertEqual(actions[second].target, archive / 'B/B_20300101.json')
-                self.assertEqual(first.exists(), exists)
+                self.assertFalse(first.exists())
+                if exists:
+                    self.assertTrue(isolated_file(archive, live, first).exists())
                 self.assertFalse(second.exists())
                 self.assertEqual(actions[first].status == 'ready', not exists)
                 self.assertEqual(actions[second].status, 'ready')

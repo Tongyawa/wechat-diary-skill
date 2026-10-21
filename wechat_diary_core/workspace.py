@@ -62,6 +62,9 @@ def rotate_export_workspace(
         return RotationResult(target=None, moved={}, mode=mode)
 
     populated = {key: path for key, path in candidates.items() if _is_non_empty_dir(path)}
+    if mode == "archive" and "raw" not in populated:
+        from .raw_isolation import report_without_raw
+        report_without_raw(cfg.paths.archived, report_opener)
 
     if not populated:
         for path in candidates.values():
@@ -142,7 +145,7 @@ def merge_raw_exports_into_archive(
     plan = plan_raw_ingest(archive_raw_root, [raw_root], policy="daily", header_cache=archive_headers)
     result = apply_raw_ingest_plan(plan, move_source=move, include_ranges=True)
     if retained_inputs is not None:
-        retained_inputs.extend(result.retained)
+        retained_inputs.extend(result.isolated_sources.get(source, source) for source in result.retained)
     report_raw_result(plan, result, report_opener=report_opener)
     return len(result.published)
 

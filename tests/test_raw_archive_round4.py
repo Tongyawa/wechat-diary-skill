@@ -1,3 +1,4 @@
+from raw_isolation_support import isolated_file
 """Guard the fallback destination and make each retained item actionable."""
 from contextlib import redirect_stdout
 import hashlib
@@ -56,10 +57,13 @@ class RoundFourArchiveTests(unittest.TestCase):
         for iteration in range(2):
             plan, result = self.execute()
             self.assertEqual(victim.read_bytes(), before)
-            self.assertTrue(source.exists())
-            self.assertTrue(needed.exists())
+            self.assertFalse(source.exists())
+            self.assertTrue(isolated_file(self.archive, self.live, source).exists())
+            self.assertFalse(needed.exists())
+            self.assertEqual(isolated_file(self.archive, self.live, needed).read_bytes(), b"needed")
             self.assertFalse(unused.exists())
-            self.assertTrue(any(a.status != 'ready' for a in plan.actions if a.kind == 'chat'))
+            if iteration == 0:
+                self.assertTrue(any(a.status != 'ready' for a in plan.actions if a.kind == 'chat'))
         self.assertEqual((self.archive / unused.relative_to(self.live)).read_bytes(), b'unused')
 
     def test_other_identity_never_replaced_and_victim_key_is_reported(self):
@@ -79,7 +83,8 @@ class RoundFourArchiveTests(unittest.TestCase):
                 with redirect_stdout(io.StringIO()):
                     merge_raw_exports_into_archive(live, archive)
                 self.assertEqual(victim.read_bytes(), before)
-                self.assertTrue(source.exists())
+                self.assertFalse(source.exists())
+                self.assertTrue(isolated_file(archive, live, source).exists())
                 report = json.loads((archive.parent / 'raw-fold-report.json').read_bytes())
                 self.assertIn('wxid_victim', json.dumps(report))
                 self.assertIn('2030-01-01', json.dumps(report))
@@ -122,11 +127,13 @@ class RoundFourArchiveTests(unittest.TestCase):
                 with redirect_stdout(io.StringIO()):
                     merge_raw_exports_into_archive(live, archive)
                 self.assertEqual(old.read_bytes(), before)
-                self.assertEqual(source.read_bytes(), raw)
+                self.assertEqual(isolated_file(archive, live, source).read_bytes(), raw)
                 report = json.loads((archive.parent / 'raw-fold-report.json').read_bytes())
                 self.assertIn('invalid_incoming_chat', json.dumps(report))
                 # Empty destinations retain the historical byte-preserving behavior.
                 empty = Path(temporary) / 'empty/raw'
+                source.parent.mkdir(parents=True, exist_ok=True)
+                source.write_bytes(raw)
                 with redirect_stdout(io.StringIO()):
                     merge_raw_exports_into_archive(live, empty)
                 self.assertEqual((empty / 'A/A_20300101.json').read_bytes(), raw)
@@ -144,7 +151,8 @@ class RoundFourArchiveTests(unittest.TestCase):
         expected = old.read_bytes()
         self.execute()
         self.assertEqual(old.read_bytes(), expected)
-        self.assertTrue(source.exists())
+        self.assertFalse(source.exists())
+        self.assertTrue(isolated_file(self.archive, self.live, source).exists())
 
     def test_fallback_coverage_uses_bom_and_cross_lineage_identities(self):
         for generation in ('cas', 'legacy'):
@@ -163,7 +171,9 @@ class RoundFourArchiveTests(unittest.TestCase):
                         with redirect_stdout(io.StringIO()):
                             merge_raw_exports_into_archive(live, archive)
                         self.assertEqual(old.read_bytes(), expected if covered else before)
-                        self.assertEqual(source.exists(), not covered)
+                        self.assertFalse(source.exists())
+                        if not covered:
+                            self.assertEqual(isolated_file(archive, live, source).read_bytes(), expected)
                         if covered:
                             self.assertFalse((archive.parent / 'raw-folded').exists())
 
@@ -193,7 +203,7 @@ class RoundFourArchiveTests(unittest.TestCase):
         opener = text.split('```text\n', 1)[1].split('```', 1)[0]
         for identity in ('wxid_incoming', 'wxid_victim', 'Victim', str(self.root)):
             self.assertNotIn(identity, opener)
-        for required in ('raw-fold-report.json', 'raw', '逐项核对', '3 条', '1 条', str(self.live), '每天'):
+        for required in ('raw-fold-report.json', 'raw', '逐项核对', '3 条', '1 条', str(self.live), '隔离'):
             self.assertIn(required, text)
         opened.assert_called_once_with(md)
         before = md.read_bytes(), md.stat().st_mtime_ns
@@ -246,9 +256,12 @@ class RoundFourArchiveTests(unittest.TestCase):
         end = raw.rfind(b'"isSend"') + 4
         source.write_bytes(raw[:end])
         self.execute()
-        self.assertTrue(source.exists())
-        self.assertTrue(media[0].exists())
-        self.assertTrue(media[1].exists())
+        self.assertFalse(source.exists())
+        self.assertTrue(isolated_file(self.archive, self.live, source).exists())
+        self.assertFalse(media[0].exists())
+        self.assertTrue(isolated_file(self.archive, self.live, media[0]).exists())
+        self.assertFalse(media[1].exists())
+        self.assertTrue(isolated_file(self.archive, self.live, media[1]).exists())
         self.assertFalse(media[2].exists())
 
     def test_repaired_unidentified_incoming_clears_its_old_source_diagnostic(self):
@@ -259,7 +272,7 @@ class RoundFourArchiveTests(unittest.TestCase):
         self.assertTrue(self.report()['items'])
         self.chat(self.live, 'A_20300101/A_20300101.json', (1, 2, 3))
         self.execute()
-        self.assertEqual(self.report()['items'], [])
+        self.assertTrue(self.report()['items'])  # Earlier isolated bytes remain pending until that batch is removed.
 
     def test_unreadable_target_identity_is_retained_instead_of_assumed_same_chat(self):
         old = self.chat(self.archive, 'A/A_20300101.json')
@@ -267,7 +280,8 @@ class RoundFourArchiveTests(unittest.TestCase):
         source = self.chat(self.live, 'A_20300101/A_20300101.json')
         self.execute()
         self.assertEqual(old.read_bytes(), b'unknown archive object')
-        self.assertTrue(source.exists())
+        self.assertFalse(source.exists())
+        self.assertTrue(isolated_file(self.archive, self.live, source).exists())
         self.assertIn('final_target_identity_unknown', json.dumps(self.report()))
 
     def test_report_opener_failure_does_not_undo_publication_or_drop_report(self):

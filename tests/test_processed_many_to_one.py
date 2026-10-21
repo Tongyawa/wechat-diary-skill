@@ -1,4 +1,5 @@
 """B' content oracles: expected outputs do not call production target mappings."""
+from raw_isolation_support import isolated_file
 from contextlib import redirect_stdout, redirect_stderr
 from datetime import datetime
 import io
@@ -60,7 +61,7 @@ class ManyToOneRetentionTests(unittest.TestCase):
         self.assertEqual(archived.read_bytes(), b'ARCHIVED: p1 p2 p3\n')
         self.assertEqual(live.read_bytes(), b'INCOMING: p1 p2\n')
         self.assertEqual(raw.read_bytes(), raw_before)
-        self.assertIn(held, rotation.retained_sources)
+        self.assertIn(isolated_file(cfg.paths.archived/'raw', cfg.paths.raw, held), rotation.retained_sources)
         report = (cfg.paths.archived / 'raw-fold-report.md').read_text(encoding='utf-8')
         self.assertIn('多对一日文件：已跳过', report)
         self.assertIn(relative.as_posix(), report)
@@ -70,7 +71,7 @@ class ManyToOneRetentionTests(unittest.TestCase):
         archive_moments_for(cfg.daily_export.self_moments_usernames, config=cfg,
                             subroot=SELF_MOMENTS_SUBROOT, excluded_sources=rotation.retained_sources)
         self.assertFalse(live.exists())
-        self.assertEqual(archived.read_bytes(), b'ARCHIVED: p1 p2 p3\n')
+        self.assertEqual(archived.read_bytes(), b'INCOMING: p1 p2\n')
         rotate_export_workspace(cfg)
         self.assertIn(relative.as_posix(), (cfg.paths.archived / 'raw-fold-report.md').read_text(encoding='utf-8'))
 
@@ -96,7 +97,8 @@ class ManyToOneRetentionTests(unittest.TestCase):
         archive(cfg.paths.raw, config=cfg)
         archive_chats_for(cfg.daily_export.target_usernames, config=cfg)
         rotate_export_workspace(cfg)
-        self.assertTrue(held.exists())
+        self.assertFalse(held.exists())
+        self.assertTrue(isolated_file(cfg.paths.archived/'raw', cfg.paths.raw, held).exists())
         self.assertEqual(full.read_bytes(), b'GROUP-8 AND TARGET-OLD FULL\n')
         self.assertIn('TARGET-LATEST', (cfg.paths.archived / 'processed/Target/2030-01-02.md').read_text(encoding='utf-8'))
         self.assertIn('TARGET-LATEST', (cfg.paths.processed / '_targets/chats/2030-01-02.md').read_text(encoding='utf-8'))
@@ -109,16 +111,17 @@ class ManyToOneRetentionTests(unittest.TestCase):
         archive_chats_for(cfg.daily_export.target_usernames, config=cfg, excluded_sources={held})
         self.assertIn('TARGET-LATEST', (cfg.paths.processed/'Target/2030-01-02.md').read_text(encoding='utf-8'))
         process_existing_raw.archive_existing_processed(cfg.paths.processed, cfg.paths.archived/'processed', cfg)
-        self.assertIn('TARGET-LATEST', (cfg.paths.processed/'_targets/chats/2030-01-02.md').read_text(encoding='utf-8'))
-        self.assertNotIn('GROUP-7', (cfg.paths.processed/'_targets/chats/2030-01-02.md').read_text(encoding='utf-8'))
-        self.assertEqual(full.read_bytes(), b'GROUP-8 AND TARGET-OLD FULL\n')
+        self.assertFalse((cfg.paths.processed/'_targets/chats/2030-01-02.md').exists())
+        self.assertIn('TARGET-LATEST', full.read_text(encoding='utf-8'))
+        self.assertNotIn('GROUP-7', full.read_text(encoding='utf-8'))
 
     def test_2c_absent_archive_target_accepts_legacy_render_and_reports_contribution_uncertainty(self):
         cfg, _, held, relative, archived, live = self.held_moments(with_archive_md=False)
         rotate_export_workspace(cfg)
         self.assertEqual(archived.read_bytes(), b'INCOMING: p1 p2\n')
         self.assertFalse(live.exists())
-        self.assertTrue(held.exists())
+        self.assertFalse(held.exists())
+        self.assertTrue(isolated_file(cfg.paths.archived/'raw', cfg.paths.raw, held).exists())
         report = (cfg.paths.archived / 'raw-fold-report.md').read_text(encoding='utf-8')
         self.assertIn('归档无同路径：已并入', report)
         self.assertIn(relative.as_posix(), report)
@@ -134,7 +137,8 @@ class ManyToOneRetentionTests(unittest.TestCase):
         old = save(cfg.paths.archived / 'processed' / SELF_MOMENTS_SUBROOT / '2030-01-02.md', b'OLD-SELF')
         archive_moments_for(cfg.daily_export.self_moments_usernames, config=cfg, subroot=SELF_MOMENTS_SUBROOT)
         rotate_export_workspace(cfg)
-        self.assertTrue(held.exists())
+        self.assertFalse(held.exists())
+        self.assertTrue(isolated_file(cfg.paths.archived/'raw', cfg.paths.raw, held).exists())
         self.assertIn('READY-SELF-new', old.read_text(encoding='utf-8'))
         report = (cfg.paths.archived / 'raw-fold-report.md').read_text(encoding='utf-8')
         self.assertNotIn((Path(SELF_MOMENTS_SUBROOT) / '2030-01-02.md').as_posix(), report)
@@ -146,13 +150,13 @@ class ManyToOneRetentionTests(unittest.TestCase):
         report_path.write_text('old: process_existing_raw --raw-root <归档会话目录> --day <日>\n' + report_path.read_text(encoding='utf-8'), encoding='utf-8')
         process_existing_raw.archive_existing_processed(cfg.paths.processed, cfg.paths.archived / 'processed', cfg)
         self.assertNotIn('process_existing_raw --raw-root <归档会话目录>', report_path.read_text(encoding='utf-8'))
-        self.assertTrue(live.exists())
-        self.assertEqual(archived.read_bytes(), b'ARCHIVED: p1 p2 p3\n')
+        self.assertFalse(live.exists())
+        self.assertEqual(archived.read_bytes(), b'INCOMING: p1 p2\n')
         with redirect_stderr(io.StringIO()):
             rc = archive_exports.main(['--config', str(self.root/'config.toml'), '--processed-root', str(cfg.paths.processed), '--force-overwrite'])
         self.assertEqual(rc, 0)
-        self.assertTrue(live.exists())
-        self.assertEqual(archived.read_bytes(), b'ARCHIVED: p1 p2 p3\n')
+        self.assertFalse(live.exists())
+        self.assertEqual(archived.read_bytes(), b'INCOMING: p1 p2\n')
 
     def test_custom_target_root_does_not_touch_unconfigured_same_day_sidecar(self):
         cfg = self.config(target=True, subroot='custom/nested')
@@ -175,7 +179,8 @@ class ManyToOneRetentionTests(unittest.TestCase):
         process_existing_raw.process_existing_raw(cfg, day='2030-01-02', skip_voice_fallback=True)
         self.assertEqual(live.read_bytes(), b'')
         rotate_export_workspace(cfg)
-        self.assertTrue(source.exists())
+        self.assertFalse(source.exists())
+        self.assertTrue(isolated_file(cfg.paths.archived/'raw', cfg.paths.raw, source).exists())
         self.assertEqual(archived.read_bytes(), b'ARCHIVED: p1 p2 p3\n')
         self.assertTrue(live.exists())
         self.assertIn(relative.as_posix(), (cfg.paths.archived/'raw-fold-report.md').read_text(encoding='utf-8'))
@@ -189,7 +194,8 @@ class ManyToOneRetentionTests(unittest.TestCase):
         live = cfg.paths.processed/'_targets/chats/2030-01-02.md'
         self.assertEqual(live.read_bytes(), b'')
         rotate_export_workspace(cfg)
-        self.assertTrue(source.exists())
+        self.assertFalse(source.exists())
+        self.assertTrue(isolated_file(cfg.paths.archived/'raw', cfg.paths.raw, source).exists())
         self.assertEqual(archived.read_bytes(), b'FULL TARGET SIDECAR')
         self.assertTrue(live.exists())
 

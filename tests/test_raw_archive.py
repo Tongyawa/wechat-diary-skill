@@ -1,5 +1,6 @@
 """Synthetic content with field order/newlines sampled from three export generations."""
 from __future__ import annotations
+from raw_isolation_support import isolated_file
 
 import copy
 import hashlib
@@ -318,7 +319,8 @@ class RawArchiveTests(unittest.TestCase):
         self.assertEqual(plan.summary["hardBlocked"], 1)
         ra.apply_raw_ingest_plan(plan)
         self.assertEqual(old.read_bytes(), before)
-        self.assertTrue(source.exists())
+        self.assertFalse(source.exists())
+        self.assertTrue(isolated_file(self.archive, self.incoming, source).exists())
 
     def test_daily_failed_fold_keeps_old_file_and_publishes_new(self):
         old = self.old()
@@ -336,7 +338,9 @@ class RawArchiveTests(unittest.TestCase):
                                                     archived=self.archive.parent))
         with redirect_stdout(io.StringIO()):
             rotate_export_workspace(cfg)
-        self.assertTrue(first.exists() and second.exists())
+        self.assertFalse(first.exists() or second.exists())
+        self.assertTrue(isolated_file(self.archive, self.incoming, first).exists())
+        self.assertTrue(isolated_file(self.archive, self.incoming, second).exists())
         self.assertEqual(list(self.archive.rglob("*.json")), [])
 
     def test_media_follows_resolved_directory_and_conflicting_bytes_are_hard_blocked(self):
@@ -543,7 +547,8 @@ class RawArchiveTests(unittest.TestCase):
         ra.apply_raw_ingest_plan(plan)
         self.assertEqual(canonical.read_bytes(), before)
         self.assertTrue(sibling.exists())
-        self.assertTrue(source.exists())
+        self.assertFalse(source.exists())
+        self.assertTrue(isolated_file(self.archive, self.incoming, source).exists())
 
     def test_rename_preserves_shared_source_media_for_a_blocked_chat(self):
         blocked = self.old(directory="私聊_Former", filename="same_20300102.json", ids=(2,))
@@ -599,7 +604,8 @@ class RawArchiveTests(unittest.TestCase):
         self.assertTrue(all(a.status != "ready" for a in plan.actions if a.kind == "chat"))
         result = ra.apply_raw_ingest_plan(plan, move_source=True)
         self.assertEqual(result.published, [])
-        self.assertTrue(all(p.exists() for p in sources))
+        self.assertTrue(all(not p.exists() for p in sources))
+        self.assertTrue(all(isolated_file(self.archive, self.incoming, p).exists() for p in sources))
 
     def test_same_batch_identical_renames_create_a_retirement_backup(self):
         first = self.old(directory="私聊_FormerA", filename="common_20300102.json")
@@ -661,7 +667,8 @@ class RawArchiveTests(unittest.TestCase):
         data["messages"][0].update(type="图片消息", source=reference, content=reference)
         save(first, data)
         result = ra.apply_raw_ingest_plan(self.plan(policy="daily"), move_source=True)
-        self.assertTrue(first.exists() and media.exists())
+        self.assertFalse(first.exists() or media.exists())
+        self.assertEqual(isolated_file(self.archive, self.incoming, media).read_bytes(), content)
         self.assertIn(media, result.retained)
         self.assertEqual((self.archive / media.relative_to(self.incoming)).read_bytes(), content)
 

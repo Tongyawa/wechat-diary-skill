@@ -1,3 +1,4 @@
+from raw_isolation_support import isolated_file
 """Third-round regressions and a filesystem oracle independent of planner flags."""
 from collections import Counter
 from contextlib import redirect_stdout
@@ -146,7 +147,8 @@ class RoundThreeArchiveTests(unittest.TestCase):
                         self.assertTrue(any(p.read_bytes() == incoming_bytes for p in archive.glob("*/*.json")))
                         self.assertFalse(incoming.exists(), 'safe incoming must actually be consumed, not merely match pre-existing bytes')
                     elif policy == 'daily':
-                        self.assertTrue(incoming.exists(), 'blocked input must remain in live raw')
+                        self.assertFalse(incoming.exists())
+                        self.assertEqual(isolated_file(archive, live, incoming).read_bytes(), incoming_bytes)
                         self.assertEqual({p: p.read_bytes() for p in before}, before)
                     for path, old_bytes in before.items():
                         if not path.exists() or path.read_bytes() != old_bytes:
@@ -310,7 +312,9 @@ class RoundThreeArchiveTests(unittest.TestCase):
         for _ in range(2):
             plan = ra.plan_raw_ingest(self.archive, [self.live, peer], policy="daily")
             ra.apply_raw_ingest_plan(plan, move_source=True)
-            self.assertEqual({p for p in self.live.rglob("*") if p.is_file()}, {blocked, content_media})
+            self.assertEqual({p for p in self.live.rglob("*") if p.is_file()}, set())
+            self.assertTrue(isolated_file(self.archive, self.live, blocked).is_file())
+            self.assertTrue(isolated_file(self.archive, self.live, content_media).is_file())
         for path in media:
             self.assertEqual((self.archive / path.relative_to(self.live)).read_bytes(), b"synthetic media")
 
@@ -347,7 +351,9 @@ class RoundThreeArchiveTests(unittest.TestCase):
         for _ in range(2):
             plan = ra.plan_raw_ingest(self.archive, [self.live, peer], policy="daily")
             ra.apply_raw_ingest_plan(plan, move_source=True)
-            self.assertEqual({p for p in self.live.rglob("*") if p.is_file()}, {blocked, *media[:2]})
+            self.assertEqual({p for p in self.live.rglob("*") if p.is_file()}, set())
+            for p in (blocked, *media[:2]):
+                self.assertTrue(isolated_file(self.archive, self.live, p).is_file())
         self.assertFalse(good.exists())
         for path in media:
             self.assertTrue((self.archive / path.relative_to(self.live)).is_file())

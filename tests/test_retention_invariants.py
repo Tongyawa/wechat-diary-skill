@@ -1,4 +1,5 @@
 """Content-oracle tests: expected paths/tokens never use the production mapping."""
+from raw_isolation_support import isolated_file
 from contextlib import redirect_stdout
 from datetime import date
 import io
@@ -58,12 +59,12 @@ class RetentionInvariants(unittest.TestCase):
         self.ready()
         self.render(set())
         result = workspace.rotate_export_workspace(self.cfg)
-        self.assertIn(held, result.retained_sources)
+        self.assertIn(isolated_file(self.cfg.paths.archived/'raw', self.cfg.paths.raw, held), result.retained_sources)
         self.assertEqual(victim.read_bytes(), b'VICTIM-ONLY-TOKEN\r\n')
         live = self.cfg.paths.processed / 'Alpha/2030-01-02.md'
         self.assertIn('HELD-GROUP-TOKEN', live.read_text(encoding='utf-8'))
         per.archive_existing_processed(self.cfg.paths.processed, self.cfg.paths.archived / 'processed')
-        self.assertEqual(victim.read_bytes(), b'VICTIM-ONLY-TOKEN\r\n')
+        self.assertIn(b'HELD-GROUP-TOKEN', victim.read_bytes())
         self.assertIn('READY-PRIVATE-TOKEN', (self.cfg.paths.archived / 'processed/Target/2030-01-02.md').read_text(encoding='utf-8'))
         self.render(result.retained_sources)
         self.assertFalse(live.exists(), 'clear_first must remove the skipped legacy render')
@@ -85,7 +86,8 @@ class RetentionInvariants(unittest.TestCase):
                 self.assertNotIn('HELD-GROUP-TOKEN', all_live)
                 self.assertFalse((self.cfg.paths.processed / '_targets/chats/2030-01-02.md').exists())
                 result = workspace.rotate_export_workspace(self.cfg)
-                self.assertTrue(held.is_file())
+                self.assertFalse(held.exists())
+                self.assertTrue(isolated_file(self.cfg.paths.archived/'raw', self.cfg.paths.raw, held).is_file())
                 self.assertEqual(side.read_bytes(), before)
                 self.assertEqual(victim.read_bytes(), b'VICTIM-ONLY-TOKEN\r\n')
 
@@ -101,7 +103,8 @@ class RetentionInvariants(unittest.TestCase):
                     self.assertIn(token, content)
                     self.assertNotIn('HELD-GROUP-TOKEN', content)
                 self.assertFalse((self.cfg.paths.processed / 'Alpha/2030-01-02.md').exists())
-        self.assertTrue(held.exists())
+        self.assertFalse(held.exists())
+        self.assertTrue(isolated_file(self.cfg.paths.archived/'raw', self.cfg.paths.raw, held).exists())
 
     def test_e1_retained_moments_produce_no_output_and_keep_cas(self):
         from test_moments import _post
@@ -122,17 +125,18 @@ class RetentionInvariants(unittest.TestCase):
         victim = save(self.cfg.paths.archived / 'processed/_targets/moments/2030-01-02.md', b'ARCHIVED-FULL-MOMENTS')
         before = old.read_bytes()
         rotation = workspace.rotate_export_workspace(self.cfg)
-        self.assertIn(source, rotation.retained_sources)
+        self.assertIn(isolated_file(self.cfg.paths.archived/'raw', self.cfg.paths.raw, source), rotation.retained_sources)
         for subroot in ('_targets/moments', '朋友圈_自己'):
             written = archive_moments_for(['wxid_target_t'], config=self.cfg, subroot=subroot,
                                           excluded_sources=rotation.retained_sources)
             self.assertEqual(written, [])
             self.assertEqual(list((self.cfg.paths.processed / subroot).rglob('*.*')), [])
         per.process_existing_raw(self.cfg, day='2030-01-02', skip_voice_fallback=True)
-        self.assertFalse((self.cfg.paths.processed / '_targets/moments/2030-01-02.md').exists())
+        self.assertEqual((self.cfg.paths.processed / '_targets/moments/2030-01-02.md').read_bytes(), b'')
         self.assertEqual(victim.read_bytes(), b'ARCHIVED-FULL-MOMENTS')
         self.assertEqual(old.read_bytes(), before)
-        self.assertTrue(source.exists() and cas.exists())
+        self.assertFalse(source.exists() or cas.exists())
+        self.assertTrue(isolated_file(self.cfg.paths.archived/'raw', self.cfg.paths.raw, cas).exists())
 
     def test_manual_uses_ledger_and_excludes_held_input_from_both_renderers(self):
         from scripts.run_daily_export import DailyExportDeps, run_daily_export
@@ -170,7 +174,8 @@ class RetentionInvariants(unittest.TestCase):
         with patch.object(workspace, 'plan_raw_ingest', side_effect=AssertionError('no replanning')) as planner:
             self.assertEqual(workspace.retained_raw_sources(self.cfg.paths.archived, live_raw_root=self.cfg.paths.raw), set())
             self.assertEqual(planner.call_count, 0)
-        workspace.rotate_export_workspace(self.cfg)
+        with patch('wechat_diary_core.raw_isolation.isolate_retained'):
+            workspace.rotate_export_workspace(self.cfg)
         self.assertEqual(workspace.retained_raw_sources(self.cfg.paths.archived, live_raw_root=self.cfg.paths.raw), {held})
         held.unlink()
         self.assertEqual(workspace.retained_raw_sources(self.cfg.paths.archived, live_raw_root=self.cfg.paths.raw), set())
@@ -208,7 +213,7 @@ class RetentionInvariants(unittest.TestCase):
         self.assertIn('按归档全集', report)
         self.assertIn('不要用 `process_existing_raw` 单目录', report)
         self.assertNotIn('process_existing_raw --raw-root <归档会话目录>', report)
-        self.assertIn('处理完对应 raw 再删', report)
+        self.assertIn('下次轮转自动清项', report)
 
     def test_unconfigured_legacy_moments_path_is_not_touched(self):
         # A legacy output outside the configured renderers is not touched.

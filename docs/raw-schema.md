@@ -40,7 +40,7 @@
 
 ## 聊天 JSON
 
-保留约定同时适用于聊天与朋友圈：仍被保留的 raw 所引用的 CAS（含朋友圈 Live Photo 动态部分）保留在 live raw，该输入从后续渲染中排除。processed 合并跳过被保留输入触及的会话日文件，以及归档已有同路径的 sidecar／朋友圈日文件；触及的多对一文件在归档无同路径时可并入并报告。就绪输入在 live 正常更新；受触及的归档聚合保持旧版，等待按归档全集补渲染。三个入口的集合来源、输入排除、目标函数与报告行为见 [入口与参数详表](../references/entrypoints.md)；这些执行约定不改变 canonical raw 字段或 schema 版本。
+保留约定同时适用于聊天与朋友圈：daily 的保留输入、引用 CAS（含 Live Photo 动态部分）及同组附件，以原字节移入 archived 同级的 `<archived名>-retained/<时间戳>/`。每份文件先复制、复读校验再删 live 原件；失败则保留原件并报告。子目录沿用 live 相对布局，manifest 在子目录外同级，批量入口可直接读取该子目录。归档旧目录残留原地不动，bulk 与 rename 不建立隔离根。本轮 processed 目标从隔离副本计算，跳过受触及的会话日文件以及归档已有同路径的多对一日文件；没有同路径时可并入并报告。执行约定见 [入口与参数详表](../references/entrypoints.md)，不改变 canonical raw 字段或 schema 版本。
 
 根对象：
 

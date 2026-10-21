@@ -125,6 +125,7 @@ def run_doctor(config_path: str | Path = "config.toml", *, deps: ProbeDependenci
         checks.append(_check_api_semantic(cfg, client))
         checks.append(_check_asr(cfg))
     checks.extend(_check_data_roots(cfg, active.can_write))
+    checks.append(_check_retention_root(cfg))
     checks.extend(_check_optional_dependencies(cfg, active.find_spec))
     checks.append(_check_bundle_backup(cfg))
     return DoctorReport(checks)
@@ -493,6 +494,19 @@ def _check_data_roots(cfg: Config, can_write: Callable[[Path], bool]) -> list[Ch
         ("insights", "洞察产物目录", cfg.paths.insights, _source_path_is_absolute(cfg, "insights")),
     )
     return [_check_data_root(key, name, path, remote_absolute, can_write) for key, name, path, remote_absolute in roots]
+
+
+def _check_retention_root(cfg: Config) -> CheckResult:
+    from wechat_diary_core.raw_isolation import retention_root
+    path = retention_root(cfg.paths.archived)
+    try:
+        count = sum(p.is_dir() for p in path.iterdir()) if path.is_dir() else 0
+        return CheckResult(id="path_retained", group="数据目录", name="隔离原始输入",
+                           status="ready", message=f"隔离根：{path}；现存子目录 {count} 个",
+                           details={"path": str(path), "directories": count})
+    except OSError as exc:
+        return CheckResult(id="path_retained", group="数据目录", name="隔离原始输入",
+                           status="warning", message=f"隔离根不可读取：{path}（{exc}）")
 
 
 def _source_path_is_absolute(cfg: Config, key: str) -> bool:

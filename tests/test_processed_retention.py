@@ -1,4 +1,5 @@
 """Synthetic reproductions of the four accepted processed/report findings."""
+from raw_isolation_support import isolated_file
 from contextlib import redirect_stdout
 from datetime import date
 import hashlib
@@ -59,11 +60,13 @@ class ProcessedRetentionTests(unittest.TestCase):
         before = victim.read_bytes()
         with redirect_stdout(io.StringIO()):
             rotate_export_workspace(self.cfg, report_opener=None)
-            self.assertTrue(incoming.exists() and live_md.exists())
+            self.assertFalse(incoming.exists())
+            self.assertTrue(isolated_file(self.archive, self.cfg.paths.raw, incoming).exists())
+            self.assertTrue(live_md.exists())
             process_existing_raw.archive_existing_processed(self.cfg.paths.processed, self.root / 'archived/processed')
         self.assertEqual(victim.read_bytes(), before)
-        self.assertEqual(old_md.read_bytes(), b'VICTIM W1 RENDER\n')
-        self.assertTrue(live_md.exists())
+        self.assertEqual(old_md.read_bytes(), b'OTHER W2 RENDER\n')
+        self.assertFalse(live_md.exists())
 
 
     def test_moments_cas_retention_ignores_metadata_and_recovers_complete_prefix(self):
@@ -98,8 +101,12 @@ class ProcessedRetentionTests(unittest.TestCase):
                 self.assertEqual(action.cas_references, {kept} if truncated == 'media' else {kept, kept_movie})
                 ra.apply_raw_ingest_plan(plan, move_source=True)
                 self.assertEqual(old.read_bytes(), before)
-                self.assertTrue(incoming.exists() and kept.exists())
-                self.assertEqual(kept_movie.exists(), truncated != 'media')
+                self.assertFalse(incoming.exists() or kept.exists())
+                self.assertTrue(isolated_file(archive, live, incoming).exists())
+                self.assertTrue(isolated_file(archive, live, kept).exists())
+                self.assertFalse(kept_movie.exists())
+                if truncated != 'media':
+                    self.assertTrue(isolated_file(archive, live, kept_movie).exists())
                 self.assertFalse(moved.exists())
 
 
@@ -108,6 +115,7 @@ class ProcessedRetentionTests(unittest.TestCase):
         original = ra._atomic_bytes
         for failure in ('render', 'json', 'markdown'):
             with self.subTest(failure=failure):
+                self.blocked_chat()
                 # Force the exact report write under test; an unchanged report
                 # deliberately performs no write and emits no warning.
                 save(self.root / 'archived/raw-fold-report.json', {'schemaVersion':2,'items':[]})

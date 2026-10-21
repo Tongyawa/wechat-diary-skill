@@ -65,8 +65,8 @@ class RetentionReproductions(unittest.TestCase):
         self.assertLess(elapsed, 1.0)
         print(f'P1: 12000 files; retained lookup {elapsed:.6f}s; planner calls={planner.call_count}')
 
-    def test_s1_input_exclusion_preserves_complete_sidecar_and_main_control_loses_it(self):
-        for mode, expected in (('exclude', 'True'), ('main', 'False')):
+    def test_s1_both_render_modes_preserve_sidecar_after_daily_isolation(self):
+        for mode, expected in (('exclude', 'True'), ('main', 'True')):
             with self.subTest(mode=mode):
                 output, _ = self.probe('s1_retained_rerenders_partial_sidecar.py', [mode])
                 self.assertIn('archive sidecar N still has private msg after N+2 merge: ' + expected, output)
@@ -74,8 +74,8 @@ class RetentionReproductions(unittest.TestCase):
     def test_e1_original_existing_moments_render_does_not_replace_archive(self):
         output, _ = self.probe('e1_moments_retained_processed_merged.py')
         self.assertIn('archived moments raw unchanged: True', output)
-        self.assertIn('incoming moments retained in live raw: True', output)
-        self.assertIn('its media still in live raw: True', output)
+        self.assertIn('incoming moments retained in live raw: False', output)
+        self.assertIn('its media still in live raw: False', output)
         self.assertIn("archived processed md = b'ARCHIVED: p1 p2 p3\\n'", output)
         self.assertIn('live moments md still exists: True', output)
         self.assertIn('report lists path: True', output)

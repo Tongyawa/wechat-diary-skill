@@ -173,7 +173,9 @@ class WorkspaceArchiveMergeTests(unittest.TestCase):
             old.chmod(stat.S_IREAD)
             rotate_export_workspace(cfg)
             self.assertEqual(old.read_bytes(), b'old video')
-            self.assertEqual(media.read_bytes(), b'incoming video')
+            from raw_isolation_support import isolated_file
+            self.assertFalse(media.exists())
+            self.assertEqual(isolated_file(cfg.paths.archived / 'raw', cfg.paths.raw, media).read_bytes(), b'incoming video')
 
 
 class MergeHelperTests(unittest.TestCase):
