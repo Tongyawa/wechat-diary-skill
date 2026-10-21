@@ -169,6 +169,8 @@ JSON 解析失败或条目结构不合法时（包括 detail 缺 incoming / lega
 
 轮转隔离 daily 的 `ApplyResult.retained`，保留原源身份，并用 `isolated_sources` 记录成功搬移后的路径；本轮 processed 合并收到现存隔离副本，失败项仍指向 live。隔离根由 archived 派生为同级 `<archived名>-retained/<时间戳>/`，manifest 为同级 `<时间戳>.manifest.json`。apply 在任何归档写入前复用现有根关系谓词，隔离根与 archived 或任一源根重叠就拒绝本轮写入并告警；两处规划入口守卫不变。复制、复读校验后才删源，CAS 先复制、依赖它的 JSON 先删源。归档侧 `retainedDirectories` 的旧目录残留不搬。隔离批次删除或摄取移空后，下一次轮转按子目录是否存在清项；孤儿 manifest 只提示。
 
+apply 开始时从 live 字节收集本轮引用依赖，引用 CAS 延迟删源；区间在 apply 期进入保留时，其现存 CAS 也纳入本轮保留集。隔离从归档补取 CAS 时校验名称 md5 与原输入指纹；不符合则保留该源并报告。输入本来悬空的引用不补造，计划判定不变。依赖信息仅存在本次 `ApplyResult`，不落跨轮 processed 状态。编码／值错误按单文件处理，报告 JSON 可无损转义特殊路径；apply 新原因进入 json/md，仍有非空隔离批次时不报告“raw 已无待处理项”。
+
 渲染器与发现函数没有输入排除集，live raw 中有什么就处理什么。`clear_first=True` 正常清空输出目录。`archiving.chat_render_targets`、`archiving.chat_sidecar_targets`、`preprocessing.moments.moments_render_targets` 分别给出会话、sidecar、朋友圈的相对目标路径，渲染写入与本轮合并判定共用这些函数。合并端从本次 config 读取用户名及目标子根，与 runner 共用本人朋友圈 subroot 常量和目标子根规范化函数，不按日期粗略扣住其它类型的输出。
 
 `workspace.plan_processed_merge` 只用显式传入的本轮 `retained_sources` 计算处置：未触及的文件正常并入；触及的 1:1 会话日文件跳过；触及的多对一日文件在归档已有同路径时跳过，没有同路径时并入并报告。没有本轮保留源时没有跳过项，不读取历史账本或 processed 记录。跳过文件留在 live，不受输出保护，下次 `clear_first` 清掉。归档 processed 属于历史快照；需要同步归档 raw 时手工按日重生。

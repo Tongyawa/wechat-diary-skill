@@ -1078,6 +1078,7 @@ class ApplyResult:
     range_review: bool = False
     isolated_sources: dict[Path, Path] = field(default_factory=dict)
     isolation_dir: Path | None = None
+    isolation_dependencies: dict[Path, dict[Path, str]] = field(default_factory=dict)
 
 
 def _atomic_bytes(path: Path, data: bytes) -> None:
@@ -1197,6 +1198,12 @@ def apply_raw_ingest_plan(plan: RawIngestPlan, *, move_source: bool = False,
             result.warnings.append({"source": str(plan.roots[0]), "reasons": ["isolation_root_overlap"]})
             print(f"[WARN] 隔离根与归档或源根重叠，本轮不写归档、不搬移：{exc}")
             return result
+    deferred_media = set()
+    if plan.policy == "daily":
+        from .raw_isolation import prepare_isolation
+        deferred_media = prepare_isolation(plan, result)
+    preparation_failed = {Path(warning['source']) for warning in result.warnings
+                          if any(reason.startswith('isolation_failed:') for reason in warning.get('reasons', []))}
     manifest = {"schemaVersion": 1, "entrypoint": plan.policy, "items": []}
     current_targets = {a.target: a.target_before for a in plan.actions}
     saved_versions = {}
@@ -1275,7 +1282,7 @@ def apply_raw_ingest_plan(plan: RawIngestPlan, *, move_source: bool = False,
                 continue
             if _fingerprint(plan.archive / old["path"]) != old["sha256"]:
                 raise ValueError("archive sibling changed before publication")
-        moved = _move_daily_attachment(plan, action, move_source=move_source,
+        moved = _move_daily_attachment(plan, action, move_source=move_source and action.source not in deferred_media,
                     expected_target=expected_target, signature=validated_sources[action.source])
         if not moved:
             data = action.source.read_bytes()
@@ -1316,11 +1323,13 @@ def apply_raw_ingest_plan(plan: RawIngestPlan, *, move_source: bool = False,
             current_targets[old_path] = None
         if action.duplicate:
             result.duplicates += 1
-        if action.retain_source:
+        if action.retain_source or action.source in preparation_failed:
             result.retained.append(action.source)
         else:
             result.consumed.append(action.source)
-        if move_source and not action.retain_source and action.source.exists() and action.source != action.target:
+        if (move_source and not action.retain_source and action.source not in preparation_failed
+                and action.source not in deferred_media
+                and action.source.exists() and action.source != action.target):
             if _fingerprint(action.source) != action.source_sha:
                 raise ValueError("incoming changed before source removal")
             _unlink(action.source)
@@ -1337,8 +1346,10 @@ def apply_raw_ingest_plan(plan: RawIngestPlan, *, move_source: bool = False,
         remove_empty_directories(directory, remove_root=True)
     result.warnings.extend(_directory_retention(plan, old_directories, after_cleanup=True))
     if plan.policy == "daily":
-        from .raw_isolation import isolate_retained
+        from .raw_isolation import isolate_retained, release_unused_media
         isolate_retained(plan, result)
+        if move_source:
+            release_unused_media(plan, result)
     if move_source:
         for root in plan.roots:
             if root != plan.archive:
@@ -1478,7 +1489,12 @@ def _report_markdown(plan: RawIngestPlan, items: list[dict]) -> str:
     from .raw_isolation import isolation_report_lines
     lines.extend(isolation_report_lines(plan.archive.parent))
     if not items:
-        return '\n'.join([*lines, 'raw 已无待处理项；processed 影响见下文（如有）。', ''])
+        from .raw_isolation import retention_root
+        parent = retention_root(plan.archive.parent)
+        pending = parent.is_dir() and any(p.is_dir() and any(p.rglob('*')) for p in parent.iterdir())
+        message = ('raw 仍有隔离批次，详见上述目录与同级 manifest；processed 影响见下文（如有）。'
+                   if pending else 'raw 已无待处理项；processed 影响见下文（如有）。')
+        return '\n'.join([*lines, message, ''])
     for number, item in enumerate(items, 1):
         reasons = item.get('reasons', [])
         if 'fallback_target_other_wxid' in reasons or 'final_target_other_identity' in reasons:
@@ -1589,11 +1605,11 @@ def report_daily_result(plan: RawIngestPlan, result: ApplyResult, *, report_open
         if not payload['items'] and previous is None and not recovered and not has_isolation:
             return
         if payload != previous:
-            _atomic_bytes(path, json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8"))
+            _atomic_bytes(path, json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8", errors="backslashreplace"))
         markdown_path = path.with_suffix('.md')
         if not payload['items'] and not markdown_path.exists() and not has_isolation:
             return
-        markdown = _report_markdown(plan, payload['items']).encode('utf-8')
+        markdown = _report_markdown(plan, payload['items']).encode('utf-8', errors='backslashreplace')
         if markdown_path.exists() and markdown_path.read_bytes() == markdown:
             return
         _atomic_bytes(markdown_path, markdown)
