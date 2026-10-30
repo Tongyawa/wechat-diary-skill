@@ -19,6 +19,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from wechat_diary_core.archiving import archive
+from wechat_diary_core.on_demand_files import export_files, resolve_files_root
 from wechat_diary_core.asr import SenseVoiceTranscriber
 from wechat_diary_core.backends.weflow_api.backend import _last_known_group_members
 from wechat_diary_core.backends.weflow_api.client import (
@@ -73,6 +74,7 @@ class ExportOnDemandResult:
     image_backfill: ImageBackfillResult = field(default_factory=ImageBackfillResult)
     rejected_media_collisions: int = 0
     rejected_media_type_mismatches: int = 0
+    files_report: dict | None = None
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -87,6 +89,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--merged", action="store_true", help="额外产出整段合并 markdown。")
     parser.add_argument("--no-media-copy", action="store_true", help="不把媒体复制到 markdown 旁。")
     parser.add_argument("--no-asr", action="store_true", help="关闭语音转写。")
+    parser.add_argument("--include-files", action="store_true", help="额外导出本机已有文件附件及逐条清单。")
+    parser.add_argument("--files-root", help="附件源目录；默认读取配置的本地文件目录。")
     parser.add_argument(
         "--allow-excluded-session",
         action="store_true",
@@ -120,10 +124,10 @@ def main(argv: list[str] | None = None) -> int:
             end = _parse_day(args.end) if args.end else date.today()
             out_root = merge_target.parent
         else:
-            start = _parse_day(args.start)
-            end = _parse_day(args.end)
+            start = _parse_day(args.start) if args.start else None
+            end = _parse_day(args.end) if args.end else None
             out_root = _resolve_output_path(args.out)
-        if start > end:
+        if start is not None and end is not None and start > end:
             parser.error("--start 不能晚于 --end。")
         result = export_on_demand(
             cfg,
@@ -139,6 +143,7 @@ def main(argv: list[str] | None = None) -> int:
             copy_media=not args.no_media_copy,
             enable_asr=not args.no_asr,
             allow_excluded_session=args.allow_excluded_session,
+            files_root=resolve_files_root(config_path, args.files_root) if args.include_files else None,
         )
     except WorkspaceResolutionError as exc:
         print(str(exc), file=sys.stderr)
@@ -189,6 +194,11 @@ def main(argv: list[str] | None = None) -> int:
             f"有 md5 但本地文件不存在 {result.missing_video_files} 条。导出已继续。",
             file=sys.stderr,
         )
+    if result.files_report is not None:
+        report = result.files_report
+        print(f"文件附件：{report['exported']}/{report['total']} 条；未取得 {report['unresolved']} 条；扫描错误 {report['scan_errors']}。索引：{result.output_session_dir / 'files' / 'README.md'}")
+        if report['unresolved'] or report['scan_errors']:
+            return 3
     return 0
 
 
@@ -198,8 +208,8 @@ def export_on_demand(
     sessions: list[dict[str, Any]],
     client: Any,
     session_query: str,
-    start: date,
-    end: date,
+    start: date | None,
+    end: date | None,
     out_root: str | Path,
     merge_into: str | Path | None = None,
     group_window: bool = False,
@@ -207,6 +217,7 @@ def export_on_demand(
     copy_media: bool = True,
     enable_asr: bool = True,
     allow_excluded_session: bool = False,
+    files_root: Path | None = None,
     archive_fn: Callable[..., list[Path]] | None = None,
     transcriber_factory: Callable[..., Any] | None = None,
     sleep_fn: Callable[[float], None] = time.sleep,
@@ -230,6 +241,10 @@ def export_on_demand(
         raise RuntimeError(f"合并目标必须是已有会话目录：{merge_target}")
     active_cfg = _config_for_on_demand(cfg, group_window=group_window)
     root = merge_target.parent if merge_target is not None else Path(out_root).expanduser().resolve()
+    if files_root is not None:
+        source = files_root.resolve()
+        if root.is_relative_to(source) or source.is_relative_to(root):
+            raise ValueError("附件输出与源目录必须分离，避免改动微信缓存。")
     raw_root = root / "_raw"
     raw_root.mkdir(parents=True, exist_ok=True)
     staging_root = _make_short_staging_root(root)
@@ -265,6 +280,10 @@ def export_on_demand(
         end=end,
         media=api.media_localize,
     )
+    days = [datetime.fromtimestamp(int(message["createTime"])).date() for message in messages]
+    start = start or (min(days) if days else end or date.today())
+    end = end or (max(days) if days else start)
+    print(f"本次消息范围：{start} ~ {end}，{len(messages)} 条。")
     transcriber, unavailable_reason = _make_transcriber(
         active_cfg,
         enabled=enable_asr,
@@ -338,8 +357,10 @@ def export_on_demand(
             if merged or existing_merged.exists()
             else None
         )
+    files_report = export_files(messages, files_root, output_session_dir / "files") if files_root is not None else None
     return ExportOnDemandResult(
         session=session,
+        files_report=files_report,
         raw_session_dir=raw_session_dir,
         output_session_dir=output_session_dir,
         diary_files=diary_files,
@@ -752,6 +773,8 @@ def _parse_day(value: str | None) -> date:
 
 
 def _require_export_arguments(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    if args.files_root and not args.include_files:
+        parser.error("--files-root 需要同时提供 --include-files。")
     if args.out and args.merge_into:
         parser.error("--out 与 --merge-into 不能同时提供。")
     if args.list_sessions is not None:
@@ -760,7 +783,7 @@ def _require_export_arguments(parser: argparse.ArgumentParser, args: argparse.Na
         if not args.session:
             parser.error("合并模式缺少参数：--session")
         return
-    missing = [name for name in ("session", "start", "end", "out") if not getattr(args, name)]
+    missing = [name for name in ("session", "out") if not getattr(args, name)]
     if missing:
         parser.error("导出模式缺少参数：" + ", ".join(f"--{name}" for name in missing))
 

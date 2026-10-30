@@ -99,13 +99,15 @@ python "$SkillRoot\scripts\export_on_demand.py" --session <wxid或显示名子�
 |---|---|
 | `--session` | wxid，或显示名子串 |
 | `--list-sessions <关键词>` | 列出匹配候选并退出。**拿不准会话名时先用它** |
-| `--start` / `--end` | 日期，`2026-05-01` 或 `20260501` 都接受。合并模式省略 `--start` 时取目标夹最新分日 md 的日期（边界日会重导），省略 `--end` 时取运行当天；一次性 `--out` 模式仍要求两者都提供 |
+| `--start` / `--end` | 日期，`2026-05-01` 或 `20260501` 都接受。一次性 `--out` 模式省略哪一边就不限制哪一边，两者都省略即本机可读的全部历史；目录日期取实际消息边界，空结果缺省边界取当天。合并模式省略 `--start` 时仍取目标夹最新分日 md 的日期（边界日会重导），省略 `--end` 时取运行当天 |
 | `--out` | 本次导出的输出根目录；与 `--merge-into` 互斥，一次性产物继续使用带日期范围的目录名 |
 | `--merge-into` | 增量合并进已有会话目录；目标必须已存在，分日 md 与媒体并入该显式目录，`_raw/` 仍按日期范围累积 |
 | `--merged` | 额外产出整段合并 markdown。合并模式会按目标夹全部分日 md 重建；若同名 merged md 已存在，即使未给此参数也会重建 |
 | `--group-window` | 群聊启用上下文窗口筛选。**默认关 = 保留全量** |
 | `--no-asr` | 关闭语音转写 |
 | `--no-media-copy` | 不把媒体复制到 markdown 旁 |
+| `--include-files` | 额外导出本机已下载的文档、压缩包等文件附件，在会话目录 `files/README.md` 查看，`manifest.json` 可逐条对账。消息内有 MD5 才复制，按内容校验，不按同名猜配。缺失、无法核身份、校验失败逐条列出，部分结果退出码3；未开启时不扫描附件 |
+| `--files-root` | 附件源目录；可在 `[on_demand].files_root` 配置（相对 config 目录）。本机已有 `[favorites].account_dir` 时兼容读取其 `msg/file`；未配置或目录不存在会报错。只读取本机字节，不补下载过期/未下载文件；独立于 `--no-media-copy` |
 | `--allow-excluded-session` | 仅本次旁路 `[daily_export].excluded_session_usernames`；没有此参数时显式点名排除会话会中文拒绝 |
 | `--config` | 配置文件路径 |
 

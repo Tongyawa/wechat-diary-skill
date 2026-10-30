@@ -91,8 +91,8 @@ class WeflowApiClient:
         self,
         talker: str,
         *,
-        start: date | str,
-        end: date | str,
+        start: date | str | None,
+        end: date | str | None,
         limit: int = 10000,
         offset: int = 0,
         media: bool = True,
@@ -101,10 +101,12 @@ class WeflowApiClient:
             "talker": talker,
             "limit": limit,
             "offset": offset,
-            "start": _api_date(start),
-            "end": _api_date(end),
             "format": "json",
         }
+        if start is not None:
+            params["start"] = _api_date(start)
+        if end is not None:
+            params["end"] = _api_date(end)
         if media:
             params.update({"media": 1, "image": 1, "voice": 1, "emoji": 1})
         payload = self._request("/api/v1/messages", params, timeout=self.message_timeout)
@@ -115,8 +117,8 @@ class WeflowApiClient:
         self,
         talker: str,
         *,
-        start: date | str,
-        end: date | str,
+        start: date | str | None,
+        end: date | str | None,
         limit: int = 10000,
         media: bool = True,
     ) -> list[dict[str, Any]]:
