@@ -65,6 +65,52 @@ def _digest(path: Path) -> str:
         return hashlib.file_digest(stream, "md5").hexdigest()
 
 
+def _safe_name(title: str) -> str:
+    name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", title).rstrip(" .") or "附件"
+    suffix = Path(name).suffix[:20]
+    if len(name) > 180:
+        name = name[:180-len(suffix)] + suffix
+    if re.fullmatch(r"(?i)(con|prn|aux|nul|com[1-9]|lpt[1-9])", name.split('.')[0]):
+        name = '_' + name
+    return name
+
+
+def _publish_named_file(copied: Path, destination: Path, name: str, digest: str,
+                        reserved: set[str]) -> str:
+    suffix = Path(name).suffix
+    stem = name[:-len(suffix)] if suffix else name
+    numbered = re.fullmatch(r"(.*?)\((\d+)\)", stem)
+    base, first = (numbered[1], int(numbered[2])+1) if numbered else (stem, 1)
+    index = 0
+    while True:
+        filename = name if index == 0 else f"{base}({first+index-1}){suffix}"
+        folded = filename.casefold()
+        if folded in {'readme.md', 'manifest.json'} or (index > 0 and folded in reserved):
+            index += 1
+            continue
+        existing = next((path for path in destination.iterdir() if path.name.casefold() == folded), None)
+        if existing is not None:
+            if existing.is_file() and not existing.is_symlink() and _digest(existing) == digest:
+                return existing.name
+            index += 1
+            continue
+        target = destination / filename
+        try:
+            stream = target.open('xb')
+        except FileExistsError:
+            # A concurrent writer claimed the name; recheck rather than overwrite.
+            continue
+        try:
+            with stream, copied.open('rb') as source:
+                shutil.copyfileobj(source, stream)
+            if _digest(target) != digest:
+                raise OSError('附件发布后校验失败')
+        except BaseException:
+            target.unlink(missing_ok=True)
+            raise
+        return filename
+
+
 def export_files(messages: list[dict], source_root: Path, destination: Path) -> dict:
     source_root = source_root.resolve()
     destination = destination.resolve()
@@ -104,6 +150,7 @@ def export_files(messages: list[dict], source_root: Path, destination: Path) -> 
             if wanted <= found.keys():
                 break
     destination.mkdir(parents=True, exist_ok=True)
+    reserved = {_safe_name(entry['name']).casefold() for entry in entries}
     for entry in entries:
         digest = entry["md5"]
         if digest not in wanted:
@@ -113,8 +160,6 @@ def export_files(messages: list[dict], source_root: Path, destination: Path) -> 
         if source is None:
             entry["status"] = "not_found"
             continue
-        safe = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", entry["name"]).strip(" .")[:100] or "附件"
-        filename = f"{digest}-{safe}"
         handle, temporary = tempfile.mkstemp(dir=destination, prefix=".copy-")
         os.close(handle)
         try:
@@ -123,7 +168,7 @@ def export_files(messages: list[dict], source_root: Path, destination: Path) -> 
             if _digest(copied) != digest or (entry["size"] is not None and copied.stat().st_size != entry["size"]):
                 entry["status"] = "verification_failed"
                 continue
-            os.replace(copied, destination / filename)
+            filename = _publish_named_file(copied, destination, _safe_name(entry['name']), digest, reserved)
             entry.update(status="exported", path=filename)
         except OSError:
             entry["status"] = "copy_failed"

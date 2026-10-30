@@ -106,7 +106,7 @@ python "$SkillRoot\scripts\export_on_demand.py" --session <wxid或显示名子�
 | `--group-window` | 群聊启用上下文窗口筛选。**默认关 = 保留全量** |
 | `--no-asr` | 关闭语音转写 |
 | `--no-media-copy` | 不把媒体复制到 markdown 旁 |
-| `--include-files` | 额外导出本机已下载的文档、压缩包等文件附件，在会话目录 `files/README.md` 查看，`manifest.json` 可逐条对账。消息内有 MD5 才复制，按内容校验，不按同名猜配。缺失、无法核身份、校验失败逐条列出，部分结果退出码3；未开启时不扫描附件 |
+| `--include-files` | 额外导出本机已下载的文档、压缩包等文件附件，在会话目录 `files/README.md` 查看，`manifest.json` 可逐条对账。保留消息原名与已有 `(n)`；同名不同内容时追加 `(n)`，同名同内容重用。MD5仅用于校验及清单，消息内有MD5才复制，不按同名猜配。必要时调整Windows非法名/路径字符或索引重名。缺失、无法核身份、校验失败逐条列出，部分结果退出码3；未开启时不扫描附件 |
 | `--files-root` | 附件源目录；可在 `[on_demand].files_root` 配置（相对 config 目录）。本机已有 `[favorites].account_dir` 时兼容读取其 `msg/file`；未配置或目录不存在会报错。只读取本机字节，不补下载过期/未下载文件；独立于 `--no-media-copy` |
 | `--allow-excluded-session` | 仅本次旁路 `[daily_export].excluded_session_usernames`；没有此参数时显式点名排除会话会中文拒绝 |
 | `--config` | 配置文件路径 |

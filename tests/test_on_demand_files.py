@@ -22,6 +22,38 @@ def message(data=b"document", name="report.pdf", size=None, digest=None):
 
 
 class FileTests(unittest.TestCase):
+    def test_original_names_collisions_numbered_names_and_rerun(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / 'source'
+            source.mkdir()
+            for index, data in enumerate([b'first', b'second', b'third']):
+                (source / str(index)).write_bytes(data)
+            entries = [message(b'first', '报告.pdf'), message(b'second', '报告.pdf'),
+                       message(b'third', '报告(1).pdf'), message(b'first', '报告.pdf')]
+            report = export_files(entries, source, root / 'out')
+            self.assertEqual([e['path'] for e in report['entries']],
+                             ['报告.pdf','报告(2).pdf','报告(1).pdf','报告.pdf'])
+            before = {p.name:p.read_bytes() for p in (root/'out').iterdir()}
+            again = export_files(entries, source, root/'out')
+            self.assertEqual(report, again)
+            self.assertEqual(before, {p.name:p.read_bytes() for p in (root/'out').iterdir()})
+
+    def test_existing_file_case_conflicts_and_index_names_are_preserved(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source, out = root/'source', root/'out'
+            source.mkdir()
+            out.mkdir()
+            (source/'actual').write_bytes(b'document')
+            (out/'Report.PDF').write_bytes(b'older')
+            report = export_files([message(name='report.pdf'), message(name='README.md'),
+                                   message(name='manifest.json'), message(name='NUL.pdf')], source, out)
+            self.assertEqual([e['path'] for e in report['entries']],
+                             ['report(1).pdf','README(1).md','manifest(1).json','_NUL.pdf'])
+            self.assertEqual((out/'Report.PDF').read_bytes(), b'older')
+            self.assertEqual((out/'README(1).md').read_bytes(), b'document')
+
     def test_same_name_wrong_bytes_missing_identity_size_and_traversal(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

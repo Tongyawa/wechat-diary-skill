@@ -275,10 +275,12 @@
     "release_unused_media:_unlink": 1
   },
   "wechat_diary_core/on_demand_files.py": {
+    "_publish_named_file:open": 1,
+    "_publish_named_file:unlink": 1,
     "export_files:copyfile": 1,
     "export_files:mkdir": 1,
     "export_files:mkstemp": 1,
-    "export_files:replace": 4,
+    "export_files:replace": 3,
     "export_files:unlink": 1,
     "export_files:write_text": 2
   },
