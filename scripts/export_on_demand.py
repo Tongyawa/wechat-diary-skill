@@ -11,7 +11,7 @@ import time
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 from pathlib import Path, PurePosixPath
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -79,7 +79,7 @@ class ExportOnDemandResult:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="按需导出一个 WeFlow 会话的指定日期范围。")
-    parser.add_argument("--session", help="会话 wxid，或显示名子串。")
+    parser.add_argument("--session", help="会话 wxid，或显示名（备注）/原名子串。")
     parser.add_argument("--start", help="起始日期，接受 yyyy-mm-dd 或 yyyymmdd。")
     parser.add_argument("--end", help="结束日期，接受 yyyy-mm-dd 或 yyyymmdd。")
     parser.add_argument("--out", help="本次导出的输出根目录。")
@@ -115,7 +115,7 @@ def main(argv: list[str] | None = None) -> int:
         client = _make_client(cfg)
         sessions = client.fetch_sessions(limit=10000)
         if args.list_sessions is not None:
-            _print_session_candidates(sessions, args.list_sessions)
+            _print_session_candidates(sessions, args.list_sessions, contacts=client.fetch_contacts(limit=10000))
             return 0
 
         merge_target = _resolve_merge_target(args.merge_into) if args.merge_into else None
@@ -222,7 +222,8 @@ def export_on_demand(
     transcriber_factory: Callable[..., Any] | None = None,
     sleep_fn: Callable[[float], None] = time.sleep,
 ) -> ExportOnDemandResult:
-    session = resolve_session(sessions, session_query)
+    contacts = client.fetch_contacts(limit=10000)
+    session = resolve_session(sessions, session_query, contacts=contacts)
     talker = str(session.get("username") or "")
     if not talker:
         raise SessionSelectionError("候选会话缺少 username，无法导出。")
@@ -250,7 +251,6 @@ def export_on_demand(
     staging_root = _make_short_staging_root(root)
 
     api = cfg.export_backend.weflow_api
-    contacts = client.fetch_contacts(limit=10000)
     group_members: list[dict[str, Any]] = []
     if talker.endswith("@chatroom"):
         try:
@@ -375,46 +375,113 @@ def export_on_demand(
     )
 
 
-def resolve_session(sessions: list[dict[str, Any]], query: str) -> dict[str, Any]:
+def resolve_session(
+    sessions: list[dict[str, Any]],
+    query: str,
+    *,
+    contacts: Iterable[dict[str, Any]] = (),
+) -> dict[str, Any]:
     needle = query.strip()
     if not needle:
         raise SessionSelectionError("会话查询不能为空。")
     exact = [item for item in sessions if str(item.get("username") or "") == needle]
     if exact:
-        return _select_one(exact, needle)
+        return _select_one(exact, needle, {})
 
-    matches = [item for item in sessions if needle in str(item.get("displayName") or "")]
+    by_username = _contacts_by_username(contacts)
+    matches = [item for item in sessions if _name_hits(item, by_username, needle)]
     if not matches:
         raise SessionSelectionError(f"未找到会话：{needle}")
-    return _select_one(matches, needle)
+    return _select_one(matches, needle, by_username)
 
 
-def _select_one(matches: list[dict[str, Any]], query: str) -> dict[str, Any]:
+def _select_one(
+    matches: list[dict[str, Any]],
+    query: str,
+    by_username: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
     if len(matches) == 1:
         return matches[0]
     lines = [f"会话「{query}」命中多个候选，请改用 wxid："]
-    lines.extend(f"  - {_session_label(item)}" for item in matches)
+    lines.extend(f"  - {_session_label(item, by_username, query)}" for item in matches)
     raise SessionSelectionError("\n".join(lines), exit_code=2)
 
 
-def _print_session_candidates(sessions: list[dict[str, Any]], keyword: str) -> None:
+def _print_session_candidates(
+    sessions: list[dict[str, Any]],
+    keyword: str,
+    *,
+    contacts: Iterable[dict[str, Any]] = (),
+) -> None:
     needle = keyword.strip()
+    by_username = _contacts_by_username(contacts)
     matches = [
         item
         for item in sessions
-        if needle in str(item.get("username") or "") or needle in str(item.get("displayName") or "")
+        if needle in str(item.get("username") or "") or _name_hits(item, by_username, needle)
     ]
     if not matches:
         print(f"未找到会话：{needle}")
         return
     for item in matches:
-        print(f"- {_session_label(item)}")
+        print(f"- {_session_label(item, by_username, needle)}")
 
 
-def _session_label(session: dict[str, Any]) -> str:
+def _contacts_by_username(contacts: Iterable[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    return {str(item.get("username") or ""): item for item in contacts if item.get("username")}
+
+
+def _session_names(
+    session: dict[str, Any],
+    by_username: dict[str, dict[str, Any]],
+) -> tuple[str, str, str]:
+    """Return (shown name, its kind, original name) for matching and labels.
+
+    /sessions only carries the current displayName, which a remark overrides;
+    the contacts roster keeps remark and nickname apart.
+    """
+
+    contact = by_username.get(str(session.get("username") or ""), {})
+    remark = str(contact.get("remark") or "")
+    nickname = str(contact.get("nickname") or "")
+    shown = str(session.get("displayName") or remark or nickname or session.get("nickname") or "")
+    kind = "备注" if remark and shown == remark else "显示名"
+    original = nickname if nickname and nickname != shown else ""
+    return shown, kind, original
+
+
+def _name_hits(
+    session: dict[str, Any],
+    by_username: dict[str, dict[str, Any]],
+    needle: str,
+) -> list[str]:
+    shown, kind, original = _session_names(session, by_username)
+    hits = []
+    if shown and needle in shown:
+        hits.append(kind)
+    if original and needle in original:
+        hits.append("原名")
+    return hits
+
+
+def _session_label(
+    session: dict[str, Any],
+    by_username: dict[str, dict[str, Any]] | None = None,
+    needle: str = "",
+) -> str:
+    by_username = by_username or {}
     username = str(session.get("username") or "<缺少 wxid>")
-    display_name = str(session.get("displayName") or session.get("nickname") or username)
-    return f"{display_name} ({username})"
+    shown, _kind, original = _session_names(session, by_username)
+    label = shown or username
+    if original:
+        label += f"（原名：{original}）"
+    label += f" ({username})"
+    hits = _name_hits(session, by_username, needle) if needle else []
+    if needle and needle in username:
+        hits.insert(0, "wxid")
+    if hits:
+        label += f"  ← 命中{'、'.join(hits)}"
+    return label
 
 
 def _config_for_on_demand(cfg: Config, *, group_window: bool) -> Config:

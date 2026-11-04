@@ -245,6 +245,56 @@ Path(a.report_json).write_text(json.dumps(report), encoding='utf-8')
         self.assertIn("wxid_beta_placeholder", str(raised.exception))
         self.assertIn("wxid_beta_2_placeholder", str(raised.exception))
 
+    def test_session_matches_remark_or_original_name_from_contacts(self) -> None:
+        # Real API shape: /sessions only carries displayName (= remark when set);
+        # /contacts keeps remark and nickname apart.
+        sessions = [
+            {"username": "10000000001@chatroom", "displayName": "备注群名占位", "sessionType": "group"},
+            {"username": "wxid_plain_placeholder", "displayName": "无备注占位"},
+        ]
+        contacts = [
+            {"username": "10000000001@chatroom", "displayName": "备注群名占位", "remark": "备注群名占位", "nickname": "原名群占位", "type": "group"},
+            {"username": "wxid_plain_placeholder", "displayName": "无备注占位", "remark": "", "nickname": "无备注占位"},
+        ]
+
+        self.assertEqual(module.resolve_session(sessions, "原名群", contacts=contacts), sessions[0])
+        self.assertEqual(module.resolve_session(sessions, "备注群名", contacts=contacts), sessions[0])
+        with self.assertRaises(module.SessionSelectionError) as raised:
+            module.resolve_session(sessions, "都不命中", contacts=contacts)
+        self.assertEqual(raised.exception.exit_code, 1)
+        self.assertIn("未找到会话", str(raised.exception))
+        # Without the roster the original name is invisible, as before.
+        with self.assertRaises(module.SessionSelectionError):
+            module.resolve_session(sessions, "原名群")
+
+        def listed(keyword: str) -> str:
+            output = io.StringIO()
+            with redirect_stdout(output):
+                module._print_session_candidates(sessions, keyword, contacts=contacts)
+            return output.getvalue()
+
+        by_original = listed("原名群")
+        self.assertIn("备注群名占位（原名：原名群占位） (10000000001@chatroom)", by_original)
+        self.assertIn("命中原名", by_original)
+        self.assertNotIn("wxid_plain_placeholder", by_original)
+        by_remark = listed("备注群名")
+        self.assertIn("备注群名占位（原名：原名群占位）", by_remark)
+        self.assertIn("命中备注", by_remark)
+        self.assertNotIn("命中原名", by_remark)
+        plain = listed("无备注")
+        self.assertIn("无备注占位 (wxid_plain_placeholder)", plain)
+        self.assertNotIn("原名：", plain)
+        self.assertIn("命中显示名", plain)
+        self.assertEqual("未找到会话：都不命中\n", listed("都不命中"))
+
+        # Ambiguity message carries the same annotated labels.
+        twin = {"username": "10000000002@chatroom", "displayName": "原名群占位二号"}
+        with self.assertRaises(module.SessionSelectionError) as ambiguous:
+            module.resolve_session([*sessions, twin], "原名群", contacts=contacts)
+        self.assertEqual(ambiguous.exception.exit_code, 2)
+        self.assertIn("（原名：原名群占位）", str(ambiguous.exception))
+        self.assertIn("10000000002@chatroom", str(ambiguous.exception))
+
     def test_excluded_session_refuses_without_output_and_explicit_bypass_exports(self) -> None:
         session = {
             "username": "wxid_excluded_placeholder",
