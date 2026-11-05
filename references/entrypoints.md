@@ -86,6 +86,8 @@ python "$SkillRoot\scripts\process_existing_raw.py" --raw-root <raw目录> --day
 
 ## 3. 按需导出 `export_on_demand.py`
 
+跨天 localId 撞号的自动拆段、语音持久缓存拒挂与三条链路计数口径见 [API 媒体归属与统计](api-media-safety.md)。
+
 指定会话 + 日期范围，只写你给的输出目录，**不碰 live 的 raw / processed / 归档**。
 
 ```powershell

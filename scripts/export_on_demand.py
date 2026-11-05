@@ -74,6 +74,9 @@ class ExportOnDemandResult:
     image_backfill: ImageBackfillResult = field(default_factory=ImageBackfillResult)
     rejected_media_collisions: int = 0
     rejected_media_type_mismatches: int = 0
+    media_split_segments: int = 0
+    rejected_same_day_collisions: int = 0
+    rejected_voice_cache: int = 0
     files_report: dict | None = None
 
 
@@ -170,11 +173,15 @@ def main(argv: list[str] | None = None) -> int:
             f"路径指向的文件不存在 {result.missing_image_files} 条。",
             file=sys.stderr,
         )
-    if result.rejected_media_collisions or result.rejected_media_type_mismatches:
+    if result.media_split_segments:
+        print(f"[INFO] 为避开跨天撞号，媒体请求已拆为 {result.media_split_segments} 个非空日段。")
+    if result.rejected_media_collisions or result.rejected_media_type_mismatches or result.rejected_voice_cache:
         print(
             "[WARN] API 媒体引用已拒绝（补前诊断）："
             f"碰撞组归属不符或无法判定 {result.rejected_media_collisions} 条；"
-            f"媒体类别不符 {result.rejected_media_type_mismatches} 条。导出已继续。",
+            f"媒体类别不符 {result.rejected_media_type_mismatches} 条；"
+            f"其中同日撞号拒挂 {result.rejected_same_day_collisions} 条；"
+            f"语音缓存归属无法证明 {result.rejected_voice_cache} 条。导出已继续。",
             file=sys.stderr,
         )
     print_backfill_result(
@@ -372,6 +379,9 @@ def export_on_demand(
         image_backfill=image_backfill,
         rejected_media_collisions=image_media_stats.rejected_media_collisions,
         rejected_media_type_mismatches=image_media_stats.rejected_media_type_mismatches,
+        media_split_segments=image_media_stats.media_split_segments,
+        rejected_same_day_collisions=image_media_stats.rejected_same_day_collisions,
+        rejected_voice_cache=image_media_stats.rejected_voice_cache,
     )
 
 

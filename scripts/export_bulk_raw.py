@@ -240,6 +240,8 @@ def _run(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
         f"失败 {len(result.failures)}；"
         f"本机无记录 {result.no_local_records}；"
         f"群名册降级 {result.group_roster_failures}/{result.group_roster_attempts}"
+        f"；媒体拆段 {result.media_split_segments} 段；同日撞号拒挂 {result.rejected_same_day_collisions} 条"
+        f"；语音缓存拒挂 {result.rejected_voice_cache} 条"
     )
     if result.failures:
         _print_failure_groups(result.failures, result.session_display_names)

@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 import socket
 import time
-from datetime import date
+from collections import Counter
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Callable, Iterator
 from urllib.error import HTTPError, URLError
@@ -122,14 +123,78 @@ class WeflowApiClient:
         limit: int = 10000,
         media: bool = True,
     ) -> list[dict[str, Any]]:
-        """Fetch one talker and arbitrary inclusive date range to exhaustion."""
+        """Plan cross-day requests without media, preserving every identity."""
+
+        if limit <= 0:
+            raise ValueError("分页 limit 必须大于 0")
+        single_day = start is not None and end is not None and _api_date(start) == _api_date(end)
+        if not media:
+            return self._fetch_message_range(talker, start=start, end=end, limit=limit, media=False)
+        plan = None if single_day else self._fetch_message_range(
+            talker, start=start, end=end, limit=limit, media=False,
+        )
+        split = plan is not None and any(n > 1 for n in Counter(
+            str(m.get("localId")) for m in plan
+        ).values())
+        observed_voice_paths: set[Path] = set()
+        if split:
+            days = sorted({datetime.fromtimestamp(int(m["createTime"])).date() for m in plan})
+            messages = []
+            for day in days:
+                segment = self._fetch_message_range(
+                    talker, start=day, end=day, limit=limit, media=True,
+                    observed_voice_paths=observed_voice_paths,
+                )
+                if segment:
+                    segment[0].fetch_split_segments = 1
+                messages.extend(segment)
+        else:
+            messages = self._fetch_message_range(
+                talker, start=start, end=end, limit=limit, media=True,
+                observed_voice_paths=observed_voice_paths,
+            )
+        if plan is not None:
+            if Counter(map(_message_key, plan)) != Counter(map(_message_key, messages)):
+                raise WeflowApiError("WeFlow API 拆段规划与媒体重取消息身份不一致；请重跑，未发布不完整消息")
+            by_key = {_message_key(m): m for m in messages}
+            messages = [by_key[_message_key(m)] for m in plan]
+        self._guard_voice_cache(talker, messages, plan=plan, start=start, end=end, limit=limit)
+        return messages
+
+    def _guard_voice_cache(self, talker, messages, *, plan, start, end, limit):
+        # A fresh file is only attributable when this *actual page* has one
+        # voice for its localId. Older files need full-session identity proof;
+        # a narrow request alone cannot detect another shard's cached voice.
+        pending = [m for m in messages if _is_voice(m) and m.get("mediaLocalPath")
+                   and not m.media_rejection and not m.voice_written_this_page]
+        if not pending:
+            return
+        try:
+            whole = plan if start is None and end is None and plan is not None else self._fetch_message_range(
+                talker, start=None, end=None, limit=limit, media=False,
+            )
+            counts = Counter(str(m.get("localId")) for m in whole if _is_voice(m))
+            identities = {_message_key(m) for m in whole if _is_voice(m)}
+        except WeflowApiError:
+            counts, identities = None, set()
+        for message in pending:
+            if counts is None or counts[str(message.get("localId"))] != 1 or _message_key(message) not in identities:
+                message.media_rejection = "voice_cache"
+
+    def _fetch_message_range(
+        self, talker, *, start, end, limit, media, observed_voice_paths=None,
+    ) -> list[dict[str, Any]]:
+        """One actual range, checked page by page before concatenation."""
 
         if limit <= 0:
             raise ValueError("分页 limit 必须大于 0")
         messages: list[dict[str, Any]] = []
         seen: set[tuple[str, str]] = set()
+        if observed_voice_paths is None:
+            observed_voice_paths = set()
         offset = 0
         while True:
+            request_started_ns = time.time_ns()
             payload = self.get_message_page(
                 talker,
                 start=start,
@@ -138,6 +203,7 @@ class WeflowApiClient:
                 offset=offset,
                 media=media,
             )
+            request_finished_ns = time.time_ns()
             page = self._list_field(payload, "messages")
             page_keys: set[tuple[str, str]] = set()
             for message in page:
@@ -152,7 +218,29 @@ class WeflowApiClient:
                     )
                 page_keys.add(key)
             seen.update(page_keys)
-            messages.extend(guard_message_page(page))
+            checked = guard_message_page(page)
+            local_counts = Counter(str(m.get("localId")) for m in page)
+            voice_counts = Counter(str(m.get("localId")) for m in page if _is_voice(m))
+            for message in checked:
+                message.same_day_collision = bool(
+                    media and start is not None and end is not None and _api_date(start) == _api_date(end)
+                    and message.media_rejection and local_counts[str(message.get("localId"))] > 1
+                )
+                message.voice_written_this_page = False
+                if media and _is_voice(message) and message.get("mediaLocalPath") and voice_counts[str(message.get("localId"))] == 1:
+                    try:
+                        voice_path = Path(message["mediaLocalPath"]).resolve()
+                        stat = voice_path.stat()
+                        # No rounding tolerance: uncertainty must not authorize
+                        # an old recording. Clock drift falls back to the index.
+                        message.voice_written_this_page = (
+                            voice_path not in observed_voice_paths
+                            and request_started_ns < stat.st_mtime_ns <= request_finished_ns
+                        )
+                        observed_voice_paths.add(voice_path)
+                    except OSError:
+                        pass
+            messages.extend(checked)
 
             _validate_page_count(payload, page, "/api/v1/messages")
 
@@ -396,6 +484,14 @@ class WeflowApiClient:
         if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
             raise WeflowApiError(f"WeFlow API 响应缺少 {key}[]")
         return value
+
+
+def _message_key(message: dict[str, Any]) -> tuple[str, str]:
+    return str(message.get("serverId") or ""), str(message.get("localId") or "")
+
+
+def _is_voice(message: dict[str, Any]) -> bool:
+    return int(message.get("localType") or 0) & 0xFFFFFFFF == 34
 
 
 def _api_date(value: date | str) -> str:

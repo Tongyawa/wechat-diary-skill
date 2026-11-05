@@ -58,6 +58,9 @@ class BulkExportResult:
     group_roster_failures: int = 0
     degraded_group_rosters: tuple[str, ...] = ()
     stopped_reason: str | None = None
+    media_split_segments: int = 0
+    rejected_same_day_collisions: int = 0
+    rejected_voice_cache: int = 0
 
 
 @dataclass
@@ -379,6 +382,7 @@ class WeflowApiBackend:
         skipped_platform_accounts = 0
         skipped_excluded_sessions = 0
         messages_written = 0
+        bulk_media_stats = ImageMediaStats()
         files_written: list[Path] = []
         failures: dict[str, str] = dict(plan_failures)
         group_roster_stats = _GroupRosterStats()
@@ -487,6 +491,9 @@ class WeflowApiBackend:
                         messages_written += interval_message_count
                         files_written.extend(_unique_paths(interval_files))
                         self._report_media_rejections(talker, display_name, image_media_stats)
+                        bulk_media_stats.media_split_segments += image_media_stats.media_split_segments
+                        bulk_media_stats.rejected_same_day_collisions += image_media_stats.rejected_same_day_collisions
+                        bulk_media_stats.rejected_voice_cache += image_media_stats.rejected_voice_cache
                         if image_media_stats.missing_image_paths or image_media_stats.missing_image_files:
                             marker = (
                             f"export_chat_image_media:{talker}:"
@@ -589,6 +596,9 @@ class WeflowApiBackend:
             group_roster_failures=len(group_roster_stats.failed_sessions),
             degraded_group_rosters=tuple(group_roster_stats.failed_sessions),
             stopped_reason=stopped_reason,
+            media_split_segments=bulk_media_stats.media_split_segments,
+            rejected_same_day_collisions=bulk_media_stats.rejected_same_day_collisions,
+            rejected_voice_cache=bulk_media_stats.rejected_voice_cache,
         )
 
     def _export_chats_daily(self, export_date: date) -> None:
@@ -759,17 +769,22 @@ class WeflowApiBackend:
             raise RuntimeError("全部会话请求失败，未发布任何 canonical raw")
 
     def _report_media_rejections(self, talker: str, display_name: str, stats: ImageMediaStats) -> None:
-        if not (stats.rejected_media_collisions or stats.rejected_media_type_mismatches):
+        if stats.media_split_segments:
+            print(f"[INFO] export_chat_media_split:{talker}:segments={stats.media_split_segments}")
+        if not (stats.rejected_media_collisions or stats.rejected_media_type_mismatches or stats.rejected_voice_cache):
             return
         self.partial_failures.append(
             f"export_chat_media_rejected:{talker}:"
             f"collision={stats.rejected_media_collisions}:"
             f"type_mismatch={stats.rejected_media_type_mismatches}"
+            f":same_day={stats.rejected_same_day_collisions}:voice_cache={stats.rejected_voice_cache}"
         )
         print(
             f"[WARN] 会话「{_readable_error_summary(display_name, limit=60)}」已拒绝媒体引用："
             f"碰撞组归属不符或无法判定 {stats.rejected_media_collisions} 条；"
-            f"媒体类别不符 {stats.rejected_media_type_mismatches} 条。已继续导出。",
+            f"媒体类别不符 {stats.rejected_media_type_mismatches} 条；"
+            f"其中同日撞号拒挂 {stats.rejected_same_day_collisions} 条；"
+            f"语音缓存归属无法证明 {stats.rejected_voice_cache} 条。已继续导出。",
             file=sys.stderr,
         )
 

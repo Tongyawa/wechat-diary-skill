@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import io
 import json
+import os
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -42,8 +43,13 @@ class PageClient(WeflowApiClient):
         return [SESSION]
 
     def get_message_page(self, talker, *, offset=0, media=True, **kwargs):
+        def in_range(message):
+            day = datetime.fromtimestamp(message['createTime']).date()
+            start, end = kwargs.get('start'), kwargs.get('end')
+            return (start is None or day >= start) and (end is None or day <= end)
+        pages = [[m for m in page if in_range(m)] for page in self.pages]
         cursor = 0
-        for index, rows in enumerate(self.pages):
+        for index, rows in enumerate(pages):
             if offset == cursor:
                 page = copy.deepcopy(rows)
                 if not media:
@@ -51,7 +57,7 @@ class PageClient(WeflowApiClient):
                         for key in ("mediaType", "mediaFileName", "mediaUrl", "mediaLocalPath"):
                             message.pop(key, None)
                 return {"success": True, "messages": page, "count": len(page),
-                        "hasMore": index < len(self.pages) - 1}
+                        "hasMore": index < len(pages) - 1}
             cursor += len(rows)
         raise AssertionError(f"unexpected offset {offset}")
 
@@ -272,12 +278,12 @@ insights = "insights"
     def chain_page(self, *, second_day=DAY):
         return [self.message(identity="b" * 32), self.message(1), self.message(day=second_day)]
 
-    def assert_chain_output(self, root, messages):
+    def assert_chain_output(self, root, messages, *, split=False):
         rows = {}
         for p in root.glob("*/*.json"):
             rows.update({m["platformMessageId"]: m for m in json.loads(p.read_text(encoding="utf-8"))["messages"]})
         self.assertEqual(len(rows), 3)
-        self.assertFalse(rows[messages[0]["serverId"]]["source"])
+        self.assertEqual(bool(rows[messages[0]["serverId"]]["source"]), split)
         self.assertFalse(rows[messages[1]["serverId"]]["source"])
         self.assertTrue(rows[messages[2]["serverId"]]["source"])
 
@@ -296,7 +302,7 @@ insights = "insights"
         self.assertLess(len(warnings[0]), 240)
         self.assertIn("归属不符或无法判定 1 条", warnings[0])
         self.assertIn("媒体类别不符 1 条", warnings[0])
-        self.assertIn("export_chat_media_rejected:session_placeholder:collision=1:type_mismatch=1", backend.partial_failures)
+        self.assertIn("export_chat_media_rejected:session_placeholder:collision=1:type_mismatch=1:same_day=2:voice_cache=0", backend.partial_failures)
 
     def test_bulk_entry_keeps_cross_day_page_decisions(self):
         cfg = self.config()
@@ -308,8 +314,11 @@ insights = "insights"
                                                 state_path=self.root / "bulk-state.json")
         self.assertEqual(result.failures, {})
         self.assertEqual(result.messages_written, 3)
-        self.assert_chain_output(self.root / "bulk", messages)
-        self.assertIn("export_chat_media_rejected:session_placeholder:collision=1:type_mismatch=1", backend.partial_failures)
+        self.assert_chain_output(self.root / "bulk", messages, split=True)
+        self.assertEqual(result.media_split_segments, 2)
+        self.assertEqual(result.rejected_same_day_collisions, 1)
+        self.assertEqual(result.rejected_voice_cache, 0)
+        self.assertIn("export_chat_media_rejected:session_placeholder:collision=0:type_mismatch=1:same_day=1:voice_cache=0", backend.partial_failures)
 
     def test_on_demand_cli_uses_guard_and_reports_pre_backfill_counts(self):
         cfg = self.config()
@@ -322,9 +331,35 @@ insights = "insights"
                 "--session", SESSION["username"], "--start", str(DAY), "--end", str(NEXT_DAY),
                 "--out", str(self.root / "on-demand"), "--no-asr", "--no-media-copy"])
         self.assertEqual(result, 0, stderr.getvalue())
-        self.assert_chain_output(self.root / "on-demand" / "_raw", messages)
-        self.assertIn("归属不符或无法判定 1 条", stderr.getvalue())
+        self.assert_chain_output(self.root / "on-demand" / "_raw", messages, split=True)
+        self.assertIn("归属不符或无法判定 0 条", stderr.getvalue())
         self.assertIn("媒体类别不符 1 条", stderr.getvalue())
+
+    def test_voice_cache_counts_reach_all_three_entries(self):
+        cfg = self.config()
+        voice = self.root / 'voice_701.wav'
+        voice.write_bytes(b'synthetic-old-voice')
+        os.utime(voice, ns=(1_000_000_000, 1_000_000_000))
+        messages = [self.message(34, path=voice), self.message(34, path=voice, day=NEXT_DAY)]
+        backend = WeflowApiBackend(cfg, client_factory=lambda *a, **kw: PageClient([messages]))
+        with redirect_stderr(io.StringIO()), redirect_stdout(io.StringIO()):
+            backend.export_chats(NEXT_DAY)
+        self.assertTrue(any(':voice_cache=1' in m for m in backend.partial_failures))
+        with redirect_stderr(io.StringIO()), redirect_stdout(io.StringIO()):
+            bulk = backend.export_chats_range(DAY, NEXT_DAY, raw_root=self.root / 'voice-bulk',
+                                             state_path=self.root / 'voice-bulk-state.json')
+        self.assertEqual(bulk.failures, {})
+        self.assertEqual(bulk.media_split_segments, 2)
+        self.assertEqual(bulk.rejected_voice_cache, 2)
+        self.assertEqual(bulk.messages_written, 2)
+        stderr = io.StringIO()
+        with patch.object(export_on_demand, 'WeflowApiClient', return_value=PageClient([messages])), \
+                redirect_stderr(stderr), redirect_stdout(io.StringIO()):
+            rc = export_on_demand.main(['--config', str(cfg.config_path), '--session', SESSION['username'],
+                '--start', str(NEXT_DAY), '--end', str(NEXT_DAY), '--out', str(self.root / 'voice-on-demand'),
+                '--no-asr', '--no-media-copy'])
+        self.assertEqual(rc, 0)
+        self.assertIn('语音缓存归属无法证明 1 条', stderr.getvalue())
 
 
 if __name__ == "__main__":

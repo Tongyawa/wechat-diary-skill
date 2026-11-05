@@ -41,6 +41,9 @@ class ImageMediaStats:
     extension_conflicts: int = 0
     rejected_media_collisions: int = 0
     rejected_media_type_mismatches: int = 0
+    media_split_segments: int = 0
+    rejected_same_day_collisions: int = 0
+    rejected_voice_cache: int = 0
 
 
 MEDIA_TYPE_CLASSES = {
@@ -832,10 +835,14 @@ def _localize_media(
     require_media: bool,
     image_media_stats: ImageMediaStats,
 ) -> _LocalizedMedia | None:
+    image_media_stats.media_split_segments += getattr(message, "fetch_split_segments", 0)
     rejection = getattr(message, "media_rejection", "")
     if rejection:
+        image_media_stats.rejected_same_day_collisions += int(getattr(message, "same_day_collision", False))
         if rejection == "type":
             image_media_stats.rejected_media_type_mismatches += 1
+        elif rejection == "voice_cache":
+            image_media_stats.rejected_voice_cache += 1
         else:
             image_media_stats.rejected_media_collisions += 1
         return None
