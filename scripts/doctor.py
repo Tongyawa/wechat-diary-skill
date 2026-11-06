@@ -127,8 +127,21 @@ def run_doctor(config_path: str | Path = "config.toml", *, deps: ProbeDependenci
     checks.extend(_check_data_roots(cfg, active.can_write))
     checks.append(_check_retention_root(cfg))
     checks.extend(_check_optional_dependencies(cfg, active.find_spec))
+    checks.append(_check_emoji_labels(cfg))
     checks.append(_check_bundle_backup(cfg))
     return DoctorReport(checks)
+
+
+def _check_emoji_labels(cfg: Config) -> CheckResult:
+    store = cfg.emoji_labels.store
+    return CheckResult(
+        id="emoji_labels", group="可选能力", name="表情标签表",
+        status="warning" if store.problem else "ready",
+        message=(store.problem if store.problem else
+                 f"已读取 {len(store.labels)} 条标签。" if store.path else "未配置，沿用作者名或 [表情]。"),
+        action="检查 [emoji_labels].path 和标签表内容；导出可继续。" if store.problem else None,
+        details={"path": str(store.path) if store.path else "", "entries": len(store.labels)},
+    )
 
 
 def _check_bundle_backup(cfg: Config) -> CheckResult:

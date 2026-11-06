@@ -1,0 +1,5 @@
+{
+  "provenance": "2026-11-06 从两份只读 CAS raw 的 source/content 路径和归档 legacy emojiCdnUrl 查询结构反推；md5、域名、参数值与显示文字全部合成。",
+  "cas": {"source": "../_media/emojis/aa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.gif", "content": "../_media/emojis/aa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.gif"},
+  "legacy": {"source": "", "content": "[表情包]", "emojiCdnUrl": "https://emoji.invalid/sticker?m=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&filekey=placeholder&hy=placeholder&storeid=placeholder&bizid=placeholder"}
+}

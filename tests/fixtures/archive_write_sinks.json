@@ -166,6 +166,9 @@
   "wechat_diary_core/config.py": {
     "load_config:replace": 1
   },
+  "wechat_diary_core/emoji.py": {
+    "emoji_md5:replace": 1
+  },
   "wechat_diary_core/insights_io.py": {
     "write_daily_markdown:mkdir": 1,
     "write_daily_markdown:write_text": 1,

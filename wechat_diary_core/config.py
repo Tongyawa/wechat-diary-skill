@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+from functools import cached_property
 from pathlib import Path
 from typing import Any
 import copy
@@ -141,6 +142,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "end": "",
     },
     "image_backfill": {"script": ""},
+    "emoji_labels": {"path": ""},
 }
 
 
@@ -375,6 +377,16 @@ class FileAttachmentsConfig:
 
 
 @dataclass(frozen=True)
+class EmojiLabelsConfig:
+    path: Path | None = None
+
+    @cached_property
+    def store(self):
+        from .emoji import EmojiLabels
+        return EmojiLabels(self.path)
+
+
+@dataclass(frozen=True)
 class Config:
     user: UserConfig
     paths: PathsConfig
@@ -396,6 +408,7 @@ class Config:
     image_backfill: ImageBackfillConfig = field(default_factory=ImageBackfillConfig)
     config_path: Path | None = None
     file_attachments: FileAttachmentsConfig = field(default_factory=FileAttachmentsConfig)
+    emoji_labels: EmojiLabelsConfig = field(default_factory=EmojiLabelsConfig)
 
 
 def load_config(config_path: str | Path | None = None) -> Config:
@@ -538,6 +551,9 @@ def _build_config(raw: dict[str, Any], base_dir: Path, *, source: dict[str, Any]
             enabled=bool(raw["file_attachments"]["enabled"]),
             sources=tuple((base_dir / Path(p).expanduser()).absolute()
                           for p in raw["file_attachments"]["sources"] if str(p).strip()),
+        ),
+        emoji_labels=EmojiLabelsConfig(
+            path=_optional_path(base_dir, (raw.get("emoji_labels") or {}).get("path")),
         ),
         image_backfill=ImageBackfillConfig(
             script=_optional_path(base_dir, (raw.get("image_backfill") or {}).get("script")),

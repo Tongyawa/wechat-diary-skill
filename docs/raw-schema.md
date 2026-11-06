@@ -102,12 +102,21 @@
 | `quotedSender` | string | 否 | WeFlow 原始引用发送者。 | 引用发送者退回其他字段或“未知”。 |
 | `quotedSenderDisplayName` | string | 否 | WeFlow 原始引用发送者显示名。 | 引用发送者退回 `quotedSender` 或“未知”。 |
 | `voiceEmotion` | object | 否 | 本地 ASR 从语音中抽出的标签，形如 `{ "emotion": ["HAPPY"], "events": ["Speech"] }`；本期只在 canonical raw 留档。 | 现有 preprocessing 与渲染忽略，不影响语音正文。 |
-| `emojiName` | string | 否 | 动画表情 `rawContent` 的 `<emoji desc="…">` 解码出的作者名称原文，不是专辑名。仅成功解码且有字时写出。 | 名称缺失或仅空白时渲染 `[表情]`；旧 raw 仍可读。 |
-| `emojiDesc` | string | 否 | 动画表情原始 base64 `desc`，最多 8192 个字符；保留供后续重解。无 desc、超限或 XML 不合法时不写；有限长但坏 base64/protobuf 仍可留此字段，不产生名字。 | 不尝试从 content 或 emojiattr 猜名，渲染 `[表情]`。 |
+| `emojiName` | string | 否 | 动画表情 `rawContent` 的 `<emoji desc="…">` 解码出的作者名称原文，不是专辑名。仅成功解码且有字时写出。 | 未命中外部标签表时，名称缺失或仅空白则渲染 `[表情]`；旧 raw 仍可读。 |
+| `emojiDesc` | string | 否 | 动画表情原始 base64 `desc`，最多 8192 个字符；保留供后续重解。无 desc、超限或 XML 不合法时不写；有限长但坏 base64/protobuf 仍可留此字段，不产生名字。 | 不从 content 或 emojiattr 解作者名；无名且未命中标签表时渲染 `[表情]`。 |
 
 两个表情字段均为 schema v1 可选字符串，存在但类型错误时 validator 拒绝。只对新导出的动画表情映射，不回填旧 raw，不保留完整 `rawContent`（其中可能含媒体密钥/URL）。`desc` 的实测结构为外层 repeated field 1、内层 field 1 语言和 field 2 UTF-8 名称；语言取首个非空的 `zh_cn > default > zh_tw > 其他语言原顺序`，同语言取首个非空名称。这是本项目确定的选择顺序，不是上游保证。非法 base64、截断 protobuf 或非法 UTF-8 均不生成名字；解析 XML 上限 65536 个字符，未知 protobuf 字段可跳过，损坏尾部不接受部分名称。
 
-processed 将 `emojiName` 渲染为 `〔名字〕`（U+3014/U+3015），不改变 raw 原文：空白/控制字符压为空格、半角竖线改 `｜`、名称内的 `〔〕` 改 `（）`，显示名最多 80 个 Unicode 字符（超长取前 79 个再加 `…`），无可显示字符时回退 `[表情]`。cleaner、聊天流及图片语境使用同一规则；同发送者且同 isSend、在既有时间间隔内的动画表情可与文字/引用按 ` | ` 合并，其它类型仍不合并。
+processed 默认将 `emojiName` 渲染为 `〔名字〕`（U+3014/U+3015），不改变 raw 原文。配置可选 `[emoji_labels].path` 时，可按 md5 读取外部标签；它是渲染期输入，不是 raw 字段，不改 schema v1 或 validator。完整显示规则见 [processed-format.md §3.4](../references/processed-format.md#34-表情)；cleaner、聊天流及图片语境使用同一规则。同发送者且同 isSend、在既有时间间隔内的动画表情可与文字/引用按 ` | ` 合并，其它类型仍不合并。
+
+### 外部表情标签表（渲染输入）
+
+- `[emoji_labels].path` 默认 `""` 关闭，相对路径以 config 所在目录为基准。开启后，每个配置对象首次清洗聊天时只读一次，后续聊天共享该快照；重新加载配置开始新快照。
+- UTF-8 JSON 结构为 `{"version":1,"labels":{"<32位小写十六进制md5>":{"name":"作者名","album":"专辑名","text":"短转写"}}}`。仅接受整数版本 1；未知顶层和条目键忽略（包括 `text_prompt`、`text_model`）。三项可缺失或 null；非字符串且非 null、非对象条目或非法 md5 的条目整条忽略。
+- CAS 从 `source`、其次 `content` 的 `_media/emojis/<前2位>/<md5>.<ext>` 提取；legacy 从 `emojiCdnUrl` 的唯一 `m=<32hex>` 查询参数提取。不按聊天文字或其它媒体类别猜测。
+- 显示优先 `text`，其次 raw `emojiName`、标签 `name`，主体存在时附 `·album`；只有 album 时显示 `〔album〕`，全空显示 `[表情]`。空白与控制字符、竖线、括号和整体长度按上述格式契约归一，不改原始文件。
+- 路径缺失、读盘失败、坏 JSON、未知版本或结构错误时回退原显示；坏条目不影响正常条目。安全归一或超长内容仍可显示。每个配置快照最多一条中文 `[WARN]` 汇总，导出继续；doctor 读取同一解析结果并显示 warning。
+- 标签仅附在 preprocessing 的内存副本 `_emoji_label` 上，在覆盖 content 前匹配 md5；不写回 raw，不修改标签表，不处理朋友圈评论，不自动重生历史 processed。
 
 `messages[].replyContext` 是可选嵌套对象。当前 preprocessing 会根据 `replyToMessageId` 生成它，raw 适配器通常不必直接提供；若提供，下游会消费这些字段：
 

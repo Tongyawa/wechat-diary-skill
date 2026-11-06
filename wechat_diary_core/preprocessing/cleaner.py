@@ -13,7 +13,7 @@ import re
 import sys
 
 from ..config import Config, PreprocessingConfig, load_config
-from ..emoji import render_emoji
+from ..emoji import EmojiLabels, render_emoji
 from ..raw_schema import RawSchemaError, validate_session_json
 from .context_window import filter_group_context_window
 from .exceptions import InvalidExportError
@@ -171,7 +171,8 @@ def prepare_chat_messages(data: dict[str, Any], config: Config, *, source_path: 
     settings = config.preprocessing
     window = settings.group_context_window
     messages = clean_messages(list(data.get("messages") or []), settings,
-                              pat_keep_names=window.anchor_keywords, source_path=source_path)
+                              pat_keep_names=window.anchor_keywords, source_path=source_path,
+                              emoji_labels=config.emoji_labels.store)
     if str(data.get("session", {}).get("type") or "") == "群聊" and window.enabled:
         messages = filter_group_context_window(messages, messages_before=window.messages_before,
             messages_after=window.messages_after, time_window_minutes=window.time_window_minutes,
@@ -245,8 +246,11 @@ def clean_messages(
     settings: PreprocessingConfig,
     pat_keep_names: Sequence[str] | None = None,
     source_path: str | Path | None = None,
+    emoji_labels: EmojiLabels | None = None,
 ) -> list[Message]:
     cleaned: list[Message] = []
+    if emoji_labels is not None:
+        emoji_labels.warn_once()
     actual_self_display_names = _self_display_names(messages, [])
     self_display_names = actual_self_display_names | {
         str(name).strip() for name in pat_keep_names or [] if str(name).strip()
@@ -268,6 +272,10 @@ def clean_messages(
         if pending_chatroom_top_message:
             current["is_chatroom_top_message"] = True
             pending_chatroom_top_message = False
+        if _is_emoji_message(current) and emoji_labels is not None:
+            label = emoji_labels.lookup(current)
+            if label is not None:
+                current["_emoji_label"] = label
         if settings.skip_emoji_dir and _is_emoji_message(current):
             current["content"] = render_emoji(current)
             if _is_emoji_ref(str(current.get("source") or "")):

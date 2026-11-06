@@ -46,10 +46,16 @@ class ProcessedFormatContractTests(unittest.TestCase):
         self.assertEqual(rendered, '〔示例名〕')
         document = (ROOT / 'references/processed-format.md').read_text(encoding='utf-8')
         self.assertIn('〔<表情名>〕', document)
-        self.assertIn('表情作者起的名字', document)
+        self.assertIn('作者起的名字或模型短转写', document)
         prompt = (ROOT / 'references/prompt-daily.md').read_text(encoding='utf-8')
         self.assertIn('`〔表情名〕`', prompt)
         self.assertIn('按语境理解为对话表达', prompt)
+        for text in (document, prompt):
+            self.assertIn('`·` 后是专辑名', text)
+        self.assertIn('〔<短转写>·<专辑名>〕', _catalog()['observed_structures'])
+        labelled = render_message_content({'type': '动画表情', 'emojiName': '原名',
+                                          '_emoji_label': {'text': '中性转写', 'album': '中性专辑'}})
+        self.assertEqual(labelled, '〔中性转写·中性专辑〕')
 
     def test_media_appmsg_shapes_survive_mapper_and_processed_renderer(self) -> None:
         fixture = json.loads((ROOT / "tests" / "fixtures" / "weflow_media_appmsg.json").read_text(encoding="utf-8"))
