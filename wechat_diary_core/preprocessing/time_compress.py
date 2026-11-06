@@ -6,7 +6,7 @@ import copy
 
 
 Message = dict[str, Any]
-MERGEABLE_TYPES = {"文本消息", "引用消息"}
+MERGEABLE_TYPES = {"文本消息", "引用消息", "动画表情"}
 
 
 def compress_nearby_messages(

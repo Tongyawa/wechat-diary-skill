@@ -12,6 +12,7 @@ import warnings
 from typing import Any, Sequence
 
 from ..config import ImageVisionConfig
+from ..emoji import render_emoji
 from ..media_store import is_media_reference
 from .vision_records import VisionError
 
@@ -224,7 +225,7 @@ def chat_body(messages: Sequence[dict], members: Sequence[ImageItem], settings: 
         elif _is_image(message):
             body = "[图片，不在本组]"
         elif kind == "动画表情" or body in {"[表情]", "[动画表情]", "[表情包]"}:
-            body = "[表情]"
+            body = render_emoji(message)
         elif kind == "语音消息":
             if body and not message.get("transcribe_failed") and not body.startswith(("../", "media/", "转文字失败")):
                 body = f"[语音：{body}]"

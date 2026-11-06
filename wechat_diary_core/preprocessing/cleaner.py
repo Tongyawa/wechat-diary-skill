@@ -13,6 +13,7 @@ import re
 import sys
 
 from ..config import Config, PreprocessingConfig, load_config
+from ..emoji import render_emoji
 from ..raw_schema import RawSchemaError, validate_session_json
 from .context_window import filter_group_context_window
 from .exceptions import InvalidExportError
@@ -268,7 +269,7 @@ def clean_messages(
             current["is_chatroom_top_message"] = True
             pending_chatroom_top_message = False
         if settings.skip_emoji_dir and _is_emoji_message(current):
-            current["content"] = "[表情]"
+            current["content"] = render_emoji(current)
             if _is_emoji_ref(str(current.get("source") or "")):
                 current["source"] = ""
 

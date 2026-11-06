@@ -94,6 +94,9 @@ def validate_session_json(data: Any) -> None:
                 issues.append(f"{path} (object)")
                 continue
             _require_fields(message, path, _CHAT_MESSAGE_REQUIRED, issues)
+            for field in ("emojiName", "emojiDesc"):
+                if field in message:
+                    _require_type(message[field], f"{path}.{field}", (str,), issues)
             _validate_optional_reply_context(message.get("replyContext"), path, issues)
             if media_scheme == MEDIA_SCHEME_VALUE:
                 _validate_cas_message_reference(message, path, issues)
@@ -182,8 +185,8 @@ def _chat_content_group(message: Mapping[str, Any]) -> str | None:
     if message_type == "视频消息":
         return "video"
     if message_type == "动画表情":
-        # The renderer deterministically degrades this type to ``[表情]`` even
-        # when the upstream export carries no textual body or local file.
+        # Optional emojiName renders as 〔name〕; absent/invalid names still
+        # deterministically render as [表情], without requiring media bytes.
         return None
     return "other"
 

@@ -29,6 +29,7 @@ from ...raw_schema import validate_moments_json, validate_session_json
 from ...moments_ranges import publish_range
 from ..weflow.naming import sanitize_session_name
 from .appmsg import AppmsgMeta, parse_appmsg
+from .emoji import emoji_metadata
 from .type_map import resolve_message_type, unpack_local_type
 
 
@@ -635,6 +636,8 @@ def _map_message(
     }
     if is_group:
         mapped["senderGroupNickname"] = str(sender_record.get("groupNickname") or "")
+    if base == 47:
+        mapped.update(emoji_metadata(message.get("rawContent")))
     server_id = message.get("serverId")
     if server_id not in (None, ""):
         mapped["platformMessageId"] = str(server_id)

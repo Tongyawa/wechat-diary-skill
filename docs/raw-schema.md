@@ -98,6 +98,12 @@
 | `quotedSender` | string | 否 | WeFlow 原始引用发送者。 | 引用发送者退回其他字段或“未知”。 |
 | `quotedSenderDisplayName` | string | 否 | WeFlow 原始引用发送者显示名。 | 引用发送者退回 `quotedSender` 或“未知”。 |
 | `voiceEmotion` | object | 否 | 本地 ASR 从语音中抽出的标签，形如 `{ "emotion": ["HAPPY"], "events": ["Speech"] }`；本期只在 canonical raw 留档。 | 现有 preprocessing 与渲染忽略，不影响语音正文。 |
+| `emojiName` | string | 否 | 动画表情 `rawContent` 的 `<emoji desc="…">` 解码出的作者名称原文，不是专辑名。仅成功解码且有字时写出。 | 名称缺失或仅空白时渲染 `[表情]`；旧 raw 仍可读。 |
+| `emojiDesc` | string | 否 | 动画表情原始 base64 `desc`，最多 8192 个字符；保留供后续重解。无 desc、超限或 XML 不合法时不写；有限长但坏 base64/protobuf 仍可留此字段，不产生名字。 | 不尝试从 content 或 emojiattr 猜名，渲染 `[表情]`。 |
+
+两个表情字段均为 schema v1 可选字符串，存在但类型错误时 validator 拒绝。只对新导出的动画表情映射，不回填旧 raw，不保留完整 `rawContent`（其中可能含媒体密钥/URL）。`desc` 的实测结构为外层 repeated field 1、内层 field 1 语言和 field 2 UTF-8 名称；语言取首个非空的 `zh_cn > default > zh_tw > 其他语言原顺序`，同语言取首个非空名称。这是本项目确定的选择顺序，不是上游保证。非法 base64、截断 protobuf 或非法 UTF-8 均不生成名字；解析 XML 上限 65536 个字符，未知 protobuf 字段可跳过，损坏尾部不接受部分名称。
+
+processed 将 `emojiName` 渲染为 `〔名字〕`（U+3014/U+3015），不改变 raw 原文：空白/控制字符压为空格、半角竖线改 `｜`、名称内的 `〔〕` 改 `（）`，显示名最多 80 个 Unicode 字符（超长取前 79 个再加 `…`），无可显示字符时回退 `[表情]`。cleaner、聊天流及图片语境使用同一规则；同发送者且同 isSend、在既有时间间隔内的动画表情可与文字/引用按 ` | ` 合并，其它类型仍不合并。
 
 `messages[].replyContext` 是可选嵌套对象。当前 preprocessing 会根据 `replyToMessageId` 生成它，raw 适配器通常不必直接提供；若提供，下游会消费这些字段：
 

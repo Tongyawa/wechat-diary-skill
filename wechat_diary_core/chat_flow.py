@@ -6,6 +6,7 @@ import html
 import re
 
 from .media_store import is_media_reference
+from .emoji import render_emoji
 
 Message = dict[str, Any]
 TIME_GAP_SECONDS = 5 * 60
@@ -35,7 +36,11 @@ def render_chat_flow(messages: list[Message]) -> str:
             last_mark_time = current_time
 
         sender = display_name_for_message(message)
-        if message.get("is_chatroom_top_message"):
+        segments = message.get("compressed_segments")
+        has_pinned_segment = isinstance(segments, list) and any(
+            isinstance(segment, dict) and segment.get("is_chatroom_top_message") for segment in segments
+        )
+        if message.get("is_chatroom_top_message") or has_pinned_segment:
             sender = f"{sender}【置顶消息】"
         elif message.get("is_self_related_pat"):
             sender = "拍一拍"
@@ -96,7 +101,7 @@ def _base_message_content(message: Message) -> str:
     raw_content = str(message.get("content") or "")
 
     if message_type == "动画表情" or raw_content.strip() in {"[表情包]", "[表情]"}:
-        return "[表情]"
+        return render_emoji(message)
 
     if "图片" in message_type or any(
         message.get(field)

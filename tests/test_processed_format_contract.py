@@ -40,6 +40,17 @@ def _current_renderer_tags() -> set[str]:
 
 
 class ProcessedFormatContractTests(unittest.TestCase):
+    def test_named_sticker_contract_and_prompt(self) -> None:
+        self.assertIn('〔<表情名>〕', _catalog()['observed_structures'])
+        rendered = render_message_content({'type': '动画表情', 'content': '[表情]', 'emojiName': '示例名'})
+        self.assertEqual(rendered, '〔示例名〕')
+        document = (ROOT / 'references/processed-format.md').read_text(encoding='utf-8')
+        self.assertIn('〔<表情名>〕', document)
+        self.assertIn('表情作者起的名字', document)
+        prompt = (ROOT / 'references/prompt-daily.md').read_text(encoding='utf-8')
+        self.assertIn('`〔表情名〕`', prompt)
+        self.assertIn('按语境理解为对话表达', prompt)
+
     def test_media_appmsg_shapes_survive_mapper_and_processed_renderer(self) -> None:
         fixture = json.loads((ROOT / "tests" / "fixtures" / "weflow_media_appmsg.json").read_text(encoding="utf-8"))
         for case in fixture["cases"]:

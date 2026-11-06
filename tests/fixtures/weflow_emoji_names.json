@@ -1,0 +1,9 @@
+{
+  "provenance": "2026-11-05 API rawContent 与 samples.json 反推：msg/emoji 属性、default 与 zh_cn 单条嵌套 protobuf 及 API 降序。名字和身份均替换为中性合成值；多语言、坏输入由测试在此真实形状上变形。",
+  "messages": [
+    {"localId": 3, "serverId": "sample3", "createTime": 1793757602, "localType": 47, "isSend": 0, "senderUsername": "contact_placeholder", "content": "[动画表情]", "rawContent": "<msg><emoji md5=\"00000000000000000000000000000000\" type=\"2\" len=\"30574\" width=\"240\" height=\"240\" productid=\"sample_product\" desc=\"ChQKB2RlZmF1bHQSCeekuuS+i+WQjQ==\"/></msg>"},
+    {"localId": 2, "serverId": "sample2", "createTime": 1793757601, "localType": 47, "isSend": 0, "senderUsername": "contact_placeholder", "content": "[动画表情]", "rawContent": "<msg><emoji md5=\"11111111111111111111111111111111\" type=\"1\" len=\"13238\" width=\"240\" height=\"240\" productid=\"sample_product\"/></msg>"},
+    {"localId": 1, "serverId": "sample1", "createTime": 1793757600, "localType": 1, "isSend": 0, "senderUsername": "contact_placeholder", "content": "示例正文", "rawContent": "示例正文"}
+  ],
+  "zh_cn_only": "<msg><emoji type=\"1\" width=\"293\" height=\"300\" desc=\"ChIKBXpoX2NuEgnnpLrkvovlkI0=\"/></msg>"
+}

@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from wechat_diary_core.config import load_config
-from wechat_diary_core.chat_flow import _target_is_image
+from wechat_diary_core.chat_flow import _target_is_image, render_chat_flow
 from wechat_diary_core.preprocessing import run
 from wechat_diary_core.preprocessing import image_ocr
 from wechat_diary_core.preprocessing.image_ocr import _parse_paddle_result
@@ -113,16 +113,17 @@ class PreprocessingTests(unittest.TestCase):
         messages = exports[0].data["messages"]
         self.assertEqual(messages[1]["content"], "mine\nagain")
         self.assertIn("[OCR] image text", messages[2]["content"])
-        self.assertEqual(messages[3]["content"], "[表情]")
+        self.assertEqual(messages[3]["content"], "[表情]\npinned")
+        self.assertEqual(messages[3]["compressed_local_ids"], [5, 7])
         self.assertEqual(messages[3]["replyContext"]["senderDisplayName"], "Self")
         self.assertEqual(messages[3]["replyContext"]["content"], "mine")
-        self.assertTrue(messages[4]["is_chatroom_top_message"])
-        self.assertEqual(messages[4]["content"], "pinned")
-        self.assertFalse(messages[5].get("is_chatroom_top_message", False))
-        self.assertTrue(messages[5]["is_self_related_pat"])
+        self.assertTrue(messages[3]["compressed_segments"][1]["is_chatroom_top_message"])
+        self.assertIn('A【置顶消息】：[表情][引用 我：mine] | pinned', render_chat_flow(messages))
+        self.assertFalse(messages[4].get("is_chatroom_top_message", False))
+        self.assertTrue(messages[4]["is_self_related_pat"])
         self.assertNotIn("ChatRoomTopMsgRequest", json.dumps(messages, ensure_ascii=False))
         self.assertNotIn('"A" 拍了拍 "B"', json.dumps(messages, ensure_ascii=False))
-        self.assertEqual(messages[5]["content"], '"A" 拍了拍 "Self"')
+        self.assertEqual(messages[4]["content"], '"A" 拍了拍 "Self"')
 
     def test_group_context_window_toggle_gates_unrelated_messages(self) -> None:
         """默认开启时过滤掉窗口外的无关群聊消息；关闭开关后同一消息保留。
