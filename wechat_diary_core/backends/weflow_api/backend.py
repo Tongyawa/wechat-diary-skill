@@ -207,6 +207,8 @@ class WeflowApiBackend:
             return None
         if raw_root is None:
             raise ValueError("批量导出必须显式提供 raw_root")
+        from ...on_demand_files import FileResolver
+        file_resolver = FileResolver.from_config(self.config)
         if state_path is None:
             raise ValueError("批量导出必须提供独立 state_path 以支持续跑")
 
@@ -474,6 +476,7 @@ class WeflowApiBackend:
                             require_media=self.config.export_backend.weflow_api.media_localize,
                             appmsg_text_max_chars=self.config.export_backend.weflow_api.appmsg_text_max_chars,
                             image_media_stats=image_media_stats,
+                            file_resolver=file_resolver,
                             )
                             interval_files.extend(path for path in published.rglob("*") if path.is_file())
                             interval_files.extend(_referenced_cas_files(published, destination_root))
@@ -565,6 +568,7 @@ class WeflowApiBackend:
             skip_platform_accounts=self.config.daily_export.skip_official_accounts,
             excluded_session_usernames=excluded_session_usernames,
         )
+        file_resolver.summary(bulk=True)
         return BulkExportResult(
             requested_sessions=len(selected_sessions),
             completed_intervals=completed_intervals,
@@ -602,6 +606,8 @@ class WeflowApiBackend:
         )
 
     def _export_chats_daily(self, export_date: date) -> None:
+        from ...on_demand_files import FileResolver
+        file_resolver = FileResolver.from_config(self.config)
         self.partial_failures.clear()
         sessions, contacts = self._export_roster()
         self._validate_configured_contacts(sessions, contacts)
@@ -674,6 +680,7 @@ class WeflowApiBackend:
                     require_media=self.config.export_backend.weflow_api.media_localize,
                     appmsg_text_max_chars=self.config.export_backend.weflow_api.appmsg_text_max_chars,
                     image_media_stats=image_media_stats,
+                    file_resolver=file_resolver,
                 )
                 if image_media_stats.missing_image_paths or image_media_stats.missing_image_files:
                     marker = (
@@ -765,6 +772,7 @@ class WeflowApiBackend:
                 file=sys.stderr,
             )
 
+        file_resolver.summary()
         if self.partial_failures and (successful_requests == 0 or (messages_found > 0 and published_sessions == 0)):
             raise RuntimeError("全部会话请求失败，未发布任何 canonical raw")
 

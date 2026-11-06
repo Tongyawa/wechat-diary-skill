@@ -8,6 +8,8 @@
 
 只收「跑流程会踩到」的运行事实。工程规格、版本考据、待办不在此处。
 
+**文件附件默认随导出保存**：daily、bulk、补跑、按需都默认保存本机可核验的文件；配置总开关与只读来源见 [文件附件](file-attachments.md)。按需本次关闭用 §3 的 `--no-files`，缺失附件不阻断默认导出。
+
 **API 服务（路径 ①③ 的硬前提）**
 
 - WeFlow 必须在跑，且**手动开过一次**「设置 → API 服务」。
@@ -108,12 +110,15 @@ python "$SkillRoot\scripts\export_on_demand.py" --session <wxid或显示名子�
 | `--group-window` | 群聊启用上下文窗口筛选。**默认关 = 保留全量** |
 | `--no-asr` | 关闭语音转写 |
 | `--no-media-copy` | 不把媒体复制到 markdown 旁 |
-| `--include-files` | 额外导出本机已下载的文档、压缩包等文件附件，在会话目录 `files/README.md` 查看，`manifest.json` 可逐条对账。保留消息原名与已有 `(n)`；同名不同内容时追加 `(n)`，同名同内容重用。MD5仅用于校验及清单，消息内有MD5才复制，不按同名猜配。必要时调整Windows非法名/路径字符或索引重名。缺失、无法核身份、校验失败逐条列出，部分结果退出码3；未开启时不扫描附件 |
-| `--files-root` | 附件源目录；可在 `[on_demand].files_root` 配置（相对 config 目录）。本机已有 `[favorites].account_dir` 时兼容读取其 `msg/file`；未配置或目录不存在会报错。只读取本机字节，不补下载过期/未下载文件；独立于 `--no-media-copy` |
+| `--include-files` | 文件默认保存；显式指定时要求完整，缺失或扫描异常退出码 3。默认缺失退出码 0，逐条列在 `files/README.md` 和 `manifest.json`。保留消息原名与已有编号，同名异内容追加 `(n)` |
+| `--no-files` | 本次关闭 canonical 文件 `source` 获取和原名 `files/` 输出，不读取附件来源；与 `--include-files` 互斥。已有归档链接仍受摄取保护 |
+| `--files-root` | 本次附件源目录，相对 config 目录；不必同时写 `--include-files`，与 `--no-files` 互斥。归档 CAS 仍自动当来源；独立于 `--no-media-copy` |
 | `--allow-excluded-session` | 仅本次旁路 `[daily_export].excluded_session_usernames`；没有此参数时显式点名排除会话会中文拒绝 |
 | `--config` | 配置文件路径 |
 
 前提同 §1（需要 API 服务）。
+
+所有导出入口默认读取 `[file_attachments].enabled = true` 与有序 `sources = []`；空列表退回 `[favorites].account_dir/msg/file`，按需兼容旧 `[on_demand].files_root`，归档 CAS 自动参与。配置、只读与降级语义见 [文件附件](file-attachments.md)。
 
 群聊名册与日常链路使用同一冷却重试口径；三次请求仍未取得非空名册时，按需导出继续使用同群既有 canonical 名字、contacts、wxid 退路，不因辅助名字丢掉消息。
 

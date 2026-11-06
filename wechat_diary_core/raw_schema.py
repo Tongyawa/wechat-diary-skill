@@ -5,6 +5,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from .media_store import MEDIA_SCHEME_KEY, MEDIA_SCHEME_VALUE
+from .on_demand_files import is_file_message
 
 
 SCHEMA_VERSION = 1
@@ -43,11 +44,11 @@ _CHAT_CONTENT_GROUP_LABELS = {
 }
 
 _CAS_CHAT_REFERENCE_RE = re.compile(
-    r"^\.\./_media/(?P<class>images|voices|emojis|videos)/"
+    r"^\.\./_media/(?P<class>images|voices|emojis|videos|files)/"
     r"(?P<shard>[0-9a-f]{2})/(?P<md5>[0-9a-f]{32})\.(?P<ext>[a-z0-9]{1,16})$"
 )
 _CAS_ROOT_REFERENCE_RE = re.compile(
-    r"^_media/(?P<class>images|voices|emojis|videos)/"
+    r"^_media/(?P<class>images|voices|emojis|videos|files)/"
     r"(?P<shard>[0-9a-f]{2})/(?P<md5>[0-9a-f]{32})\.(?P<ext>[a-z0-9]{1,16})$"
 )
 
@@ -237,7 +238,10 @@ def _validate_cas_message_reference(
         "语音消息": "voices",
         "动画表情": "emojis",
         "视频消息": "videos",
+        "文件消息": "files",
     }.get(message_type)
+    if is_file_message(message):
+        expected_class = "files"
     if expected_class is None:
         return
     source = str(message.get("source") or "")

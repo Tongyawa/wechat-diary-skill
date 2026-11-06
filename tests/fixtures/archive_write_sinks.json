@@ -34,7 +34,8 @@
     "_write_merged:write_text": 1,
     "_write_merged_with_header:write_text": 1,
     "export_on_demand:mkdir": 1,
-    "export_on_demand:rmtree": 1
+    "export_on_demand:rmtree": 1,
+    "export_on_demand:write_text": 1
   },
   "scripts/init_worktree_config.py": {
     "init_worktree_config:write_text": 1

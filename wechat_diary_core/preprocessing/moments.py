@@ -51,6 +51,7 @@ def load_moments_export(path: str | Path) -> MomentsExport:
 
 
 def discover_moments_exports(root: str | Path) -> list[Path]:
+    from ..raw_discovery import raw_json_files
     """Find Moments-export JSON files (depth-1 inside ``root``)."""
     path = Path(root)
     if path.is_file() and _looks_like_moments_export(path):
@@ -58,7 +59,7 @@ def discover_moments_exports(root: str | Path) -> list[Path]:
     if not path.exists():
         return []
     found: list[Path] = []
-    for candidate in sorted(path.rglob("*.json")):
+    for candidate in sorted(raw_json_files(path)):
         if _looks_like_moments_export(candidate):
             found.append(candidate)
     return found
@@ -342,7 +343,7 @@ def _looks_like_moments_export(path: Path) -> bool:
     try:
         with path.open("r", encoding="utf-8-sig") as fh:
             data = json.load(fh)
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError, UnicodeError):
         return False
     if not (isinstance(data, dict) and isinstance(data.get("posts"), list)):
         return False

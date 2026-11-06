@@ -22,6 +22,7 @@ from .archiving import strip_date_suffix
 from .chat_identity import (
     _collision_failure_reason, _is_chat_json, _read_stored_session,
     _chat_regression_reason, compare_chat_identities, _moments_collision_kind,
+    preserve_file_sources,
 )
 from .media_store import MEDIA_STORE_NAME, is_media_reference
 from .moments_ranges import range_digest, plan_range_publication
@@ -155,6 +156,11 @@ class RawAction:
     range_review: bool = False
     projected_objects: dict[Path, tuple[Path | None, str | None]] = field(default_factory=dict, repr=False)
     ordered_after: tuple[Path, ...] = ()
+    publish_data: bytes | None = field(default=None, repr=False)
+
+    @property
+    def publish_sha(self):
+        return _sha(self.publish_data) if self.publish_data is not None else self.source_sha
 
     def block(self, reason: str, status: str = "resolutionBlocked") -> None:
         self.status = status
@@ -475,6 +481,23 @@ def plan_raw_ingest(
                                                      "reason": str(exc)})
                         continue
             chat = _is_chat_json(payload)
+            publication = None
+            if chat:
+                original_payload = payload
+                try:
+                    validate_session_json(payload)
+                    identity = (str(payload["session"].get("wxid") or "").strip(), _day(source))
+                    for old_path in active_index.by_key.get(identity, ()):
+                        if old_path == source:
+                            continue
+                        old = json.loads(old_path.read_bytes().decode("utf-8-sig"))
+                        validate_session_json(old)
+                        payload = preserve_file_sources(payload, old)
+                    if payload is not original_payload:
+                        publication = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+                        raw = publication
+                except (OSError, ValueError, TypeError, KeyError):
+                    payload = original_payload
             # A partial session object is still a chat-shaped file, never a safe opaque copy.
             partial_chat = isinstance(payload, dict) and isinstance(payload.get("session"), dict)
             target = _legacy_target(archive, relative)
@@ -482,6 +505,7 @@ def plan_raw_ingest(
             action = RawAction(source, root_number, relative.as_posix(), target,
                                "chat" if chat or partial_chat else "range" if len(relative.parts) == 1 and range_digest(source) else "file",
                                source_sha, _fingerprint(target), group=group)
+            action.publish_data = publication
             plan.actions.append(action)
             if group:
                 groups[group].append(action)
@@ -536,10 +560,10 @@ def plan_raw_ingest(
             if policy == "rename":
                 action.resolution = "rename"
                 siblings = [p for p in siblings if p.parent.name == directory and p != source]
-                identical = next((p for p in siblings if _fingerprint(p) == action.source_sha), None)
+                identical = next((p for p in siblings if _fingerprint(p) == action.publish_sha), None)
                 predecessor = next((a for a in plan.actions if a is not action and a.kind == "chat"
                                     and a.status == "ready" and a.wxid == action.wxid and a.day == action.day
-                                    and a.target.parent.name == directory and a.source_sha == action.source_sha), None)
+                                    and a.target.parent.name == directory and a.publish_sha == action.publish_sha), None)
                 if identical is None and predecessor is not None:
                     identical = predecessor.target
                     action.depends_on = predecessor.source
@@ -547,7 +571,7 @@ def plan_raw_ingest(
                     action.target = identical
                     action.target_before = _fingerprint(identical)
                     record, _ = _old_record(plan, source, payload, required=False,
-                                            incoming_sha=action.source_sha)
+                                            incoming_sha=action.publish_sha)
                     record["retirementBasis"] = "identical_sha256"
                     record["action"] = "backup_then_retire"
                     action.existing.append(record)
@@ -561,7 +585,7 @@ def plan_raw_ingest(
                 try:
                     required = True
                     record, old = _old_record(plan, old_path, payload, required=required,
-                                              incoming_sha=action.source_sha)
+                                              incoming_sha=action.publish_sha)
                     record["action"] = "replace" if old_path == action.target else "backup_then_retire"
                     action.existing.append(record)
                     if required and not record["coverage"]["covered"]:
@@ -638,7 +662,7 @@ def plan_raw_ingest(
             continue
         if action.target_before == "<not-file>":
             action.block("target_not_file")
-        elif action.target_before and action.target_before != action.source_sha:
+        elif action.target_before and action.target_before != action.publish_sha:
             legacy_media = "media" in Path(action.relative).parts[:-1] and any(
                 a.kind == "chat" for a in groups.get(action.group, []))
             cas_with_ranges = Path(action.relative).parts[0] == MEDIA_STORE_NAME and any(
@@ -663,7 +687,7 @@ def plan_raw_ingest(
         if action.status == "ready":
             destinations[action.target].append(action)
     for actions in destinations.values():
-        if len({a.source_sha for a in actions}) > 1:
+        if len({a.publish_sha for a in actions}) > 1:
             for action in actions:
                 action.block("multiple_incoming_for_target", "hardBlocked")
     # Range destinations and retirements are resolved once, before the same
@@ -716,8 +740,8 @@ def plan_raw_ingest(
                 continue
             if action.kind == 'chat':
                 record, _ = _old_record(plan, action.source,
-                    json.loads(action.source.read_bytes().decode('utf-8-sig')), required=True,
-                    incoming_sha=action.source_sha)
+                    json.loads((action.publish_data or action.source.read_bytes()).decode('utf-8-sig')), required=True,
+                    incoming_sha=action.publish_sha)
             else:
                 record = {'path': action.source.relative_to(archive).as_posix(),
                           'sha256': action.source_sha, 'coverageRequired': False,
@@ -737,12 +761,12 @@ def plan_raw_ingest(
         ordered = all(a.source in b.ordered_after for i, a in enumerate(list(unique))
                       for b in list(unique)[i + 1:])
         if not ordered and len({id(a) for a in actions}) > 1 and (any(path in a.retire for a in actions)
-                or len({a.source_sha for a in actions}) > 1):
+                or len({a.publish_sha for a in actions}) > 1):
             for action in unique:
                 action.block('overlapping_archive_mutations', 'hardBlocked')
     for action in plan.actions:
         if action.status == 'ready':
-            _final_target_check(plan, action, incoming_bytes=overrides.get(action.source))
+            _final_target_check(plan, action, incoming_bytes=action.publish_data or overrides.get(action.source))
     finalize_dependencies(plan)
     # Dependency retention can only remove a planned cleanup, never introduce
     # a new destination. Keep shared rename media in its old directory too.
@@ -761,7 +785,7 @@ def plan_raw_ingest(
 
 def _execution_signature(action: RawAction) -> tuple:
     """Bind execution to the inspected paths, bytes, and backup obligations."""
-    return (action.source, action.target, action.source_sha, action.target_before,
+    return (action.source, action.target, action.source_sha, action.publish_data, action.target_before,
             tuple(action.retire), json.dumps(action.existing, sort_keys=True), action.duplicate, action.noop,
             json.dumps(action.guards, sort_keys=True), action.range_review,
             tuple(sorted(action.projected_objects.items())), action.ordered_after,
@@ -855,7 +879,7 @@ def _final_target_check(plan: RawIngestPlan, action: RawAction, *, incoming_byte
             return
         if valid_old or chat_shape(path, old):
             if (valid_old and valid_incoming and incoming_identity[1]
-                    and identity(path, old) == incoming_identity and old_sha == action.source_sha
+                    and identity(path, old) == incoming_identity and old_sha == action.publish_sha
                     and not old_record.get('coverage', {}).get('covered')):
                 # Exact bytes prove coverage even when generation metadata or
                 # platform IDs are absent. Do not claim an identity comparison.
@@ -863,7 +887,7 @@ def _final_target_check(plan: RawIngestPlan, action: RawAction, *, incoming_byte
             if (not valid_old or not valid_incoming or not incoming_identity[1]
                     or identity(path, old) != incoming_identity
                     or not old_record.get('coverage', {}).get('covered')
-                    or not (old_sha == action.source_sha or compare_chat_identities(incoming, old).covered)):
+                    or not (old_sha == action.publish_sha or compare_chat_identities(incoming, old).covered)):
                 refuse('retire_not_covered')
                 return
         if not valid_old:
@@ -871,7 +895,7 @@ def _final_target_check(plan: RawIngestPlan, action: RawAction, *, incoming_byte
         old_record['action'] = 'backup_then_retire'
     if target_sha is None:
         return
-    if target_sha == action.source_sha:
+    if target_sha == action.publish_sha:
         action.noop = True
         if action.target in records and plan.policy == 'daily':
             records[action.target]['action'] = 'keep'
@@ -1276,7 +1300,7 @@ def apply_raw_ingest_plan(plan: RawIngestPlan, *, move_source: bool = False,
             raise ValueError("target changed before publication")
         # An earlier action in this exact plan may already have published the
         # same bytes. It is a no-op, not an external change or a second backup.
-        noop = action.noop or expected_target == action.source_sha
+        noop = action.noop or expected_target == action.publish_sha
         for old in action.existing:
             if noop and plan.archive / old['path'] == action.target:
                 continue
@@ -1288,6 +1312,7 @@ def apply_raw_ingest_plan(plan: RawIngestPlan, *, move_source: bool = False,
             data = action.source.read_bytes()
             if _sha(data) != action.source_sha:
                 raise ValueError("incoming changed before publication")
+            data = action.publish_data if action.publish_data is not None else data
             # Final inspection records exactly which old bytes need a backup.
             folding = (bool(action.retire) or plan.policy == "rename" and bool(action.existing)
                        or any(old.get("coverageRequired") or old.get('backupRequired') for old in action.existing))
@@ -1295,9 +1320,9 @@ def apply_raw_ingest_plan(plan: RawIngestPlan, *, move_source: bool = False,
                 backup(action, skip_target=noop)
             if not action.duplicate and not noop:
                 _atomic_bytes(action.target, data)
-            if _fingerprint(action.target) != action.source_sha:
+            if _fingerprint(action.target) != action.publish_sha:
                 raise OSError("published bytes failed verification")
-        current_targets[action.target] = action.source_sha
+        current_targets[action.target] = action.publish_sha
         result.published.append(action.target)
         for old_path in action.retire:
             if old_path == action.source and action.retain_source:

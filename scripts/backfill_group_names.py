@@ -131,11 +131,12 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def backfill_group_names(raw_root: Path, *, apply: bool = False) -> BackfillReport:
+    from wechat_diary_core.raw_discovery import raw_json_files
     root = Path(raw_root).expanduser().resolve()
     if not root.is_dir():
         raise BackfillError(f"raw 根不存在或不是目录：{root}")
 
-    paths = sorted(path for path in root.rglob("*.json") if path.is_file())
+    paths = sorted(raw_json_files(root))
     rosters: dict[str, dict[str, NameCandidate]] = {}
     documents: list[DocumentRef] = []
     for path in paths:

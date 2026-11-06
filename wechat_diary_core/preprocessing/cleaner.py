@@ -283,21 +283,21 @@ def clean_messages(
 
 
 def discover_chat_exports(root: str | Path) -> list[Path]:
+    from ..raw_discovery import raw_json_files
     path = Path(root)
     if path.is_file():
         return [path]
     if not path.exists():
         raise FileNotFoundError(path)
 
-    return sorted(candidate for candidate in path.rglob("*.json")
-                  if _looks_like_chat_export(candidate))
+    return sorted(candidate for candidate in raw_json_files(path) if _looks_like_chat_export(candidate))
 
 
 def _looks_like_chat_export(path: Path) -> bool:
     try:
         with path.open("r", encoding="utf-8-sig") as fh:
             data = json.load(fh)
-    except (InvalidExportError, json.JSONDecodeError, OSError):
+    except (InvalidExportError, json.JSONDecodeError, OSError, UnicodeError):
         return False
     return isinstance(data, dict) and isinstance(data.get("session"), dict) and isinstance(data.get("messages"), list)
 

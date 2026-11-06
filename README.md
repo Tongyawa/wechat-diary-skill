@@ -118,7 +118,7 @@ Pop-Location
 
 `--session` 接受 wxid 或显示名子串；拿不准就先 `--list-sessions 关键词` 列候选。省略日期即本机可读的全部历史，只给一边日期则只限制该边。日期两种写法都行（`2026-05-01` / `20260501`）。常用开关：`--merged` 额外产出整段合并 markdown，`--group-window` 对群聊启用上下文窗口筛选（默认全量），`--no-asr` 跳过语音转写，`--no-media-copy` 不把媒体复制到 markdown 旁。
 
-加 `--include-files` 额外导出文件附件，例如 `--session 某群 --out .\临时导出 --include-files --merged`。在会话目录 `files/README.md` 查看可点击附件及未取得清单，`manifest.json` 逐条记录消息身份。文件保留消息中的原名及已有 `(n)`；同名不同内容时补 `(n)`，不会覆盖旧文件，同名同内容重用。MD5保留在清单中，用于核验字节及可用大小；缺失或不可核验时保留聊天产物、退出码3。Windows非法名称、路径字符或与索引文件重名时会做必要调整，原名仍记清单。源目录由 `--files-root` 或配置 `[on_demand].files_root` 指定，相对路径锚 config；已有 `[favorites].account_dir` 时兼容其 `msg/file`。不自动下载过期或尚未下载的文件。此开关独立于 `--no-media-copy`，仅影响本次按需输出，不改日常或 canonical 格式。
+文件附件默认随导出保存：日常、批量、补跑和按需都会把本机已下载、且 MD5 与大小都对得上的文件存进 `_media/files/`，并在消息里记下链接；客户端没下载过的文件只留标签，不影响退出码。总开关和来源目录在配置 `[file_attachments]`，详见 [文件附件](references/file-attachments.md)。按需导出另在会话目录生成 `files/README.md`（保留原名，可直接点开）和逐条 `manifest.json`；本次不要文件加 `--no-files`；要求文件必须齐全时加 `--include-files`，缺任何一个退出码 3。`--files-root` 临时指定来源目录。不自动下载过期或尚未下载的文件，独立于 `--no-media-copy`。
 
 老格式图片可能因 API 不支持而缺少路径，字节仍可能在本地。可在本机 `config.toml` 配置一个支持 `--canonical-dir`、`--config`、`--apply`、`--report-json` 的 Python 补数脚本：
 

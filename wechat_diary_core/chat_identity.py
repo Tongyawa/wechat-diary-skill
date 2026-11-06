@@ -5,9 +5,50 @@ import json
 from pathlib import Path
 from typing import Any
 from collections import Counter
+import copy
 from dataclasses import dataclass
 
 from .media_store import MEDIA_SCHEME_KEY, MEDIA_SCHEME_VALUE
+from .on_demand_files import is_file_message
+
+
+def preserve_file_sources(incoming: dict, archived: dict) -> dict:
+    """Only fill empty file sources, using the existing generation identity rules.
+
+    Ambiguous duplicate identities are deliberately left to the existing guard.
+    Nonempty incoming values and every other message field remain untouched.
+    """
+    if not _is_chat_json(incoming) or not _is_chat_json(archived):
+        return incoming
+    comparison = compare_chat_identities(incoming, archived)
+    if not comparison.same_session:
+        return incoming
+    def key(message):
+        if comparison.same_lineage:
+            return (_numeric_create_time(message), str(message.get("localId")))
+        value = str(message.get("platformMessageId") or "")
+        return value or None
+    def groups(messages):
+        result = {}
+        for message in messages:
+            identity = key(message)
+            if identity is not None:
+                result.setdefault(identity, []).append(message)
+        return result
+    fresh = groups(incoming["messages"])
+    old = groups(archived["messages"])
+    result = incoming
+    for identity in fresh.keys() & old.keys():
+        if len(fresh[identity]) != 1 or len(old[identity]) != 1:
+            continue
+        new_message, old_message = fresh[identity][0], old[identity][0]
+        if (is_file_message(new_message) and is_file_message(old_message)
+                and not new_message.get("source") and old_message.get("source")):
+            if result is incoming:
+                result = copy.deepcopy(incoming)
+            index = incoming["messages"].index(new_message)
+            result["messages"][index]["source"] = old_message["source"]
+    return result
 
 
 @dataclass(frozen=True)

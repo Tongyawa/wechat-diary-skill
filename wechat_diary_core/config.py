@@ -9,6 +9,7 @@ import tomllib
 
 
 DEFAULT_CONFIG: dict[str, Any] = {
+    "file_attachments": {"enabled": True, "sources": []},
     "user": {
         "self_wxids": ["filehelper"],
         "voice_transcribe_usernames": [],
@@ -368,6 +369,12 @@ class ImageBackfillConfig:
 
 
 @dataclass(frozen=True)
+class FileAttachmentsConfig:
+    enabled: bool = True
+    sources: tuple[Path, ...] = ()
+
+
+@dataclass(frozen=True)
 class Config:
     user: UserConfig
     paths: PathsConfig
@@ -388,6 +395,7 @@ class Config:
     source: dict[str, Any]
     image_backfill: ImageBackfillConfig = field(default_factory=ImageBackfillConfig)
     config_path: Path | None = None
+    file_attachments: FileAttachmentsConfig = field(default_factory=FileAttachmentsConfig)
 
 
 def load_config(config_path: str | Path | None = None) -> Config:
@@ -526,6 +534,11 @@ def _build_config(raw: dict[str, Any], base_dir: Path, *, source: dict[str, Any]
     )
 
     return Config(
+        file_attachments=FileAttachmentsConfig(
+            enabled=bool(raw["file_attachments"]["enabled"]),
+            sources=tuple((base_dir / Path(p).expanduser()).absolute()
+                          for p in raw["file_attachments"]["sources"] if str(p).strip()),
+        ),
         image_backfill=ImageBackfillConfig(
             script=_optional_path(base_dir, (raw.get("image_backfill") or {}).get("script")),
         ),

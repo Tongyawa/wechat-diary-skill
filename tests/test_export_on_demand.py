@@ -557,8 +557,8 @@ Path(a.report_json).write_text(json.dumps(report), encoding='utf-8')
                 sorted(path.name for path in out.iterdir() if path.is_dir()),
                 ["_raw", first_dir.name, second_dir.name],
             )
-            self.assertEqual([path.name for path in first_dir.iterdir()], ["2026-08-05.md"])
-            self.assertEqual([path.name for path in second_dir.iterdir()], ["2026-08-05.md"])
+            self.assertEqual(sorted(path.name for path in first_dir.iterdir()), ["2026-08-05.md", "files"])
+            self.assertEqual(sorted(path.name for path in second_dir.iterdir()), ["2026-08-05.md", "files"])
             self.assertIn("range-marker-20260513", first_text)
             self.assertNotIn("range-marker-20260514", first_dir.joinpath("2026-08-05.md").read_text(encoding="utf-8"))
             self.assertIn("range-marker-20260514", second_dir.joinpath("2026-08-05.md").read_text(encoding="utf-8"))

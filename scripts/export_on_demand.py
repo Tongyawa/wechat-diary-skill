@@ -19,7 +19,9 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from wechat_diary_core.archiving import archive
-from wechat_diary_core.on_demand_files import export_files, resolve_files_root
+from wechat_diary_core.on_demand_files import export_files, FileResolver
+from wechat_diary_core.chat_identity import preserve_file_sources
+from wechat_diary_core.raw_schema import validate_session_json
 from wechat_diary_core.asr import SenseVoiceTranscriber
 from wechat_diary_core.backends.weflow_api.backend import _last_known_group_members
 from wechat_diary_core.backends.weflow_api.client import (
@@ -36,6 +38,7 @@ from wechat_diary_core.media_store import (
     MEDIA_STORE_NAME,
     chat_media_reference,
     store_media_file,
+    is_media_reference,
 )
 from wechat_diary_core.workspace import merge_tree
 from wechat_diary_core.workspace_discovery import WorkspaceResolutionError, resolve_config_path
@@ -92,7 +95,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--merged", action="store_true", help="额外产出整段合并 markdown。")
     parser.add_argument("--no-media-copy", action="store_true", help="不把媒体复制到 markdown 旁。")
     parser.add_argument("--no-asr", action="store_true", help="关闭语音转写。")
-    parser.add_argument("--include-files", action="store_true", help="额外导出本机已有文件附件及逐条清单。")
+    files = parser.add_mutually_exclusive_group()
+    files.add_argument("--include-files", action="store_true", help="显式要求文件完整，缺失时退出码 3。")
+    files.add_argument("--no-files", action="store_true", help="本次不扫描或保存文件附件。")
     parser.add_argument("--files-root", help="附件源目录；默认读取配置的本地文件目录。")
     parser.add_argument(
         "--allow-excluded-session",
@@ -146,7 +151,8 @@ def main(argv: list[str] | None = None) -> int:
             copy_media=not args.no_media_copy,
             enable_asr=not args.no_asr,
             allow_excluded_session=args.allow_excluded_session,
-            files_root=resolve_files_root(config_path, args.files_root) if args.include_files else None,
+            files_root=Path(args.files_root).expanduser() if args.files_root else None,
+            files_enabled=not args.no_files,
         )
     except WorkspaceResolutionError as exc:
         print(str(exc), file=sys.stderr)
@@ -204,7 +210,7 @@ def main(argv: list[str] | None = None) -> int:
     if result.files_report is not None:
         report = result.files_report
         print(f"文件附件：{report['exported']}/{report['total']} 条；未取得 {report['unresolved']} 条；扫描错误 {report['scan_errors']}。索引：{result.output_session_dir / 'files' / 'README.md'}")
-        if report['unresolved'] or report['scan_errors']:
+        if args.include_files and (report['unresolved'] or report['scan_errors']):
             return 3
     return 0
 
@@ -225,6 +231,7 @@ def export_on_demand(
     enable_asr: bool = True,
     allow_excluded_session: bool = False,
     files_root: Path | None = None,
+    files_enabled: bool = True,
     archive_fn: Callable[..., list[Path]] | None = None,
     transcriber_factory: Callable[..., Any] | None = None,
     sleep_fn: Callable[[float], None] = time.sleep,
@@ -249,11 +256,15 @@ def export_on_demand(
         raise RuntimeError(f"合并目标必须是已有会话目录：{merge_target}")
     active_cfg = _config_for_on_demand(cfg, group_window=group_window)
     root = merge_target.parent if merge_target is not None else Path(out_root).expanduser().resolve()
-    if files_root is not None:
-        source = files_root.resolve()
-        if root.is_relative_to(source) or source.is_relative_to(root):
-            raise ValueError("附件输出与源目录必须分离，避免改动微信缓存。")
     raw_root = root / "_raw"
+    if files_root is not None and not files_root.is_absolute():
+        files_root = cfg.base_dir / files_root
+    file_resolver = FileResolver.from_config(cfg, explicit=files_root, enabled=files_enabled,
+                                             extra_cas=(raw_root / "_media/files",), legacy=True)
+    if file_resolver.enabled:
+        for source in file_resolver.roots:
+            if root.is_relative_to(source) or source.is_relative_to(root):
+                raise ValueError("附件输出与源目录必须分离，避免改动微信缓存。")
     raw_root.mkdir(parents=True, exist_ok=True)
     staging_root = _make_short_staging_root(root)
 
@@ -313,7 +324,40 @@ def export_on_demand(
             require_media=api.media_localize,
             appmsg_text_max_chars=api.appmsg_text_max_chars,
             image_media_stats=image_media_stats,
+            file_resolver=file_resolver,
         )
+        # Preserve sources even when file lookup is disabled. Match canonical
+        # message identities across the existing ranges in this output only.
+        if raw_root.is_dir():
+            staged_json = next(staging_session_dir.glob("*.json"))
+            payload = json.loads(staged_json.read_text(encoding="utf-8-sig"))
+            original = payload
+            for directory in raw_root.iterdir():
+                if directory.is_dir() and directory.name != MEDIA_STORE_NAME:
+                    for old_path in directory.glob("*.json"):
+                        try:
+                            old = json.loads(old_path.read_text(encoding="utf-8-sig"))
+                            validate_session_json(old)
+                            payload = preserve_file_sources(payload, old)
+                        except (OSError, ValueError, TypeError):
+                            continue
+            if payload is not original:
+                validate_session_json(payload)
+                # A preserved link still needs bytes beside the staging JSON
+                # while processed merging copies references. Reuse only this
+                # output's referenced CAS objects, never scan external sources.
+                for message in payload["messages"]:
+                    reference = message.get("source", "")
+                    if is_media_reference(reference, "files"):
+                        relative = PurePosixPath(reference).parts[1:]
+                        staged = staging_root.joinpath(*relative)
+                        prior = raw_root.joinpath(*relative)
+                        if not staged.exists() and prior.is_file():
+                            stored = store_media_file(prior, staging_root / MEDIA_STORE_NAME, "files",
+                                expected_identity=(prior.stem, prior.stat().st_size))
+                            if chat_media_reference(stored.relative_path) != reference:
+                                raise ValueError("保留文件引用与暂存 CAS 路径不一致")
+                staged_json.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         image_backfill = backfill_on_demand(
             staging_session_dir, script=cfg.image_backfill.script,
             config_path=cfg.config_path or cfg.base_dir / "config.toml",
@@ -364,7 +408,8 @@ def export_on_demand(
             if merged or existing_merged.exists()
             else None
         )
-    files_report = export_files(messages, files_root, output_session_dir / "files") if files_root is not None else None
+    files_report = export_files(messages, files_root, output_session_dir / "files", resolver=file_resolver) if file_resolver.enabled else None
+    file_resolver.summary()
     return ExportOnDemandResult(
         session=session,
         files_report=files_report,
@@ -850,8 +895,8 @@ def _parse_day(value: str | None) -> date:
 
 
 def _require_export_arguments(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
-    if args.files_root and not args.include_files:
-        parser.error("--files-root 需要同时提供 --include-files。")
+    if args.files_root and args.no_files:
+        parser.error("--files-root 与 --no-files 不能同时提供。")
     if args.out and args.merge_into:
         parser.error("--out 与 --merge-into 不能同时提供。")
     if args.list_sessions is not None:

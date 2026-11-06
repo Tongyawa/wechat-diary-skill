@@ -65,7 +65,7 @@ class FileTests(unittest.TestCase):
                         message(digest=""), message(size=9)]
             report = export_files(messages, source, root / "out")
             self.assertEqual([e['status'] for e in report['entries']],
-                             ['exported', 'exported', 'not_found', 'unverifiable', 'verification_failed'])
+                             ['exported', 'exported', 'not_found', 'unverifiable', 'not_found'])
             for entry in report['entries'][:2]:
                 target = root / "out" / entry['path']
                 self.assertTrue(target.resolve().is_relative_to(root / "out"))
@@ -141,7 +141,7 @@ class FileTests(unittest.TestCase):
                 rc = runner.main(['--config', str(cfg.config_path), '--session', session['username'], '--out', str(root/'partial'), '--no-asr', '--include-files', '--files-root', str(source)])
             self.assertEqual(rc, 3)
 
-    def test_cli_single_boundaries_empty_results_and_default_no_scan(self):
+    def test_cli_single_boundaries_empty_results_and_no_files_zero_scan(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             cfg = _config(root)
@@ -153,7 +153,7 @@ class FileTests(unittest.TestCase):
             ]):
                 client = FixtureClient([session], {})
                 with mock.patch.object(runner, '_make_client', return_value=client), mock.patch.object(runner, 'export_files', side_effect=AssertionError('must not scan')), redirect_stdout(io.StringIO()):
-                    rc = runner.main(['--config', str(cfg.config_path), '--session', session['username'], '--out', str(root/f'out{index}'), '--no-asr', *extra])
+                    rc = runner.main(['--config', str(cfg.config_path), '--session', session['username'], '--out', str(root/f'out{index}'), '--no-asr', '--no-files', *extra])
                 self.assertEqual(rc, 0)
                 call = next(c for c in client.calls if c[0]=='messages')
                 self.assertEqual((call[2]['start'],call[2]['end']), (start,end))

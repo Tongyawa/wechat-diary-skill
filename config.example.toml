@@ -203,6 +203,16 @@ restart_weflow = true
 # The script must support --canonical-dir, --config, --apply and --report-json.
 script = ""
 
+
+[file_attachments]
+# Save locally downloaded file attachments (exact MD5 + size match) with every
+# export: daily, bulk, replay and on-demand. false turns it off everywhere.
+enabled = true
+# Ordered read-only source directories; relative paths anchor at this config.
+# Empty falls back to [favorites].account_dir/msg/file. The archive's own
+# raw/_media/files store is always consulted, no need to list it here.
+sources = []
+
 # --- Rolling git-bundle cold backup (optional) --------------------------------
 # Snapshots whole git repositories into single-file bundles you can restore with
 # `git clone <file>.bundle`. Useful for repos that have no remote, and for repos

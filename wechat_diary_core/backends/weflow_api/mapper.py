@@ -199,6 +199,7 @@ def map_session_json(
     require_media: bool = True,
     appmsg_text_max_chars: int = 300,
     image_media_stats: ImageMediaStats | None = None,
+    file_resolver: Any = None,
 ) -> dict[str, Any]:
     """Map one talker; callable independently from the daily runner."""
 
@@ -245,6 +246,10 @@ def map_session_json(
         )
         for message in ordered_messages
     ]
+    if file_resolver is not None:
+        for mapped, reference in zip(mapped_messages, file_resolver.localize(ordered_messages, media_dir)):
+            if reference:
+                mapped["source"] = reference
     data = {
         "session": {
             "wxid": talker,
@@ -289,6 +294,7 @@ def write_session_export(
     require_media: bool = True,
     appmsg_text_max_chars: int = 300,
     image_media_stats: ImageMediaStats | None = None,
+    file_resolver: Any = None,
 ) -> Path:
     """Validate and atomically publish one complete canonical session directory."""
 
@@ -313,6 +319,7 @@ def write_session_export(
             require_media=require_media,
             appmsg_text_max_chars=appmsg_text_max_chars,
             image_media_stats=active_image_media_stats,
+            file_resolver=file_resolver,
         )
         json_path = staging_dir / f"{directory_name}.json"
         json_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")

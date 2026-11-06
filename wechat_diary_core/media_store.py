@@ -14,7 +14,7 @@ from pathlib import Path, PurePosixPath
 MEDIA_STORE_NAME = "_media"
 MEDIA_SCHEME_KEY = "mediaScheme"
 MEDIA_SCHEME_VALUE = "cas-v1"
-MEDIA_CLASSES = frozenset({"images", "voices", "emojis", "videos"})
+MEDIA_CLASSES = frozenset({"images", "voices", "emojis", "videos", "files"})
 _EXTENSION_RE = re.compile(r"^\.[a-z0-9]{1,16}$")
 _BUFFER_SIZE = 1024 * 1024
 
@@ -27,7 +27,8 @@ class StoredMedia:
     extension_conflict: bool
 
 
-def store_media_file(source: Path, store_root: Path, media_class: str) -> StoredMedia:
+def store_media_file(source: Path, store_root: Path, media_class: str, *,
+                     extension: str | None = None, expected_identity: tuple[str, int] | None = None) -> StoredMedia:
     """Publish one complete file under ``<class>/<hh>/<md5>.<ext>``.
 
     The source is hashed before a final name is chosen, then copied to a
@@ -42,12 +43,18 @@ def store_media_file(source: Path, store_root: Path, media_class: str) -> Stored
         raise FileNotFoundError(source)
 
     digest, source_size = _hash_file(source)
-    extension = _normalized_extension(source)
+    if expected_identity is not None and (digest, source_size) != expected_identity:
+        raise ValueError("文件附件身份校验失败")
+    extension = extension or _normalized_extension(source)
+    if not _EXTENSION_RE.fullmatch(extension):
+        raise ValueError("非法 CAS 扩展名")
     shard = Path(store_root) / media_class / digest[:2]
     shard.mkdir(parents=True, exist_ok=True)
 
     existing = _existing_hash_files(shard, digest)
     if existing:
+        if media_class == "files" and any(_hash_file(p) != (digest, source_size) for p in existing):
+            raise ValueError("已有文件 CAS 校验失败")
         return _reuse_existing(existing, source_size, extension, media_class, digest)
 
     handle, temporary_name = tempfile.mkstemp(
@@ -65,6 +72,8 @@ def store_media_file(source: Path, store_root: Path, media_class: str) -> Stored
         # was being prepared. Recheck before the final atomic rename.
         existing = _existing_hash_files(shard, digest)
         if existing:
+            if media_class == "files" and any(_hash_file(p) != (digest, source_size) for p in existing):
+                raise ValueError("已有文件 CAS 校验失败")
             return _reuse_existing(existing, source_size, extension, media_class, digest)
 
         destination = shard / f"{digest}{extension}"
