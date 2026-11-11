@@ -1,6 +1,8 @@
 # WeChat Diary
 
-> 🏅 2026-10-31，本仓提交 [`7a8656c`](https://github.com/Tongyawa/wechat-diary-skill/commit/7a8656cc80dc34cbec15dee3324966f8c0c5d50f)（按需导出支持省略日期及可选文件附件）被开源 AI 搜索引擎 [XERJ](https://github.com/xerj-org/xerj) 选中，受邀收录进其 [Corpus Hub](https://hub.xerj.org)——供 AI 编程智能体动手前参考的公开优秀实现索引。
+> 🏅 2026-10-31，本仓提交 [`7a8656c`](https://github.com/Tongyawa/wechat-diary-skill/commit/7a8656cc80dc34cbec15dee3324966f8c0c5d50f)（按需导出支持省略日期及可选文件附件）被开源 AI 搜索引擎 [XERJ](https://github.com/xerj-org/xerj) 选中，收录于其 [Corpus Hub](https://hub.xerj.org/corpus/tongyawa--wechat-diary-skill)——供 AI 编程智能体动手前参考的公开优秀实现索引。
+>
+> [![XERJ Corpus Hub contributor](https://hub.xerj.org/contributors/Tongyawa/badge.svg)](https://hub.xerj.org/contributors/Tongyawa)
 
 WeChat Diary 是一个本地微信日记工作流：通过 WeFlow 导出微信聊天记录，把原始导出清洗成更适合 Agent 阅读的 Markdown，再由 `wechat-diary-skill` 生成日记、DoneList、灵感、额外观察，并增量维护长期自我画像和年度主线脉络。
 
